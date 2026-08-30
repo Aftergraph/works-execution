@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://works-execution.dev/schemas/action-manifest.schema.json",
+  "title": "Action Capability Manifest",
+  "description": "Declarative contract for an Action's required resources, side effects, and runtime expectations. Implements platform-action-manifest (#110) and contributes to platform-portable-action (#109), platform-hermetic-execution (#111), platform-policy-enforced-action (#125), and platform-runtime-isolation (#126).",
+  "type": "object",
+  "required": [
+    "action_id",
+    "version",
+    "runtime",
+    "inputs",
+    "outputs",
+    "permissions"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "action_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "description": "Stable identifier for this action."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^v?\\d+\\.\\d+\\.\\d+(-[a-z0-9.-]+)?(\\+[a-z0-9.-]+)?$",
+      "description": "SemVer version of this action manifest."
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["os", "arch"],
+      "additionalProperties": false,
+      "properties": {
+        "os": {
+          "type": "string",
+          "enum": ["linux", "darwin", "windows"],
+          "description": "Required OS."
+        },
+        "arch": {
+          "type": "string",
+          "enum": ["amd64", "arm64", "386", "arm"],
+          "description": "Required CPU architecture."
+        },
+        "image": {
+          "type": "string",
+          "description": "OCI image reference (slice 3+)."
+        },
+        "command": {
+          "type": "string",
+          "description": "Shell command line."
+        },
+        "toolchain": {
+          "type": "string",
+          "description": "Required toolchain (go1.23, node20, python3.11, etc.)."
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "description": "Inputs map: name -> spec.",
+      "additionalProperties": {"$ref": "#/$defs/ioSpec"}
+    },
+    "outputs": {
+      "type": "object",
+      "description": "Outputs map: name -> spec.",
+      "additionalProperties": {"$ref": "#/$defs/ioSpec"}
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu_milli": {"type": "integer", "minimum": 100, "maximum": 64000},
+        "memory_mib": {"type": "integer", "minimum": 64, "maximum": 524288},
+        "gpu": {"type": "integer", "minimum": 0, "maximum": 8},
+        "disk_mib": {"type": "integer", "minimum": 0}
+      }
+    },
+    "environment": {
+      "type": "object",
+      "description": "Environment variables: name -> value (literal) or {$ref: ...}.",
+      "additionalProperties": true
+    },
+    "filesystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["isolated", "workspace", "shared"],
+          "default": "isolated",
+          "description": "isolated = fresh tmpfs per attempt; workspace = persistent work directory; shared = read-only bind of repo source."
+        },
+        "mounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["source", "target"],
+            "properties": {
+              "source": {"type": "string"},
+              "target": {"type": "string"},
+              "read_only": {"type": "boolean", "default": false}
+            }
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy": {
+          "type": "string",
+          "enum": ["deny", "allow-list"],
+          "default": "deny",
+          "description": "Hermetic Execution Standard (#111) default: deny."
+        },
+        "allow_list": {
+          "type": "array",
+          "items": {"type": "string", "format": "hostname"},
+          "description": "Required when policy=allow-list."
+        }
+      }
+    },
+    "secrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "required": {"type": "boolean", "default": false},
+          "scopes": {"type": "array", "items": {"type": "string"}},
+          "ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+        }
+      },
+      "description": "Zero-Secret CI Standard (#114): short-lived credentials only."
+    },
+    "permissions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["read", "write", "execute", "network", "secrets", "privileged"]
+      },
+      "minItems": 1,
+      "description": "Required permission set. 'privileged' triggers policy review."
+    },
+    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+    "retries": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": {"type": "integer", "minimum": 1, "maximum": 5},
+        "backoff": {"type": "string", "enum": ["none", "linear", "exponential"], "default": "exponential"},
+        "retry_on": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "code_failure",
+              "test_failure",
+              "flaky_test",
+              "runner_failure",
+              "infrastructure_failure",
+              "network_failure",
+              "dependency_failure",
+              "capacity_failure",
+              "policy_failure",
+              "credential_failure"
+            ]
+          },
+          "description": "Self-Healing CI Standard (#117): retry only on listed classes."
+        }
+      }
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean", "default": false},
+        "key_inputs": {"type": "array", "items": {"type": "string"}},
+        "scope": {"type": "string", "enum": ["worker-local", "organization", "global"], "default": "organization"}
+      }
+    },
+    "side_effects": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["network_egress", "filesystem_write", "deployment", "secret_consumption", "external_api_call", "state_mutation"]
+      },
+      "description": "Declared side effects. Policy rejects undeclared side effects."
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {"type": "string", "enum": ["none", "compensation", "version-revert"]},
+        "automatic": {"type": "boolean", "default": false},
+        "command": {"type": "string"}
+      }
+    },
+    "evidence_required": {
+      "type": "array",
+      "items": {"type": "string", "enum": ["build", "test", "typecheck", "lint", "security_scan", "artifact", "policy"]}
+    }
+  },
+  "$defs": {
+    "ioSpec": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string", "enum": ["string", "integer", "number", "boolean", "array", "object", "file", "secret"]},
+        "description": {"type": "string"},
+        "required": {"type": "boolean", "default": false},
+        "default": {},
+        "sensitive": {"type": "boolean", "default": false, "description": "If true, value is masked in logs."},
+        "content_type": {"type": "string", "description": "MIME type for file outputs."},
+        "path": {"type": "string", "description": "Filesystem path inside the worker's workspace."}
+      }
+    }
+  }
+}

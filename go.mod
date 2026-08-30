@@ -3,6 +3,7 @@ module github.com/JonasAbde/works-execution
 go 1.25.0
 
 require (
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.57.0
 )

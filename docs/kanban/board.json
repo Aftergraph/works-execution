@@ -1,0 +1,277 @@
+{
+  "schema_version": "1.0.0",
+  "board_name": "works-execution standards & slice 3",
+  "columns": ["backlog", "ready", "in_progress", "review", "done"],
+  "lanes": {
+    "registry": {
+      "description": "Standards registry & mapping documents (no code change)"
+    },
+    "infrastructure": {
+      "description": "Schema, CI gate, kanban CLI, JSON Schema validators"
+    },
+    "implementation": {
+      "description": "Code that enacts a specific standard (#109-130 + selected external)"
+    },
+    "governance": {
+      "description": "Agent declarations, audit events, evidence bundles, compliance posture"
+    },
+    "verification": {
+      "description": "Tests, chaos, conformance, attestation verification"
+    }
+  },
+  "cards": [
+    {
+      "id": "k-registry-001",
+      "title": "Standards registry (130 rows)",
+      "lane": "registry",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "docs/standards/registry.json exists, parses, contains 130 rows with status/owner/evidence fields populated. Total + by_status + by_domain summaries match.",
+      "evidence": ["docs/standards/registry.json"],
+      "created_at": "2026-08-31T01:18:00Z",
+      "updated_at": "2026-08-31T01:18:00Z"
+    },
+    {
+      "id": "k-registry-002",
+      "title": "Per-domain mapping docs (security, identity, quality, ssd, supply-chain, policy, observability)",
+      "lane": "registry",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "Each standards mapping doc covers every standard in its domain with applicability, status, gap, next-step file path, traceability table.",
+      "evidence": [
+        "docs/standards/mappings/security.md",
+        "docs/standards/mappings/identity.md",
+        "docs/standards/mappings/quality.md",
+        "docs/standards/mappings/ssd.md",
+        "docs/standards/mappings/supply-chain.md",
+        "docs/standards/mappings/policy.md",
+        "docs/standards/mappings/observability.md"
+      ],
+      "created_at": "2026-08-31T01:25:00Z",
+      "updated_at": "2026-08-31T01:27:00Z"
+    },
+    {
+      "id": "k-registry-003",
+      "title": "Per-domain mapping docs (ai, platform, ci, performance, platform-build, innovation)",
+      "lane": "registry",
+      "column": "ready",
+      "standard_ids": [],
+      "acceptance": "Six additional mapping docs covering ai, platform (22 standards), ci, performance, platform-build, innovation.",
+      "evidence": [],
+      "created_at": "2026-08-31T01:30:00Z",
+      "updated_at": "2026-08-31T01:30:00Z"
+    },
+    {
+      "id": "k-infra-001",
+      "title": "JSON Schema 2020-12 conformance suite",
+      "lane": "infrastructure",
+      "column": "done",
+      "standard_ids": ["json-schema-2020-12"],
+      "acceptance": "internal/standards/standards.go loads and validates documents against action-manifest, evidence-bundle, runner-identity, failure-classification, workflow-provenance. Negative tests confirm invalid docs are rejected.",
+      "evidence": [
+        "internal/standards/standards.go",
+        "internal/standards/standards_test.go",
+        "internal/standards/schemas/"
+      ],
+      "created_at": "2026-08-31T01:28:00Z",
+      "updated_at": "2026-08-31T01:29:00Z"
+    },
+    {
+      "id": "k-infra-002",
+      "title": "works-standards CLI",
+      "lane": "infrastructure",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "cmd/works-standards/main.go supports list/show/validate/gaps/summary. `make standards` runs the full gate.",
+      "evidence": [
+        "cmd/works-standards/main.go",
+        "Makefile"
+      ],
+      "created_at": "2026-08-31T01:30:00Z",
+      "updated_at": "2026-08-31T01:30:00Z"
+    },
+    {
+      "id": "k-infra-003",
+      "title": "works-kanban CLI + kanban board",
+      "lane": "infrastructure",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "cmd/works-kanban supports summary/lane/card/move/validate. internal/kanban/kanban.go enforces invariants. docs/kanban/board.json is the audit trail.",
+      "evidence": [
+        "cmd/works-kanban/main.go",
+        "internal/kanban/kanban.go",
+        "docs/kanban/board.json",
+        "docs/kanban/README.md"
+      ],
+      "created_at": "2026-08-31T01:30:00Z",
+      "updated_at": "2026-08-31T01:30:00Z"
+    },
+    {
+      "id": "k-gov-001",
+      "title": "Agent capability declaration: works-worker",
+      "lane": "governance",
+      "column": "done",
+      "standard_ids": [
+        "iso-iec-42001-2023",
+        "iso-iec-23894-2023",
+        "nist-ai-rmf-1.0",
+        "mitre-atlas",
+        "platform-policy-enforced-action",
+        "platform-action-attestation",
+        "platform-execution-evidence"
+      ],
+      "acceptance": "docs/agents/worker.md declares identity, purpose, owner, model, capabilities, tools, permissions, authority, risk class, allowed/prohibited actions, escalation, human-approval requirements, memory scope, evidence requirements, evaluation criteria, termination conditions for the slice-1+2 works-worker.",
+      "evidence": ["docs/agents/worker.md"],
+      "created_at": "2026-08-31T01:22:00Z",
+      "updated_at": "2026-08-31T01:22:00Z"
+    },
+    {
+      "id": "k-gov-002",
+      "title": "AI/agent glossary",
+      "lane": "governance",
+      "column": "done",
+      "standard_ids": ["iso-iec-22989-2022"],
+      "acceptance": "docs/agents/glossary.md defines Action, Artifact, Attempt, Capability manifest, Evidence, Evidence bundle, Lease, Node, Readiness, Work, Worker.",
+      "evidence": ["docs/agents/glossary.md"],
+      "created_at": "2026-08-31T01:23:00Z",
+      "updated_at": "2026-08-31T01:23:00Z"
+    },
+    {
+      "id": "k-impl-001",
+      "title": "Action Capability Manifest admission (#110)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["platform-action-manifest", "platform-policy-enforced-action"],
+      "acceptance": "services/api/admission.go validates incoming works against the action-manifest schema before persistence. Reject 400 with field-level errors. Add tests in tests/api/admission_test.go.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-002",
+      "title": "Runner Identity SPIFFE format (#121)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["platform-runner-identity", "spiffe", "spiffe-id"],
+      "acceptance": "Workers mint spiffe://works-execution/ns/<tenant>/sa/<worker-id> at enrollment. Identity validated by services/api/auth.go. Add tests in tests/identity/.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-003",
+      "title": "Zero-Secret worker enrollment (#114)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["platform-zero-secret", "openid-connect"],
+      "acceptance": "Replace static WORKS_API auth with OIDC token exchange (or dev-mode SPIFFE-signed enrollment token). Reject static API keys. Add tests in tests/auth/.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-004",
+      "title": "Hermetic Execution default (#111)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["platform-hermetic-execution", "platform-runtime-isolation"],
+      "acceptance": "Subprocess sandbox applies default-deny: network=deny, secrets=none, FS=isolated, permissions=minimal. Override requires explicit capability manifest entry. Add tests in tests/hermetic/.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-005",
+      "title": "Workflow Provenance attestation (#122)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["platform-workflow-provenance", "platform-action-attestation", "slsa-1.2"],
+      "acceptance": "services/provenance/ produces SLSA-style provenance per work matching the workflow-provenance.schema.json. Exposed via GET /v1/works/{id}/provenance. Signed. Tests in tests/provenance/.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-006",
+      "title": "Evidence Bundle endpoint (#113, #124)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["platform-evidence-first", "platform-execution-evidence"],
+      "acceptance": "services/evidence/ produces signed JSON bundle matching evidence-bundle.schema.json. Exposed via GET /v1/works/{id}/evidence. Tests in tests/evidence/.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-007",
+      "title": "Self-Healing failure classifier (#117)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["platform-self-healing", "platform-autonomous-remediation"],
+      "acceptance": "services/classifier/ classifies each failure into the 10 categories from failure-classification.schema.json. Per-class retry policy + autonomous remediation set enforced. Tests in tests/classifier/.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-008",
+      "title": "OpenTelemetry observability (#54, #65, #66)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["opentelemetry", "otel-semconv", "openmetrics", "prometheus-exposition"],
+      "acceptance": "services/observability/ exports W3C trace context + Prometheus metrics at /metrics. 32 metrics from the pack mapped per observability.md. Tests in tests/observability/.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-009",
+      "title": "Capability-aware scheduler (#116, #118)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["platform-intelligent-scheduling", "platform-content-addressed"],
+      "acceptance": "internal/scheduler/ scores eligible workers on cache locality + cost + queue + trust; explainability record per assignment. Tests in tests/scheduler/.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-010",
+      "title": "SBOM + CycloneDX emission (#59, #61)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["spdx-3.0", "cyclonedx", "iso-iec-5962-2021", "eu-cra"],
+      "acceptance": "ci/local-runner/sbom.sh emits SPDX 3.0 + CycloneDX 1.6 per release. Stored under artifacts/sbom/. Tests in tests/supply_chain/sbom_test.go.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-011",
+      "title": "OPA policy bundle (#96, #97)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["opa", "rego", "platform-policy-enforced-action"],
+      "acceptance": "First Rego bundle (e.g. lease_grant.rego) enforces a non-trivial rule at the API. Bundle evaluated by services/api/policy.go. Tests in tests/policy/.",
+      "evidence": []
+    },
+    {
+      "id": "k-impl-012",
+      "title": "CloudEvents audit stream (#77, #67)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": ["cloudevents", "dora-metrics"],
+      "acceptance": "Every Work state transition emits a CloudEvents v1.0 message. Listener at /v1/audit-events. DORA metrics derived (deployment frequency, lead time, change failure rate, MTTR). Tests in tests/audit/.",
+      "evidence": []
+    },
+    {
+      "id": "k-verif-001",
+      "title": "Slice 1+2 regression gate",
+      "lane": "verification",
+      "column": "done",
+      "standard_ids": ["iso-iec-ieee-29119"],
+      "acceptance": "go test ./... green, go test -tags=e2e green, go test -tags=e2e_chaos green. No regression from slice 3 governance layer.",
+      "evidence": [
+        "go test ./... output (cached)",
+        "go test -tags=e2e ./e2e/",
+        "go test -tags=e2e_chaos ./e2e/"
+      ],
+      "created_at": "2026-08-31T01:18:00Z",
+      "updated_at": "2026-08-31T01:29:00Z"
+    },
+    {
+      "id": "k-verif-002",
+      "title": "Standards conformance suite",
+      "lane": "verification",
+      "column": "done",
+      "standard_ids": ["json-schema-2020-12"],
+      "acceptance": "internal/standards/standards_test.go covers positive + negative validation for all 5 schemas. 13 tests passing.",
+      "evidence": [
+        "internal/standards/standards_test.go",
+        "make standards-validate output"
+      ],
+      "created_at": "2026-08-31T01:29:00Z",
+      "updated_at": "2026-08-31T01:29:00Z"
+    }
+  ]
+}

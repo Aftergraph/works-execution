@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://works-execution.dev/schemas/runner-identity.schema.json",
+  "title": "Runner Identity Record",
+  "description": "Runner identity and capability advertisement, per Runner Identity Standard (#121). Slice 3 mints these at worker enrollment; the slice 1+2 worker has an implicit version of this without the SPIFFE ID.",
+  "type": "object",
+  "required": [
+    "runner_id",
+    "trust_class",
+    "capabilities",
+    "lifecycle_state",
+    "enrolled_at"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "runner_id": {
+      "type": "string",
+      "pattern": "^wrkr_[a-z0-9_-]{1,64}$"
+    },
+    "spiffe_id": {
+      "type": "string",
+      "pattern": "^spiffe://[a-z][a-z0-9.-]*/ns/[a-z0-9-]+/sa/[a-z0-9_-]+$",
+      "description": "Slice 3: SPIFFE ID format."
+    },
+    "trust_class": {
+      "type": "string",
+      "enum": ["untrusted", "standard", "privileged"],
+      "default": "standard"
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["os", "arch"],
+      "properties": {
+        "os": {"type": "array", "items": {"type": "string", "enum": ["linux", "darwin", "windows"]}},
+        "arch": {"type": "array", "items": {"type": "string", "enum": ["amd64", "arm64", "386", "arm"]}},
+        "cpu_milli": {"type": "integer", "minimum": 100},
+        "memory_mib": {"type": "integer", "minimum": 64},
+        "gpu": {"type": "integer", "minimum": 0},
+        "toolchains": {"type": "array", "items": {"type": "string"}},
+        "labels": {"type": "array", "items": {"type": "string"}, "description": "GitHub-Actions-compatible labels for compat mode."}
+      }
+    },
+    "lifecycle_state": {
+      "type": "string",
+      "enum": ["pending", "active", "draining", "retired"],
+      "default": "pending"
+    },
+    "enrolled_at": {"type": "string", "format": "date-time"},
+    "last_heartbeat_at": {"type": "string", "format": "date-time"},
+    "attestation": {
+      "type": "object",
+      "description": "Optional hardware/software attestation (TPM, TEE, etc.).",
+      "properties": {
+        "type": {"type": "string", "enum": ["tpm2", "sev-snp", "tdx", "nitro", "software-only"]},
+        "evidence": {"type": "string", "format": "byte"},
+        "certificates": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "audit": {
+      "type": "object",
+      "properties": {
+        "jobs_completed": {"type": "integer", "minimum": 0},
+        "jobs_failed": {"type": "integer", "minimum": 0},
+        "last_incident_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

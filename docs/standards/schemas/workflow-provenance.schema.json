@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://works-execution.dev/schemas/workflow-provenance.schema.json",
+  "title": "Workflow Provenance",
+  "description": "SLSA / in-toto-style provenance for a single Work execution. Implements Workflow Provenance Standard (#122) and Action Attestation Standard (#123).",
+  "type": "object",
+  "required": [
+    "predicateType",
+    "subject",
+    "predicate"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "predicateType": {
+      "type": "string",
+      "enum": [
+        "https://slsa.dev/provenance/v1",
+        "https://in-toto.io/attestation/v0.1",
+        "https://works-execution.dev/attestation/workflow-provenance/v1"
+      ]
+    },
+    "subject": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "digest"],
+        "properties": {
+          "name": {"type": "string", "description": "Work ID or artifact path."},
+          "digest": {
+            "type": "object",
+            "properties": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+          }
+        }
+      }
+    },
+    "predicate": {
+      "type": "object",
+      "required": ["builder", "invocation", "materials"],
+      "properties": {
+        "builder": {
+          "type": "object",
+          "required": ["id"],
+          "properties": {
+            "id": {"type": "string", "description": "URI identifying the control plane."},
+            "version": {"type": "string"}
+          }
+        },
+        "invocation": {
+          "type": "object",
+          "properties": {
+            "configSource": {"$ref": "#/$defs/source"},
+            "parameters": {"type": "object"},
+            "environment": {"type": "object"}
+          }
+        },
+        "materials": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/material"}
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "buildStartedOn": {"type": "string", "format": "date-time"},
+            "buildFinishedOn": {"type": "string", "format": "date-time"},
+            "completeness": {
+              "type": "object",
+              "properties": {
+                "arguments": {"type": "boolean"},
+                "environment": {"type": "boolean"},
+                "materials": {"type": "boolean"}
+              }
+            },
+            "reproducible": {"type": "boolean"}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "properties": {
+        "uri": {"type": "string"},
+        "digest": {"type": "object", "properties": {"sha256": {"type": "string"}}}
+        ,
+        "entryPoint": {"type": "string"}
+      }
+    },
+    "material": {
+      "type": "object",
+      "required": ["uri"],
+      "properties": {
+        "uri": {"type": "string"},
+        "digest": {"type": "object", "properties": {"sha256": {"type": "string"}}}
+      }
+    }
+  }
+}

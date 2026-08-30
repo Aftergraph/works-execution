@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://works-execution.dev/schemas/failure-classification.schema.json",
+  "title": "Failure Classification Taxonomy",
+  "description": "Standard taxonomy of failure classes used by the Self-Healing CI Standard (#117) and Failure Classifier. Each class has a deterministic recovery policy in slice 3+.",
+  "type": "object",
+  "required": ["class", "retryable", "max_retries"],
+  "additionalProperties": false,
+  "properties": {
+    "class": {
+      "type": "string",
+      "enum": [
+        "code_failure",
+        "test_failure",
+        "flaky_test",
+        "runner_failure",
+        "infrastructure_failure",
+        "network_failure",
+        "dependency_failure",
+        "capacity_failure",
+        "policy_failure",
+        "credential_failure",
+        "unknown"
+      ]
+    },
+    "retryable": {"type": "boolean"},
+    "max_retries": {"type": "integer", "minimum": 0, "maximum": 5},
+    "backoff": {"type": "string", "enum": ["none", "linear", "exponential"], "default": "exponential"},
+    "human_required": {"type": "boolean", "default": false},
+    "autonomous_remediation": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Allowed autonomous actions (per Autonomous Remediation Standard #129)."
+    }
+  }
+}

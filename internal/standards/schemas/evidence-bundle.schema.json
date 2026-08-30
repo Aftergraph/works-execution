@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://works-execution.dev/schemas/evidence-bundle.schema.json",
+  "title": "Execution Evidence Bundle",
+  "description": "Durable, signed, content-addressed evidence bundle for a single Work execution. Implements platform-evidence-first (#113), platform-execution-evidence (#124), and is the input to Workflow Provenance (#122) and Action Attestation (#123).",
+  "type": "object",
+  "required": [
+    "bundle_id",
+    "work_id",
+    "created_at",
+    "summary",
+    "components"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^evb_[a-f0-9]{32}$",
+      "description": "Content-derived bundle identifier (sha256 of canonicalized JSON, truncated)."
+    },
+    "work_id": {"type": "string", "pattern": "^wrk_[a-f0-9]{32}$"},
+    "policy_version": {"type": "string", "description": "Policy bundle version that admitted this work."},
+    "runner": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "string"},
+        "spiffe_id": {"type": "string", "description": "Slice 3: spiffe://..."},
+        "trust_class": {"type": "string", "enum": ["untrusted", "standard", "privileged"]}
+      }
+    },
+    "created_at": {"type": "string", "format": "date-time"},
+    "summary": {
+      "type": "object",
+      "required": ["result"],
+      "properties": {
+        "result": {"type": "string", "enum": ["SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED"]},
+        "started_at": {"type": "string", "format": "date-time"},
+        "finished_at": {"type": "string", "format": "date-time"},
+        "duration_ms": {"type": "integer", "minimum": 0}
+      }
+    },
+    "components": {
+      "type": "object",
+      "required": ["attempts", "artifacts", "evidence"],
+      "properties": {
+        "attempts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/attempt"}
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/artifactRef"}
+        },
+        "evidence": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/evidence"}
+        },
+        "leases": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/lease"}
+        }
+      }
+    },
+    "signatures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/signature"},
+      "description": "Sigstore-style signatures over bundle_id."
+    }
+  },
+  "$defs": {
+    "attempt": {
+      "type": "object",
+      "required": ["id", "node_id", "status"],
+      "properties": {
+        "id": {"type": "string"},
+        "node_id": {"type": "string"},
+        "worker_id": {"type": "string"},
+        "started_at": {"type": "string", "format": "date-time"},
+        "finished_at": {"type": "string", "format": "date-time"},
+        "exit_code": {"type": "integer"},
+        "status": {"type": "string", "enum": ["running", "succeeded", "failed", "cancelled", "timed_out"]},
+        "command": {"type": "string", "description": "Redacted of secrets."},
+        "lease_id": {"type": "string"}
+      }
+    },
+    "artifactRef": {
+      "type": "object",
+      "required": ["id", "digest", "size", "path"],
+      "properties": {
+        "id": {"type": "string"},
+        "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "size": {"type": "integer", "minimum": 0},
+        "mime_type": {"type": "string"},
+        "node_id": {"type": "string"},
+        "path": {"type": "string"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["id", "type", "result"],
+      "properties": {
+        "id": {"type": "string"},
+        "node_id": {"type": "string"},
+        "attempt_id": {"type": "string"},
+        "type": {"type": "string", "enum": ["build", "test", "typecheck", "lint", "security_scan", "artifact", "policy"]},
+        "result": {"type": "string", "enum": ["pass", "fail", "warn", "skip"]},
+        "recorded_at": {"type": "string", "format": "date-time"},
+        "signer": {"type": "string"},
+        "environment": {"type": "string"},
+        "details": {"type": "object"}
+      }
+    },
+    "lease": {
+      "type": "object",
+      "required": ["id", "status"],
+      "properties": {
+        "id": {"type": "string"},
+        "node_id": {"type": "string"},
+        "worker_id": {"type": "string"},
+        "granted_at": {"type": "string", "format": "date-time"},
+        "expires_at": {"type": "string", "format": "date-time"},
+        "last_beat_at": {"type": "string", "format": "date-time"},
+        "status": {"type": "string", "enum": ["ACTIVE", "EXPIRED", "REVOKED", "RELEASED"]}
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["key_id", "algorithm", "value"],
+      "properties": {
+        "key_id": {"type": "string"},
+        "algorithm": {"type": "string", "enum": ["ed25519", "ecdsa-p256", "rsa-pss"]},
+        "value": {"type": "string", "description": "Base64 signature over canonicalized bundle."},
+        "signed_at": {"type": "string", "format": "date-time"},
+        "certificate": {"type": "string", "description": "Optional x509 chain (PEM)."}
+      }
+    }
+  }
+}
