@@ -1,0 +1,33 @@
+version: 1
+
+work:
+  verify:
+    triggers:
+      - pull_request
+
+    requirements:
+      confidence: production
+      os: linux
+      arch: amd64
+
+    nodes:
+      install:
+        run: pnpm install --frozen-lockfile
+        cache: true
+
+      lint:
+        needs: [install]
+        run: pnpm lint
+
+      test:
+        needs: [install]
+        run: pnpm test
+
+      build:
+        needs: [install]
+        run: pnpm build
+
+      verify:
+        needs: [lint, test, build]
+        evidence:
+          required: true

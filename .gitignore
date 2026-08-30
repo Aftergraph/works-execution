@@ -1,0 +1,6 @@
+bin/
+*.db
+*.db-journal
+*.test
+.idea/
+.vscode/

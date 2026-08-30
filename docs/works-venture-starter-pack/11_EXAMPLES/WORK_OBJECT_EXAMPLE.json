@@ -1,0 +1,31 @@
+{
+  "id": "wrk_01J...",
+  "source": {
+    "type": "github_pull_request",
+    "repository": "acme/platform",
+    "revision": "abc123"
+  },
+  "objective": {
+    "type": "verify_change"
+  },
+  "requirements": {
+    "confidence": "production",
+    "max_cost_usd": 2.0
+  },
+  "state": "QUEUED",
+  "policy": {
+    "production_access": false,
+    "secrets_scope": [
+      "ci-read"
+    ]
+  },
+  "graph": {
+    "nodes": [
+      "install",
+      "lint",
+      "test",
+      "build",
+      "verify"
+    ]
+  }
+}
