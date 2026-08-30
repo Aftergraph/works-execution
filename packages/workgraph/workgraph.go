@@ -167,6 +167,60 @@ type Evidence struct {
 	Details     map[string]any `json:"details,omitempty"`
 }
 
+// LeaseStatus is the lifecycle state of a Lease.
+type LeaseStatus string
+
+const (
+	LeaseActive   LeaseStatus = "ACTIVE"
+	LeaseExpired  LeaseStatus = "EXPIRED"  // terminal — reaper detected timeout
+	LeaseRevoked  LeaseStatus = "REVOKED"  // terminal — explicit cancellation
+	LeaseReleased LeaseStatus = "RELEASED" // terminal — worker voluntarily gave it back
+)
+
+// IsTerminal reports whether the lease is in a terminal state.
+func (s LeaseStatus) IsTerminal() bool {
+	switch s {
+	case LeaseExpired, LeaseRevoked, LeaseReleased:
+		return true
+	}
+	return false
+}
+
+// Lease is the time-bounded authorization for a worker to execute a node.
+// While ACTIVE, only the worker holding the lease may transition the node.
+// On expiry or revocation, the node becomes ready for re-leasing.
+//
+// See RFC-0001 (docs/rfcs/RFC-0001-slice-2-leases-and-recovery.md) for the
+// full state machine and TTL math.
+type Lease struct {
+	ID         string      `json:"id"`
+	WorkID     string      `json:"work_id"`
+	NodeID     string      `json:"node_id"`
+	WorkerID   string      `json:"worker_id"`
+	AttemptID  string      `json:"attempt_id"`
+	GrantedAt  time.Time   `json:"granted_at"`
+	ExpiresAt  time.Time   `json:"expires_at"`
+	LastBeatAt time.Time   `json:"last_beat_at"`
+	Status     LeaseStatus `json:"status"`
+}
+
+// ValidateLeaseTransition reports whether moving from `from` to `to` is
+// permitted. The only allowed transitions out of ACTIVE are to terminal
+// states (EXPIRED, REVOKED, RELEASED). All other transitions are denied.
+func ValidateLeaseTransition(from, to LeaseStatus) bool {
+	if from == to {
+		return false
+	}
+	if from.IsTerminal() {
+		return false
+	}
+	switch to {
+	case LeaseExpired, LeaseRevoked, LeaseReleased:
+		return true
+	}
+	return false
+}
+
 // Work is the durable execution object. It is the source of execution truth.
 type Work struct {
 	ID          string            `json:"id"`
@@ -238,10 +292,11 @@ func (w *Work) ValidateTransition(to State) error {
 
 // ReadyNodes returns the IDs of nodes in the graph that are ready to execute:
 // all their dependencies are SUCCEEDED (or the node has no dependencies), the
-// Work is in QUEUED or RUNNING, and the node has no in-flight attempt.
+// Work is in QUEUED or RUNNING, the node has no in-flight attempt, and no
+// active lease exists for the node.
 //
 // This is the scheduler's primary input.
-func (w *Work) ReadyNodes() []string {
+func (w *Work) ReadyNodes(activeLeases map[string]bool) []string {
 	if w.State != StateQueued && w.State != StateRunning {
 		return nil
 	}
@@ -265,6 +320,11 @@ func (w *Work) ReadyNodes() []string {
 		if succeeded[id] || inFlight[id] {
 			continue
 		}
+		// A node with an active lease is NOT ready — another worker owns it.
+		// The lease holder must complete or release before this node re-queues.
+		if activeLeases[id] {
+			continue
+		}
 		depsOK := true
 		for _, dep := range n.Needs {
 			if !succeeded[dep] {
@@ -277,4 +337,11 @@ func (w *Work) ReadyNodes() []string {
 		}
 	}
 	return ready
+}
+
+// ReadyNodesNoLeases is a convenience wrapper for callers that don't have a
+// lease view (tests, slice-1-style introspection). Equivalent to
+// ReadyNodes(nil).
+func (w *Work) ReadyNodesNoLeases() []string {
+	return w.ReadyNodes(nil)
 }

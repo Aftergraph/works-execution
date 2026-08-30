@@ -8,6 +8,7 @@ all: vet test build
 build:
 	mkdir -p $(BIN)
 	$(GO) build -o $(BIN)/works        ./cmd/works
+	$(GO) build -o $(BIN)/works-api   ./cmd/works-api
 	$(GO) build -o $(BIN)/works-worker ./cmd/works-worker
 
 vet:

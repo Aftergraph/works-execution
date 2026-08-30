@@ -31,7 +31,11 @@ func main() {
 	}
 	defer st.Close()
 
-	srv := &api.Server{Store: st, Logger: logger}
+	srv := &api.Server{
+		Store:        st,
+		Logger:       logger,
+		ArtifactsDir: envOr("WORKS_ARTIFACTS", ""),
+	}
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Routes(),
@@ -40,6 +44,17 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Launch the lease-reaper. Slice 2: lost-worker detection target is <30s,
+	// achieved by TTL=25s + reaper interval=5s (worst case 30s).
+	reaperCtx, cancelReaper := context.WithCancel(ctx)
+	defer cancelReaper()
+	go func() {
+		if err := api.RunLeaseReaper(reaperCtx, st, api.ReaperConfig{}); err != nil &&
+			!errors.Is(err, context.Canceled) {
+			logger.Printf("reaper exited: %v", err)
+		}
+	}()
 
 	go func() {
 		<-ctx.Done()

@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
@@ -21,16 +23,37 @@ import (
 type Server struct {
 	Store  store.Store
 	Logger *log.Logger
+	// ArtifactsDir is the directory where workers write artifact/log files.
+	// Required for the GET /v1/works/{id}/nodes/{n}/logs endpoint. Optional
+	// in V1; when nil, the log endpoint returns 503.
+	ArtifactsDir string
 }
 
 // Routes returns an http.Handler with the public API mounted under /v1.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/works", s.worksHandler)             // POST = create, GET = list
-	mux.HandleFunc("/v1/works/", s.workItemHandler)         // GET, POST .../cancel|queue
+	mux.HandleFunc("/v1/works", s.worksHandler)               // POST = create, GET = list
+	mux.HandleFunc("/v1/works/", s.workPathHandler)           // GET, POST .../cancel|queue, GET .../nodes/{n}/logs
 	mux.HandleFunc("/v1/workers/ready", s.readyNodesHandler) // scheduler poll
+	mux.HandleFunc("/v1/leases", s.leasesHandler)            // POST = grant
+	mux.HandleFunc("/v1/leases/", s.leaseItemHandler)         // POST .../{action}
 	mux.HandleFunc("/healthz", s.healthz)
 	return s.recoverer(mux)
+}
+
+// workPathHandler routes all paths under /v1/works/. It splits out:
+//   /v1/works/{id}                       -> GET workItemHandler
+//   /v1/works/{id}/cancel|queue          -> POST workItemHandler
+//   /v1/works/{id}/nodes/{n}/logs        -> GET workLogsHandler
+func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/v1/works/")
+	parts := strings.Split(path, "/")
+	// parts: [id] OR [id, action] OR [id, "nodes", nodeID, "logs"]
+	if len(parts) >= 2 && parts[1] == "nodes" {
+		s.workLogsHandler(w, r)
+		return
+	}
+	s.workItemHandler(w, r)
 }
 
 // recoverer wraps a handler with a panic guard.
@@ -243,14 +266,20 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 		TimeoutS int               `json:"timeout_s,omitempty"`
 	}
 	var items []readyItem
-	for _, w := range list {
-		if w.State != workgraph.StateQueued && w.State != workgraph.StateRunning {
+	for _, work := range list {
+		if work.State != workgraph.StateQueued && work.State != workgraph.StateRunning {
 			continue
 		}
-		for _, nid := range w.ReadyNodes() {
-			n := w.Graph.Nodes[nid]
+		// Honor active leases: don't return a node another worker is leasing.
+		active, err := s.Store.ActiveLeasesByWorkID(r.Context(), work.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "leases_failed", err.Error())
+			return
+		}
+		for _, nid := range work.ReadyNodes(active) {
+			n := work.Graph.Nodes[nid]
 			items = append(items, readyItem{
-				WorkID:   w.ID,
+				WorkID:   work.ID,
 				NodeID:   nid,
 				Run:      n.Run,
 				Env:      n.Env,
@@ -265,4 +294,49 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "count": len(items)})
+}
+
+// workLogsHandler streams the artifact log for a (work_id, node_id) pair.
+// Slice 2: serves the on-disk artifact file written by the worker. Slice 3
+// will switch to true streaming-from-worker.
+//
+// Path: /v1/works/{id}/nodes/{n}/logs
+func (s *Server) workLogsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", r.Method)
+		return
+	}
+	if s.ArtifactsDir == "" {
+		writeError(w, http.StatusServiceUnavailable, "logs_unavailable", "ArtifactsDir not configured")
+		return
+	}
+	// Path: /v1/works/{id}/nodes/{n}/logs
+	path := strings.TrimPrefix(r.URL.Path, "/v1/works/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 4 || parts[1] != "nodes" || parts[3] != "logs" {
+		writeError(w, http.StatusNotFound, "not_found", r.URL.Path)
+		return
+	}
+	workID, nodeID := parts[0], parts[2]
+
+	// Verify the work exists.
+	if _, err := s.Store.GetWork(r.Context(), workID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "work_not_found", workID)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "get_failed", err.Error())
+		return
+	}
+
+	logPath := filepath.Join(s.ArtifactsDir, workID, nodeID+".log")
+	if _, err := os.Stat(logPath); err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, "logs_not_found", logPath)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "stat_failed", err.Error())
+		return
+	}
+	http.ServeFile(w, r, logPath)
 }

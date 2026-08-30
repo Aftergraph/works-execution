@@ -39,6 +39,18 @@ type Store interface {
 	AppendAttempt(ctx context.Context, workID string, a workgraph.Attempt) (*workgraph.Work, error)
 	AppendEvidence(ctx context.Context, workID string, e workgraph.Evidence) (*workgraph.Work, error)
 	AppendArtifact(ctx context.Context, workID string, art workgraph.Artifact) (*workgraph.Work, error)
+
+	// Lease operations (slice 2).
+	GrantLease(ctx context.Context, workID, nodeID, workerID string, ttl time.Duration) (*workgraph.Lease, *workgraph.Attempt, error)
+	RenewLease(ctx context.Context, leaseID string, ttl time.Duration) (*workgraph.Lease, error)
+	CompleteLease(ctx context.Context, leaseID string, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error)
+	ReleaseLease(ctx context.Context, leaseID, reason string) error
+	RevokeLease(ctx context.Context, leaseID, reason string) error
+	GetLease(ctx context.Context, leaseID string) (*workgraph.Lease, error)
+	ListExpiredLeases(ctx context.Context, limit int) ([]*workgraph.Lease, error)
+	MarkAttemptCancelled(ctx context.Context, attemptID, reason string) error
+	ActiveLeasesByWorkID(ctx context.Context, workID string) (map[string]bool, error)
+
 	Close() error
 }
 
@@ -123,6 +135,26 @@ CREATE TABLE IF NOT EXISTS work_evidence (
 CREATE INDEX IF NOT EXISTS idx_attempts_work_id ON work_attempts(work_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_work_id ON work_artifacts(work_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_work_id ON work_evidence(work_id);
+
+-- slice 2: leases
+CREATE TABLE IF NOT EXISTS work_leases (
+    id          TEXT PRIMARY KEY,
+    work_id     TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+    node_id     TEXT NOT NULL,
+    worker_id   TEXT NOT NULL,
+    attempt_id  TEXT NOT NULL,
+    granted_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    last_beat_at TEXT NOT NULL,
+    status      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_leases_status_expires ON work_leases(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_leases_work_node ON work_leases(work_id, node_id);
+CREATE INDEX IF NOT EXISTS idx_leases_attempt ON work_leases(attempt_id);
+
+-- slice 2 v2 -> v3: add lease_id column to work_attempts (nullable).
+-- ALTER TABLE ADD COLUMN is idempotent in modernc/sqlite: it returns an error
+-- if the column already exists. We detect first via pragma_table_info.
 `
 
 func (s *SQLiteStore) migrate() error {
@@ -130,15 +162,36 @@ func (s *SQLiteStore) migrate() error {
 		return err
 	}
 	// Migration v1 -> v2: convert work_artifacts to composite (work_id, id) PK.
-	// The legacy schema had `id` as the sole primary key, which caused
-	// identical-content artifacts across multiple works to collide. Detect
-	// the legacy shape by checking if `id` is a PRIMARY KEY.
 	if s.workArtifactsNeedsMigration() {
 		if err := s.migrateWorkArtifacts(); err != nil {
 			return fmt.Errorf("migrate work_artifacts: %w", err)
 		}
 	}
+	// Migration v2 -> v3: add lease_id column to work_attempts.
+	if s.workAttemptsNeedsLeaseIDColumn() {
+		if _, err := s.db.Exec(`ALTER TABLE work_attempts ADD COLUMN lease_id TEXT`); err != nil {
+			return fmt.Errorf("migrate work_attempts.lease_id: %w", err)
+		}
+	}
 	return nil
+}
+
+func (s *SQLiteStore) workAttemptsNeedsLeaseIDColumn() bool {
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('work_attempts')`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false
+		}
+		if name == "lease_id" {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *SQLiteStore) workArtifactsNeedsMigration() bool {

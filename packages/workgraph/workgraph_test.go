@@ -192,7 +192,7 @@ func TestReadyNodes_AllowsEntryNodes(t *testing.T) {
 		"c": {ID: "c", Run: "true", Needs: []string{"a", "b"}},
 	})
 	w.State = workgraph.StateQueued
-	ready := w.ReadyNodes()
+	ready := w.ReadyNodesNoLeases()
 	if !containsSlice(ready, "a") || !containsSlice(ready, "b") {
 		t.Errorf("expected a,b in ready, got %v", ready)
 	}
@@ -210,7 +210,7 @@ func TestReadyNodes_AdvancesAfterSuccess(t *testing.T) {
 	w.Attempts = []workgraph.Attempt{
 		{ID: workgraph.NewID("att"), NodeID: "a", Status: "succeeded"},
 	}
-	ready := w.ReadyNodes()
+	ready := w.ReadyNodesNoLeases()
 	if !containsSlice(ready, "b") {
 		t.Errorf("expected b ready after a succeeded, got %v", ready)
 	}
@@ -224,7 +224,7 @@ func TestReadyNodes_SkipsInFlight(t *testing.T) {
 	w.Attempts = []workgraph.Attempt{
 		{ID: workgraph.NewID("att"), NodeID: "a", Status: "running"},
 	}
-	ready := w.ReadyNodes()
+	ready := w.ReadyNodesNoLeases()
 	if containsSlice(ready, "a") {
 		t.Errorf("did not expect a in ready while in flight, got %v", ready)
 	}
@@ -235,9 +235,75 @@ func TestReadyNodes_NotReadyFromWrongState(t *testing.T) {
 		"a": {ID: "a", Run: "true"},
 	})
 	w.State = workgraph.StateCreated
-	ready := w.ReadyNodes()
+	ready := w.ReadyNodesNoLeases()
 	if len(ready) != 0 {
 		t.Errorf("expected no ready nodes from CREATED, got %v", ready)
+	}
+}
+
+// --- Lease tests ---------------------------------------------------------
+
+func TestLeaseStatus_IsTerminal(t *testing.T) {
+	cases := map[workgraph.LeaseStatus]bool{
+		workgraph.LeaseActive:   false,
+		workgraph.LeaseExpired:  true,
+		workgraph.LeaseRevoked:  true,
+		workgraph.LeaseReleased: true,
+	}
+	for s, want := range cases {
+		if got := s.IsTerminal(); got != want {
+			t.Errorf("LeaseStatus(%s).IsTerminal() = %v, want %v", s, got, want)
+		}
+	}
+}
+
+func TestValidateLeaseTransition_OnlyToTerminalFromActive(t *testing.T) {
+	// ACTIVE -> any terminal state is allowed.
+	for _, to := range []workgraph.LeaseStatus{
+		workgraph.LeaseExpired, workgraph.LeaseRevoked, workgraph.LeaseReleased,
+	} {
+		if !workgraph.ValidateLeaseTransition(workgraph.LeaseActive, to) {
+			t.Errorf("expected ACTIVE -> %s allowed", to)
+		}
+	}
+	// Self-transitions denied.
+	for _, s := range []workgraph.LeaseStatus{
+		workgraph.LeaseActive, workgraph.LeaseExpired, workgraph.LeaseRevoked, workgraph.LeaseReleased,
+	} {
+		if workgraph.ValidateLeaseTransition(s, s) {
+			t.Errorf("expected self-transition %s -> %s denied", s, s)
+		}
+	}
+	// From terminal states, nothing is allowed.
+	for _, from := range []workgraph.LeaseStatus{
+		workgraph.LeaseExpired, workgraph.LeaseRevoked, workgraph.LeaseReleased,
+	} {
+		for _, to := range []workgraph.LeaseStatus{
+			workgraph.LeaseActive, workgraph.LeaseExpired, workgraph.LeaseRevoked, workgraph.LeaseReleased,
+		} {
+			if workgraph.ValidateLeaseTransition(from, to) {
+				t.Errorf("expected %s -> %s denied (terminal)", from, to)
+			}
+		}
+	}
+}
+
+func TestReadyNodes_HonorsActiveLease(t *testing.T) {
+	w := mustWork(t, map[string]workgraph.Node{
+		"a": {ID: "a", Run: "true"},
+	})
+	w.State = workgraph.StateQueued
+	// With an active lease on "a", the node is NOT ready.
+	if ready := w.ReadyNodes(map[string]bool{"a": true}); len(ready) != 0 {
+		t.Errorf("expected a to be excluded by active lease, got %v", ready)
+	}
+	// With an empty lease map, "a" is ready.
+	if ready := w.ReadyNodes(map[string]bool{}); len(ready) != 1 || ready[0] != "a" {
+		t.Errorf("expected a ready with no leases, got %v", ready)
+	}
+	// ReadyNodesNoLeases is equivalent to ReadyNodes(nil).
+	if r1, r2 := w.ReadyNodesNoLeases(), w.ReadyNodes(nil); len(r1) != len(r2) || (len(r1) > 0 && r1[0] != r2[0]) {
+		t.Errorf("ReadyNodesNoLeases and ReadyNodes(nil) differ: %v vs %v", r1, r2)
 	}
 }
 
