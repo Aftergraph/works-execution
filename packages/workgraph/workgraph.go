@@ -79,14 +79,56 @@ func CanTransition(from, to State) bool {
 var ErrInvalidTransition = errors.New("invalid state transition")
 
 // Node is a single executable step inside a Work's graph.
+//
+// Capability fields (Permissions, SideEffects, Retries, Cache) describe the
+// per-node action-manifest contract. They are optional on the wire; admission
+// (internal/manifest) fills safe defaults and rejects undeclared side effects
+// or permissions before persistence.
 type Node struct {
-	ID        string            `json:"id"`
-	Run       string            `json:"run"`
-	Needs     []string          `json:"needs,omitempty"`
-	Cache     bool              `json:"cache,omitempty"`
-	Evidence  EvidenceSpec      `json:"evidence,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
-	TimeoutS  int               `json:"timeout_s,omitempty"`
+	ID       string            `json:"id"`
+	Run      string            `json:"run"`
+	Needs    []string          `json:"needs,omitempty"`
+	Cache    bool              `json:"cache,omitempty"`
+	Evidence EvidenceSpec      `json:"evidence,omitempty"`
+	Env      map[string]string `json:"env,omitempty"`
+	TimeoutS int               `json:"timeout_s,omitempty"`
+
+	// --- Capability manifest (action-manifest.schema.json) ---
+
+	// Permissions declares what the node needs at runtime. Allowed values
+	// are defined in internal/manifest/admission.go and mirror the schema
+	// enum: read, write, execute, network, secrets, privileged.
+	Permissions []string `json:"permissions,omitempty"`
+
+	// SideEffects declares what the node intends to mutate externally.
+	// Anything outside the allow-list is rejected at admission time.
+	// Allowed values: network_egress, filesystem_write, deployment,
+	// secret_consumption, external_api_call, state_mutation.
+	SideEffects []string `json:"side_effects,omitempty"`
+
+	// Retries is a pointer so admission can distinguish "unset" from
+	// "explicit zero" (max_attempts=0 is invalid per schema; min=1).
+	Retries *RetrySpec `json:"retries,omitempty"`
+
+	// Cache is a pointer for the same reason; cache.enabled=false is
+	// the safe default but is distinct from "caller didn't say".
+	CacheSpec *CacheSpec `json:"cache_spec,omitempty"`
+}
+
+// RetrySpec declares retry policy. Mirrors action-manifest.schema.json
+// `retries` object.
+type RetrySpec struct {
+	MaxAttempts int      `json:"max_attempts,omitempty"`
+	Backoff     string   `json:"backoff,omitempty"` // none | linear | exponential
+	RetryOn     []string `json:"retry_on,omitempty"`
+}
+
+// CacheSpec declares cache policy. Mirrors action-manifest.schema.json
+// `cache` object.
+type CacheSpec struct {
+	Enabled   bool     `json:"enabled,omitempty"`
+	KeyInputs []string `json:"key_inputs,omitempty"`
+	Scope     string   `json:"scope,omitempty"` // worker-local | organization | global
 }
 
 // EvidenceSpec declares what evidence a successful node run must produce.
@@ -106,16 +148,16 @@ type Source struct {
 
 // Objective describes what outcome the Work is requesting.
 type Objective struct {
-	Type        string         `json:"type"`        // verify_change, build, test, deploy, custom
+	Type        string         `json:"type"` // verify_change, build, test, deploy, custom
 	Description string         `json:"description,omitempty"`
 	Constraints map[string]any `json:"constraints,omitempty"`
 }
 
 // Requirements declare hard execution constraints.
 type Requirements struct {
-	OS         string  `json:"os,omitempty"`         // linux
-	Arch       string  `json:"arch,omitempty"`       // amd64, arm64
-	CPUMilli   int     `json:"cpu_milli,omitempty"`  // 1000 = 1 CPU
+	OS         string  `json:"os,omitempty"`        // linux
+	Arch       string  `json:"arch,omitempty"`      // amd64, arm64
+	CPUMilli   int     `json:"cpu_milli,omitempty"` // 1000 = 1 CPU
 	MemoryMiB  int     `json:"memory_mib,omitempty"`
 	Confidence string  `json:"confidence,omitempty"` // development, staging, production
 	MaxCostUSD float64 `json:"max_cost_usd,omitempty"`
@@ -155,15 +197,15 @@ type Artifact struct {
 
 // Evidence is a structured verification record bound to a node attempt.
 type Evidence struct {
-	ID          string    `json:"id"`
-	NodeID      string    `json:"node_id"`
-	AttemptID   string    `json:"attempt_id"`
-	Type        string    `json:"type"` // build, test, typecheck, lint, security_scan, artifact, policy
-	Result      string    `json:"result"` // pass, fail, warn, skip
-	RecordedAt  time.Time `json:"recorded_at"`
-	ArtifactID  string    `json:"artifact_id,omitempty"`
-	Signer      string    `json:"signer,omitempty"`
-	Environment string    `json:"environment,omitempty"`
+	ID          string         `json:"id"`
+	NodeID      string         `json:"node_id"`
+	AttemptID   string         `json:"attempt_id"`
+	Type        string         `json:"type"`   // build, test, typecheck, lint, security_scan, artifact, policy
+	Result      string         `json:"result"` // pass, fail, warn, skip
+	RecordedAt  time.Time      `json:"recorded_at"`
+	ArtifactID  string         `json:"artifact_id,omitempty"`
+	Signer      string         `json:"signer,omitempty"`
+	Environment string         `json:"environment,omitempty"`
 	Details     map[string]any `json:"details,omitempty"`
 }
 
@@ -223,20 +265,20 @@ func ValidateLeaseTransition(from, to LeaseStatus) bool {
 
 // Work is the durable execution object. It is the source of execution truth.
 type Work struct {
-	ID          string            `json:"id"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-	Source      Source            `json:"source"`
-	Objective   Objective         `json:"objective"`
-	Graph       Graph             `json:"graph"`
-	Requirements Requirements     `json:"requirements"`
-	Policy      Policy            `json:"policy"`
-	State       State             `json:"state"`
-	Attempts    []Attempt         `json:"attempts,omitempty"`
-	Artifacts   []Artifact        `json:"artifacts,omitempty"`
-	Evidence    []Evidence        `json:"evidence,omitempty"`
-	IdempotencyKey string         `json:"idempotency_key,omitempty"`
-	CorrelationID string          `json:"correlation_id,omitempty"`
+	ID             string       `json:"id"`
+	CreatedAt      time.Time    `json:"created_at"`
+	UpdatedAt      time.Time    `json:"updated_at"`
+	Source         Source       `json:"source"`
+	Objective      Objective    `json:"objective"`
+	Graph          Graph        `json:"graph"`
+	Requirements   Requirements `json:"requirements"`
+	Policy         Policy       `json:"policy"`
+	State          State        `json:"state"`
+	Attempts       []Attempt    `json:"attempts,omitempty"`
+	Artifacts      []Artifact   `json:"artifacts,omitempty"`
+	Evidence       []Evidence   `json:"evidence,omitempty"`
+	IdempotencyKey string       `json:"idempotency_key,omitempty"`
+	CorrelationID  string       `json:"correlation_id,omitempty"`
 }
 
 // Graph is the execution DAG. Nodes is a map keyed by node ID for cheap lookup;
