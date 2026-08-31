@@ -670,7 +670,24 @@
       "created_at": "2026-08-31T23:00:00Z",
       "updated_at": "2026-08-31T23:00:00Z",
       "status": "done"
+    },
+    {
+      "id": "k-impl-033",
+      "title": "Fix: persist runner heartbeat refresh (registry copy bug)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "Re-registering a runner refreshes LastHeartbeatAt in the registry. Regression test RED on old code (heartbeat lost), GREEN on fix. Verified on prod: heartbeat live (1s old), cache hits (vet cache:hit 0ms) after fix.",
+      "evidence": [
+        "services/api/runner_register.go",
+        "services/api/runner_heartbeat_test.go",
+        "services/api/ready_cache_test.go"
+      ],
+      "notes": "PR #7 (merged f1925c4). Root cause: registerRunner mutated the copy from get() without put() back \u2014 heartbeat never refreshed, runner went stale after 30s, ready handler fell back to legacy path, pool routing (RFC-0004) AND cache fingerprinting (RFC-0005) silently disabled in prod. Observed: heartbeat frozen 20:55:56Z for hours, all CI evidence 'cache: disabled'. After fix: heartbeat 1s old, vet cache:hit 0ms.",
+      "created_at": "2026-09-01T00:20:00Z",
+      "updated_at": "2026-09-01T00:20:00Z",
+      "status": "done"
     }
   ],
-  "updated_at": "2026-08-31T23:00:00Z"
+  "updated_at": "2026-09-01T00:20:00Z"
 }
