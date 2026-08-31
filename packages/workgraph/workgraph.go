@@ -201,6 +201,13 @@ type Requirements struct {
 	MemoryMiB  int     `json:"memory_mib,omitempty"`
 	Confidence string  `json:"confidence,omitempty"` // development, staging, production
 	MaxCostUSD float64 `json:"max_cost_usd,omitempty"`
+
+	// Pool (BYOC, RFC-0004): when set, only runners whose labels
+	// contain "pool:<Pool>" may execute this work. This is the
+	// bring-your-own-compute isolation boundary: a design partner's
+	// work runs exclusively on workers they registered. Empty pool =
+	// no constraint (any active runner is eligible).
+	Pool string `json:"pool,omitempty"`
 }
 
 // Policy declares authority and access.

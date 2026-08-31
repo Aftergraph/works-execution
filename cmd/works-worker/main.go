@@ -33,6 +33,8 @@ func main() {
 		heartbeatEvery = flag.Duration("heartbeat", 10*time.Second, "heartbeat interval")
 		enrollSecret   = flag.String("enroll-secret", envOr("WORKS_ENROLL_SECRET", ""), "shared secret for /v1/workers/enroll (Zero-Secret: required)")
 		enrollTTL      = flag.Duration("enroll-ttl", time.Hour, "requested enrollment-token TTL")
+		pool           = flag.String("pool", envOr("WORKS_POOL", ""), "BYOC pool name (RFC-0004); joins pool <name> via label pool:<name>")
+		trust          = flag.String("trust", envOr("WORKS_TRUST_CLASS", ""), "runner trust class override (untrusted|standard|privileged); default standard")
 	)
 	flag.Parse()
 
@@ -101,13 +103,31 @@ func main() {
 	}
 
 	w := &worker.Worker{
-		ID:             *workerID,
-		Client:         cli,
-		ArtifactsDir:   *artDir,
-		Logger:         logger,
-		PollEvery:      *pollEvery,
-		LeaseTTL:       *leaseTTL,
+		ID:           *workerID,
+		Client:       cli,
+		ArtifactsDir: *artDir,
+		Logger:       logger,
+		PollEvery:    *pollEvery,
+		LeaseTTL:     *leaseTTL,
+		// HeartbeatEvery is both the lease heartbeat and the runner
+		// re-registration (BYOC) interval. Keep the default.
 		HeartbeatEvery: *heartbeatEvery,
+	}
+	// BYOC (RFC-0004): when -pool or -trust is set, the worker
+	// registers itself as a scheduler-visible runner and keeps the
+	// registration alive via heartbeats. Pool membership is the
+	// "pool:<name>" label; the scheduler's hard filter uses it to
+	// route pool-scoped works exclusively to this pool's runners.
+	if *pool != "" || *trust != "" {
+		labels := []string{}
+		if *pool != "" {
+			labels = append(labels, "pool:"+*pool)
+		}
+		w.RunnerIdentity = &worker.RunnerSpec{
+			TrustClass: *trust,
+			Labels:     labels,
+		}
+		logger.Printf("byoc runner enabled: pool=%q trust=%q", *pool, *trust)
 	}
 
 	logger.Printf("works-worker starting: id=%s api=%s lease_ttl=%s heartbeat=%s", *workerID, *apiURL, *leaseTTL, *heartbeatEvery)

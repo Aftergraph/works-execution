@@ -158,6 +158,7 @@ const (
 	RejectNetwork           = "network_blocked"
 	RejectTrust             = "trust_insufficient"
 	RejectTenant            = "tenant_mismatch"
+	RejectPool              = "pool_mismatch"
 	RejectProduction        = "production_requires_privileged"
 	RejectNoIdentity        = "no_identity" // safety guard
 )
@@ -219,6 +220,15 @@ func hardFilter(r *Runner, work *workgraph.Work, node *workgraph.Node) string {
 	if t := tenantOf(work); t != "" && r.Tenant != "" && !strings.EqualFold(r.Tenant, t) {
 		return RejectTenant
 	}
+	// Pool — BYOC isolation (RFC-0004). A work that names a pool only
+	// runs on runners registered into that same pool (label
+	// "pool:<name>"). Runners without any pool label belong to the
+	// shared/default pool and are NOT eligible for pool-scoped work —
+	// a design partner's work must never leak onto shared compute or
+	// another partner's workers.
+	if req.Pool != "" && !hasLabel(r.Labels, "pool:"+req.Pool) {
+		return RejectPool
+	}
 	// Production access — only privileged runners may serve works
 	// flagged for production. This is the secret/deployment
 	// authority axis from SCHEDULER_DESIGN.md.
@@ -233,6 +243,17 @@ func hardFilter(r *Runner, work *workgraph.Work, node *workgraph.Node) string {
 func containsFold(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if strings.EqualFold(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasLabel reports whether the label set contains exactly `want`
+// (case-sensitive: pool labels are machine-assigned).
+func hasLabel(labels []string, want string) bool {
+	for _, s := range labels {
+		if s == want {
 			return true
 		}
 	}

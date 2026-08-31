@@ -86,10 +86,67 @@ func (r *runnerRegistry) List() []*runner.Identity {
 // runnerPathHandler routes /v1/runners/{id} -> getRunner
 // (POST /v1/runners/register is registered separately because /register is
 // not a path segment under {id}).
+// defaultHeartbeatInterval mirrors the works-worker's default
+// -heartbeat flag. The ready-handler treats a runner as stale when its
+// LastHeartbeatAt is older than 3× this value (missed 3 beats).
+const defaultHeartbeatInterval = 10 * time.Second
+
+// listRunners handles GET /v1/runners — returns all registered runner
+// identities (BYOC pool visibility). Query params:
+//
+//	pool=<name>  only runners labeled pool:<name>
+//	alive=true   only runners with a recent heartbeat (not stale)
+func (s *Server) listRunners(w http.ResponseWriter, r *http.Request) {
+	if s.RunnerRegistry == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"runners": []any{}})
+		return
+	}
+	all := s.RunnerRegistry.List()
+	poolFilter := r.URL.Query().Get("pool")
+	aliveOnly := r.URL.Query().Get("alive") == "true"
+	staleCutoff := time.Now().Add(-3 * defaultHeartbeatInterval)
+
+	out := make([]*runner.Identity, 0, len(all))
+	for _, id := range all {
+		if id == nil {
+			continue
+		}
+		if aliveOnly && id.LastHeartbeatAt != nil && id.LastHeartbeatAt.Before(staleCutoff) {
+			continue
+		}
+		if poolFilter != "" {
+			found := false
+			for _, l := range id.Capabilities.Labels {
+				if l == "pool:"+poolFilter {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+		out = append(out, id)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"runners": out,
+		"count":   len(out),
+	})
+}
+
 func (s *Server) runnerPathHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/runners/")
 	id := strings.TrimSuffix(path, "/")
-	if id == "" || strings.Contains(id, "/") {
+	if id == "" {
+		switch r.Method {
+		case http.MethodGet:
+			s.listRunners(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", r.Method)
+		}
+		return
+	}
+	if strings.Contains(id, "/") {
 		writeError(w, http.StatusNotFound, "not_found", r.URL.Path)
 		return
 	}

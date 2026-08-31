@@ -94,21 +94,52 @@ func (s *Server) grantLease(w http.ResponseWriter, r *http.Request) {
 	}
 	ttl := time.Duration(body.TTLSeconds) * time.Second
 
-	// Policy check FIRST. Loads the work and runner identity, builds a
-	// DecisionInput, evaluates the bundle. Denials return 403 without
-	// touching the store. Production cmd/works-api loads the bundle at
-	// startup; tests can leave Policy nil to opt out.
-	if s.Policy != nil {
-		work, err := s.Store.GetWork(r.Context(), body.WorkID)
-		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				writeError(w, http.StatusNotFound, "work_not_found", body.WorkID)
-				return
-			}
-			s.logf("policy: get work: %v", err)
-			writeError(w, http.StatusInternalServerError, "policy_get_work_failed", err.Error())
+	// Load the work once; both the pool check and the policy check
+	// need it. 404 without touching the store on unknown work.
+	work, err := s.Store.GetWork(r.Context(), body.WorkID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "work_not_found", body.WorkID)
 			return
 		}
+		s.logf("grant: get work: %v", err)
+		writeError(w, http.StatusInternalServerError, "get_work_failed", err.Error())
+		return
+	}
+
+	// BYOC pool enforcement (RFC-0004): the scheduler's pool filter is
+	// advisory — the /ready endpoint simply won't offer pool-scoped
+	// nodes to foreign workers. Enforcement happens HERE at lease
+	// grant: if the work names a pool, the leasing worker must be
+	// registered with the matching pool:<name> label. A worker that
+	// bypasses /ready (or races it) gets 403. This is the actual
+	// isolation boundary; without it the scheduler filter is just a
+	// performance hint.
+	if s.RunnerRegistry != nil && work.Requirements.Pool != "" {
+		id, ok := s.RunnerRegistry.get(body.WorkerID)
+		inPool := false
+		if ok && id != nil {
+			for _, l := range id.Capabilities.Labels {
+				if l == "pool:"+work.Requirements.Pool {
+					inPool = true
+					break
+				}
+			}
+		}
+		if !inPool {
+			s.logf("pool denied: worker=%s not in pool=%q for work=%s",
+				body.WorkerID, work.Requirements.Pool, body.WorkID)
+			writeError(w, http.StatusForbidden, "pool_mismatch",
+				"worker is not registered in pool "+work.Requirements.Pool)
+			return
+		}
+	}
+
+	// Policy check SECOND. Builds a DecisionInput, evaluates the
+	// bundle. Denials return 403 without touching the store.
+	// Production cmd/works-api loads the bundle at startup; tests can
+	// leave Policy nil to opt out.
+	if s.Policy != nil {
 		evidence := work.Evidence
 		if evidence == nil {
 			evidence = []workgraph.Evidence{}

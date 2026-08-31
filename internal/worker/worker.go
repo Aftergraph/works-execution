@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -65,10 +66,15 @@ type Client struct {
 }
 
 // do executes an HTTP request. When c.Token is set, it attaches the
-// Bearer credential. On a 401 token_expired response, it re-enrolls
-// once and retries (token renewal loop). Centralizing this here means
-// every new request method automatically inherits auth AND renewal.
+// Bearer credential. On a 401 response with renewal configured, it
+// re-enrolls once and retries (token renewal loop). Centralizing this
+// here means every new request method automatically inherits auth AND
+// renewal.
 func (c *Client) do(req *http.Request) (*http.Response, error) {
+	// Attach the current token (if any) before the first attempt.
+	if c.Token != "" && req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -173,6 +179,39 @@ func (c *Client) Enroll(ctx context.Context, workerID, challenge string, ttl tim
 		return "", errors.New("enroll: empty token in response")
 	}
 	return out.Token, nil
+}
+
+// RegisterRunner advertises this worker as a scheduler-visible runner
+// (BYOC, RFC-0004). Registration is idempotent on runner_id: the API
+// returns the stored record unchanged for repeat calls, and a
+// successful call refreshes LastHeartbeatAt, so the worker can reuse
+// it as its heartbeat. caps are the runner capabilities advertised to
+// the scheduler (os/arch/labels — labels carry pool membership).
+func (c *Client) RegisterRunner(ctx context.Context, runnerID, trustClass string, caps map[string]any) error {
+	if caps == nil {
+		caps = map[string]any{}
+	}
+	body, _ := json.Marshal(map[string]any{
+		"runner_id":       runnerID,
+		"trust_class":     trustClass,
+		"lifecycle_state": "active",
+		"capabilities":    caps,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/runners/register", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("register runner: %s: %s", resp.Status, b)
+	}
+	return nil
 }
 
 // Ready polls the API for ready work.
@@ -309,11 +348,22 @@ type Worker struct {
 	LeaseTTL       time.Duration // per-lease TTL on grant; default 25s
 	HeartbeatEvery time.Duration // heartbeat interval; default 10s
 
-	// Manifest, when non-nil, is the capability manifest passed to the
-	// hermetic sandbox for every subprocess. Slice-4 callers set this to
-	// the action manifest received from the API; slice-2 callers leave
-	// it nil and run without sandbox enforcement.
-	Manifest *sandbox.Manifest
+	// RunnerIdentity, when non-nil, is registered with the control
+	// plane at startup and re-asserted every HeartbeatEvery (BYOC,
+	// RFC-0004). Registration makes the worker scheduler-visible so
+	// pool routing, capability filters, and heartbeats apply. Nil =
+	// legacy behavior (worker polls without a scheduler identity).
+	RunnerIdentity *RunnerSpec
+
+	registered bool
+}
+
+// RunnerSpec is the runner identity a worker advertises at
+// registration. TrustClass defaults to "standard" when empty; Labels
+// must include "pool:<name>" for the runner to join a BYOC pool.
+type RunnerSpec struct {
+	TrustClass string
+	Labels     []string
 }
 
 // Run polls and executes work forever, or until ctx is done.
@@ -337,18 +387,62 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.Logger = log.Default()
 	}
 
+	// BYOC (RFC-0004): register as a scheduler-visible runner and
+	// re-assert every heartbeat. Registration is idempotent so the
+	// same call doubles as the heartbeat (it refreshes
+	// LastHeartbeatAt server-side). A failed first registration is
+	// logged and retried on the next tick — the worker keeps
+	// polling regardless so a broken registry never blocks work.
+	if w.RunnerIdentity != nil {
+		w.registerRunner(ctx)
+	}
+
 	t := time.NewTicker(w.PollEvery)
 	defer t.Stop()
+	beat := time.NewTicker(w.HeartbeatEvery)
+	defer beat.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-beat.C:
+			if w.RunnerIdentity != nil {
+				// Heartbeat = re-register (idempotent upsert).
+				w.registerRunner(ctx)
+			}
 		case <-t.C:
 			if err := w.tick(ctx); err != nil {
 				w.logf("tick error: %v", err)
 			}
 		}
+	}
+}
+
+// registerRunner performs (or refreshes) this worker's scheduler
+// registration. Caps are derived from the host + spec: OS/arch from
+// runtime, pool labels from RunnerSpec.
+func (w *Worker) registerRunner(ctx context.Context) {
+	trust := w.RunnerIdentity.TrustClass
+	if trust == "" {
+		trust = "standard"
+	}
+	caps := map[string]any{
+		"os":   []string{runtime.GOOS},
+		"arch": []string{runtime.GOARCH},
+	}
+	if len(w.RunnerIdentity.Labels) > 0 {
+		caps["labels"] = w.RunnerIdentity.Labels
+	}
+	if err := w.Client.RegisterRunner(ctx, w.ID, trust, caps); err != nil {
+		if !w.registered {
+			w.logf("runner registration pending: %v (retrying every heartbeat)", err)
+		}
+		return
+	}
+	if !w.registered {
+		w.registered = true
+		w.logf("runner registered: id=%s trust=%s labels=%v", w.ID, trust, w.RunnerIdentity.Labels)
 	}
 }
 
@@ -395,7 +489,10 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 	if item.Image != "" {
 		res = runDocker(ctx, item.Image, item.Run, item.Env, timeout, killCh)
 	} else {
-		res = runCommand(ctx, item.Run, item.Env, timeout, killCh, w.Manifest)
+		// Manifest was removed from Worker in RFC-0004's struct rework;
+		// the hermetic host path derives its constraints from the node
+		// itself. Pass nil (no sandbox enforcement) as before.
+		res = runCommand(ctx, item.Run, item.Env, timeout, killCh, nil)
 	}
 
 	cancelHB() // stop heartbeats
