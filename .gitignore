@@ -4,3 +4,8 @@ bin/
 *.test
 .idea/
 .vscode/
+
+# Local env secrets (templates like .env.local.example are kept)
+.env
+.env.local
+.env.*.local
