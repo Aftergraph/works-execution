@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/JonasAbde/works-execution/internal/manifest"
 	"github.com/JonasAbde/works-execution/internal/scheduler"
@@ -424,9 +425,25 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Snapshot the runner pool once per request. The scheduler is pure;
 	// we don't need to hold the lock across the full scan.
+	//
+	// BYOC (RFC-0004): runners whose LastHeartbeatAt is older than
+	// 3× heartbeat interval are treated as stale and excluded from
+	// the pool — a dead runner must not keep claiming pool-scoped
+	// work. Registered identities carry a heartbeat timestamp; very
+	// old registrations (pre-BYOC) without one are kept for
+	// backward compatibility.
 	var pool []*scheduler.Runner
 	if s.RunnerRegistry != nil {
-		pool = runnersFromIdentities(s.RunnerRegistry.List())
+		all := s.RunnerRegistry.List()
+		live := make([]*runner.Identity, 0, len(all))
+		staleCutoff := time.Now().Add(-3 * defaultHeartbeatInterval)
+		for _, id := range all {
+			if id.LastHeartbeatAt != nil && id.LastHeartbeatAt.Before(staleCutoff) {
+				continue
+			}
+			live = append(live, id)
+		}
+		pool = runnersFromIdentities(live)
 	}
 
 	type readyItem struct {

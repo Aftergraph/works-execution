@@ -545,7 +545,46 @@
       "notes": "M1 card 8/8. SHIPPED in commit b424797 (combined with k-impl-019/020). Bundle now exposes Source + Environment fields. Working-tree changes (not yet committed) will land in the M1 k-impl-018 commit that completes the webhook work.",
       "created_at": "2026-08-31T03:30:00Z",
       "updated_at": "2026-08-31T07:15:00Z"
+    },
+    {
+      "id": "k-impl-026",
+      "title": "BYOC worker pools (self-registration, pool routing, lease-grant enforcement)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "Workers register as runners at boot + heartbeat; Requirements.Pool routes pool-scoped work to matching runners via scheduler hard filter; lease-grant enforces pool membership with 403 pool_mismatch (the actual boundary); stale runners excluded from scheduling; GET /v1/runners + works runners CLI.",
+      "evidence": [
+        "internal/worker/worker.go",
+        "internal/scheduler/scheduler.go",
+        "internal/scheduler/pool_test.go",
+        "services/api/leases.go",
+        "services/api/runner_register.go",
+        "cmd/works-worker/main.go",
+        "cmd/works/runners.go",
+        "docs/rfcs/RFC-0004-byoc-worker-pools.md"
+      ],
+      "notes": "RFC-0004. Verified on prod VDS: wrkr_prod_1 in pool avc-core; own-pool work SUCCEEDED ~1s; foreign-pool work stays QUEUED with zero attempts (9x pool denied at grant); 26/26 packages green.",
+      "created_at": "2026-08-31T18:20:00Z",
+      "updated_at": "2026-08-31T18:20:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-027",
+      "title": "Worker token renewal (transparent re-enroll on 401)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "Client.do re-enrolls once on 401 (mutex-serialized) when renewal fields set; fixes 1h-token expiry outage; CLI gets Zero-Secret enrollment via cmd/works/auth.go with 401 fix-it hint.",
+      "evidence": [
+        "internal/worker/worker.go",
+        "cmd/works/auth.go",
+        "cmd/works-worker/main.go"
+      ],
+      "notes": "Fixed production token_expired outage. Verified: worker drains QUEUED backlog after expiry; CLI 401->enroll->201 flow.",
+      "created_at": "2026-08-31T18:20:00Z",
+      "updated_at": "2026-08-31T18:20:00Z",
+      "status": "done"
     }
   ],
-  "updated_at": "2026-08-31T07:15:00Z"
+  "updated_at": "2026-08-31T18:20:00Z"
 }

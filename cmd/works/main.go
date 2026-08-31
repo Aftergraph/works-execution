@@ -30,6 +30,7 @@ Usage:
   works init [--out works.yaml]
   works run --config works.yaml [--api http://127.0.0.1:8080] [--idempotency-key KEY]
   works status <work_id> [--api http://127.0.0.1:8080] [--follow]
+  works runners [--pool NAME] [--alive] [--api URL]   # BYOC: list scheduler-visible runners
   works connect github [--api URL]    # M1 k-impl-024: print webhook URL + secret + repo-policy hint
   works pilot <owner/repo> [--ref REF] [--sha SHA] [--api URL] [--timeout-s N] [--once]
                                      # M1 k-impl-024: submit work for repo, poll until terminal, print timeline
@@ -52,6 +53,8 @@ func main() {
 		runCmd(os.Args[2:])
 	case "status":
 		statusCmd(os.Args[2:])
+	case "runners":
+		runnersCmd(os.Args[2:])
 	case "connect":
 		connectCmd(os.Args[2:])
 	case "pilot":
