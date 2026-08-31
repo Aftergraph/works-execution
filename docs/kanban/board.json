@@ -441,14 +441,14 @@
       "id": "k-impl-018",
       "title": "GitHub webhook receiver (HMAC verify + idempotent delivery)",
       "lane": "implementation",
-      "column": "in_progress",
+      "column": "review",
       "standard_ids": [],
       "acceptance": "POST /v1/webhook/github with valid HMAC-SHA256 (X-Hub-Signature-256) creates exactly one Work per (delivery_id, event). Invalid signature returns 401 and creates zero Works. Duplicate X-GitHub-Delivery is a no-op. Unit tests cover all 3 paths. Live test against a real webhook delivery works.",
       "evidence": [
         "services/webhook/github.go",
         "services/webhook/github_test.go"
       ],
-      "notes": "M1 card 1/8 (RFC-0003). services/webhook/github.go. ~300 LOC. Endpoints: POST /v1/webhook/github. HMAC-SHA256 verify against shared secret. Idempotency by X-GitHub-Delivery \u2192 webhooks table.",
+      "notes": "M1 card 1/8 (RFC-0003). services/webhook/github.go. ~300 LOC. Endpoints: POST /v1/webhook/github. HMAC-SHA256 verify against shared secret. Idempotency by X-GitHub-Delivery \u2192 webhooks table. [partial: parser+HMAC verify shipped, 13/13 unit tests pass, 217 LOC. HTTP handler + store idempotency pending. Awaiting M1 card 2/8 (source) before wiring.]",
       "created_at": "2026-08-31T03:30:00Z",
       "updated_at": "2026-08-31T03:30:00Z"
     },
