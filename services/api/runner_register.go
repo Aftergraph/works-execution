@@ -220,6 +220,12 @@ func (s *Server) registerRunner(w http.ResponseWriter, r *http.Request) {
 		if in.SpiffeID != "" {
 			existing.SpiffeID = in.SpiffeID
 		}
+		// get() returns a COPY — persist the mutation back into the
+		// registry, otherwise the heartbeat refresh is lost and the
+		// runner goes stale after 3× the heartbeat interval (which
+		// silently disables pool routing AND cache fingerprinting in
+		// the ready handler).
+		s.RunnerRegistry.put(existing)
 		writeJSON(w, http.StatusOK, existing)
 		return
 	}
