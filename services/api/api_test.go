@@ -194,3 +194,31 @@ func TestListWorks(t *testing.T) {
 		t.Errorf("count: got %d, want 2", body.Count)
 	}
 }
+func TestAuditEventsAndDora_RequireBearer(t *testing.T) {
+	mkts := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := &api.Server{Store: s, AuthEnabled: true}
+		ts := httptest.NewServer(srv.Routes())
+		t.Cleanup(func() {
+			ts.Close()
+			_ = s.Close()
+		})
+		return ts
+	}
+	for _, path := range []string{"/v1/audit-events", "/v1/dora"} {
+		ts := mkts(t)
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s without bearer: got %d, want 401", path, resp.StatusCode)
+		}
+	}
+}

@@ -143,8 +143,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/v1/leases/", s.requireBearer(http.HandlerFunc(s.leaseItemHandler)))
 	mux.HandleFunc("/v1/runners/register", s.registerRunner) // POST runner identity
 	mux.HandleFunc("/v1/runners/", s.runnerPathHandler)      // GET /v1/runners/{id}
-	mux.HandleFunc("/v1/audit-events", s.auditEventsHandler) // GET = CloudEvents audit stream
-	mux.HandleFunc("/v1/dora", s.doraHandler)                // GET = DORA metrics
+	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler))) // GET = CloudEvents audit stream
+	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                // GET = DORA metrics
 	mux.HandleFunc("/healthz", s.healthz)
 	// M1 (k-impl-018): GitHub webhook receiver. Unauthenticated by
 	// design — HMAC signature is the security boundary. Operators
