@@ -29,6 +29,7 @@ func main() {
 		policyPath   = flag.String("policy", envOr("WORKS_POLICY_BUNDLE", "policies/lease_grant.rego"), "OPA Rego policy bundle path; empty disables policy enforcement (legacy)")
 		webhookSecret = flag.String("webhook-secret", envOr("WORKS_WEBHOOK_SECRET", ""), "GitHub webhook HMAC secret; empty disables /v1/webhook/github (returns 503)")
 		webhookProduction = flag.Bool("webhook-production-access", envBool("WORKS_WEBHOOK_PRODUCTION_ACCESS", false), "mark webhook-derived Works with policy.production_access=true (requires approved evidence at lease-grant; leave false for M1 verify works)")
+		webUIPublic = flag.Bool("webui-public", envBool("WORKS_WEBUI_PUBLIC", false), "serve /v1/ui execution view without a Bearer token (read-only)")
 	)
 	flag.Parse()
 
@@ -98,6 +99,10 @@ func main() {
 	if cacheStore != nil {
 		logger.Printf("cache store enabled (/v1/cache/{key})")
 	}
+
+	// RFC-0007: execution view.
+	srv.WebUI = &api.WebUIConfig{Public: *webUIPublic}
+	logger.Printf("web ui enabled (/v1/ui, public=%v)", *webUIPublic)
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Routes(),

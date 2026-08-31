@@ -637,7 +637,23 @@
       "created_at": "2026-08-31T19:05:00Z",
       "updated_at": "2026-08-31T19:05:00Z",
       "status": "done"
+    },
+    {
+      "id": "k-impl-031",
+      "title": "Web execution view (RFC-0007)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "Server-rendered HTML at /v1/ui (list), /v1/ui/works/{id} (DAG cards w/ state+log tail+evidence), /v1/ui/runners (pool liveness). Read-only, zero JS, dark GitHub-style. Public flag gates bearer requirement. Verified via Cloudflare tunnel.",
+      "evidence": [
+        "services/api/webui.go",
+        "cmd/works-api/main.go"
+      ],
+      "notes": "Days 31-60 minimal web execution view — the last uncovered item. 200 on all pages locally + via works.rendetalje.dk. Public=true in prod (read-only); set WORKS_WEBUI_PUBLIC=false + token for private.",
+      "created_at": "2026-08-31T21:00:00Z",
+      "updated_at": "2026-08-31T21:00:00Z",
+      "status": "done"
     }
   ],
-  "updated_at": "2026-08-31T19:05:00Z"
+  "updated_at": "2026-08-31T21:00:00Z"
 }

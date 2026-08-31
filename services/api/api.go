@@ -92,6 +92,10 @@ type Server struct {
 	// (RFC-0005 content-addressed work cache). When nil those
 	// endpoints return 503 and the scheduler omits cache keys.
 	CacheStore *cache.Store
+	// WebUI, when non-nil, mounts the read-only execution view at
+	// /v1/ui (RFC-0007). Public=true serves it without a Bearer
+	// token; default (Public=false) keeps it behind requireBearer.
+	WebUI *WebUIConfig
 }
 
 // ensureIssuer returns s.Auth, lazily constructing a default HMACIssuer
@@ -160,6 +164,10 @@ func (s *Server) Routes() http.Handler {
 	// RFC-0005: content-addressed cache. Behind Bearer auth like the
 	// worker surface — a cache write is a state mutation.
 	mux.Handle("/v1/cache/", s.requireBearer(http.HandlerFunc(s.cacheHandler)))
+	// RFC-0007: read-only execution view (HTML). Auth per WebUIConfig.
+	if s.WebUI != nil {
+		s.RegisterUI(mux)
+	}
 	if s.Metrics != nil {
 		// GET /metrics — Prometheus exposition. Internal scrape only; not
 		// behind requireBearer so Prometheus can scrape without an enroll
