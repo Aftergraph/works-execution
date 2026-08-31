@@ -8,12 +8,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/JonasAbde/works-execution/services/api"
+	"github.com/JonasAbde/works-execution/services/publisher"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
@@ -68,6 +71,16 @@ func main() {
 	} else {
 		logger.Printf("webhook receiver disabled (no --webhook-secret)")
 	}
+
+	// Publisher: prefer GitHub App if both App ID + installation-token
+	// command are present; fall back to Status API with PAT; disabled
+	// when neither is configured.
+	if pub, perr := buildPublisher(); perr != nil {
+		logger.Printf("publisher disabled: %v", perr)
+	} else {
+		srv.Publisher = pub
+		logger.Printf("publisher enabled (kind=%s)", pub.Kind())
+	}
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Routes(),
@@ -121,4 +134,31 @@ func envBool(k string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+// buildPublisher selects a publisher based on env. Auto-preference:
+// CheckRun (App) when WORKS_GITHUB_APP_ID + WORKS_GITHUB_INSTALLATION_TOKEN_CMD
+// are both set; otherwise StatusAPI when WORKS_GITHUB_TOKEN is set;
+// otherwise returns an error and the publisher stays disabled.
+func buildPublisher() (publisher.Publisher, error) {
+	appIDStr := envOr("WORKS_GITHUB_APP_ID", "")
+	tokCmd := envOr("WORKS_GITHUB_INSTALLATION_TOKEN_CMD", "")
+	if appIDStr != "" && tokCmd != "" {
+		appID, err := strconv.ParseInt(appIDStr, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		return publisher.NewCheckRunPublisher(appID, func(_ context.Context, _ string) (string, error) {
+			out, err := exec.Command("/bin/sh", "-c", tokCmd).Output()
+			if err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(string(out)), nil
+		})
+	}
+	pat := envOr("WORKS_GITHUB_TOKEN", "")
+	if pat == "" {
+		return nil, errors.New("no credentials (set WORKS_GITHUB_TOKEN, or WORKS_GITHUB_APP_ID + WORKS_GITHUB_INSTALLATION_TOKEN_CMD)")
+	}
+	return publisher.NewStatusAPIPublisher(pat)
 }

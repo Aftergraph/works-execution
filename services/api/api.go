@@ -20,6 +20,7 @@ import (
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/evidence"
 	"github.com/JonasAbde/works-execution/services/observability"
+	"github.com/JonasAbde/works-execution/services/publisher"
 	"github.com/JonasAbde/works-execution/services/runner"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
@@ -78,6 +79,13 @@ type Server struct {
 	// is intentionally outside requireBearer — the HMAC
 	// signature is the security boundary, not a Bearer token.
 	WebhookConfig *WebhookConfig
+	// Publisher, when non-nil, is invoked once when a Work reaches
+	// a terminal state (SUCCEEDED, FAILED, CANCELLED) and the
+	// work's Source has a Repository + SHA. Publish runs in a
+	// background goroutine so the HTTP request that triggered
+	// the state transition is not delayed by GitHub's API.
+	// Publish errors are logged and never propagated.
+	Publisher publisher.Publisher
 }
 
 // ensureIssuer returns s.Auth, lazily constructing a default HMACIssuer

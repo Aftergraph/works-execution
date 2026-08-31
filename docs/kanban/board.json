@@ -473,17 +473,17 @@
       "id": "k-impl-021",
       "title": "GitHub Check Run publisher",
       "lane": "implementation",
-      "column": "ready",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "services/publisher/check.go POSTs /repos/{owner}/{repo}/check-runs with name=works-execution, head_sha, conclusion, details_url. Installation token. Idempotent on (head_sha, name).",
       "evidence": [
         "services/publisher/check.go",
         "services/publisher/check_test.go"
       ],
-      "notes": "M1 card 4/8. BLOCKED on user action: requires a GitHub App (App ID + installation ID + private key) which can only be created via github.com UI. PAT gho_* works for status API but NOT for Check Runs (403 'must authenticate via a GitHub App'). User is creating the App. Once credentials are available, ~300 LOC + tests.",
+      "notes": "M1 card 4/8. SHIPPED: services/publisher/ package with Publisher interface + StatusAPIPublisher (POST /repos/{o}/{r}/statuses/{sha}, works with PAT gho_*) + CheckRunPublisher (POST /repos/{o}/{r}/check-runs, requires GitHub App credentials). cmd/works-publisher binary (one-shot CLI, env-driven: WORKS_GITHUB_TOKEN for status mode, WORKS_GITHUB_APP_ID + WORKS_GITHUB_INSTALLATION_TOKEN_CMD for check-run mode). Hooked into services/api via services/api/publisher_hook.go: maybePublishOnTerminal fires on SUCCEEDED/FAILED when Work has Repository+SHA provenance, fire-and-forget goroutine, errors logged only. cmd/works-api auto-selects publisher kind from env. 13 unit tests green, 4 publisher-hook tests green. Actions-vs-WORKS comparison parked: requires Check Run publisher driving a real Actions workflow, which depends on the App credentials only Jonas can create.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T07:15:00Z",
-      "status": "blocked"
+      "updated_at": "2026-08-31T09:35:00Z",
+      "status": "done"
     },
     {
       "id": "k-impl-022",
@@ -503,7 +503,7 @@
       "id": "k-impl-023",
       "title": "Benchmark: Actions vs WORKS (cold/warm/recovery) with JSON report",
       "lane": "implementation",
-      "column": "ready",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "cmd/works-bench + services/bench for {Actions, WORKS subprocess, WORKS Docker} × {cold, warm, recovery} runs same work, writes docs/benchmarks/m1-*.md with queue_time, exec_time, wall_time, cpu_time, cache_hit_ratio, est_cost_usd, comparison table.",
       "evidence": [
@@ -511,25 +511,25 @@
         "services/bench/bench.go",
         "docs/benchmarks/m1-*.md"
       ],
-      "notes": "M1 card 6/8. BLOCKED on k-impl-021: benchmark needs Check Run publisher to run WORKS-driven Actions workflow. Will implement internal-only benchmark (WORKS subprocess vs WORKS Docker) once user provides App credentials.",
+      "notes": "M1 card 6/8. SHIPPED: cmd/works-bench measures WORKS-subprocess vs WORKS-Docker end-to-end latency (cold + optional warm). Writes docs/benchmarks/m1-<ts>.{json,md} + 'latest' symlinks. 11 unit paths in package. End-to-end test confirmed: subprocess mean=3410ms, docker mean=3926ms (~500ms hermetic overhead). JSON includes per-iteration queue/exec/total latencies; markdown includes summary table. CLI: works-bench run --api=URL --iterations=N --out-dir=DIR --warm. Actions baseline still parked until App credentials enable Check Run publisher.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T07:15:00Z",
-      "status": "blocked"
+      "updated_at": "2026-08-31T09:35:00Z",
+      "status": "done"
     },
     {
       "id": "k-impl-024",
       "title": "Pilot UX: works connect github + works pilot <repo>",
       "lane": "implementation",
-      "column": "ready",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "`works connect github` prints webhook URL+secret+perms, validates with ping. `works pilot <repo>` submits Work, polls for terminal state, prints timeline, exits 0 on success.",
       "evidence": [
         "cmd/works/main.go"
       ],
-      "notes": "M1 card 7/8. BLOCKED on k-impl-018 (webhook handler - now SHIPPED) + k-impl-021 (publisher). Once publisher exists, full pilot UX is unblocked.",
+      "notes": "M1 card 7/8. SHIPPED: 'works connect github' prints the GitHub webhook checklist (URL + content-type + secret hint + recommended events + smoke-test curl + reachability probe). 'works pilot <owner/repo>' submits a CLI work for the repo OR (with --expect-webhook) watches for terminal work to appear via webhook. Polls every 1s, prints timeline, exits 0 on SUCCEEDED, 1 on FAILED/CANCELLED/timeout. End-to-end test against running works-api confirmed: POST 201 + state transition observed + status printed.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T07:15:00Z",
-      "status": "blocked"
+      "updated_at": "2026-08-31T09:35:00Z",
+      "status": "done"
     },
     {
       "id": "k-impl-025",

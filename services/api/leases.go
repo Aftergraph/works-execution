@@ -227,6 +227,10 @@ func (s *Server) completeLease(w http.ResponseWriter, r *http.Request, leaseID s
 		}
 		return
 	}
+	// Fire-and-forget publish to GitHub when the work has just
+	// reached a terminal state (SUCCEEDED/FAILED) and has source
+	// provenance. No-op when s.Publisher is nil.
+	s.maybePublishOnTerminal(wk)
 	writeJSON(w, http.StatusOK, wk)
 }
 
