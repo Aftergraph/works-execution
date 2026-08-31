@@ -65,6 +65,11 @@ func pilotCmd(args []string) {
 
 // pilotSubmitFlow constructs and POSTs a Work for the given repo.
 // Returns exit 0 on SUCCEEDED, 1 on FAILED/CANCELLED/timeout.
+//
+// Policy note: the work is submitted with production_access=false —
+// it is development-confidence verify work. production_access=true
+// requires approved evidence at lease-grant time (policies/
+// lease_grant.rego rule 4b), which a fresh work cannot have yet.
 func pilotSubmitFlow(api, owner, name, ref, sha string, timeoutS int, once bool, t0 time.Time) {
 	body := map[string]any{
 		"queue": true,
@@ -79,7 +84,7 @@ func pilotSubmitFlow(api, owner, name, ref, sha string, timeoutS int, once bool,
 			"arch":       "amd64",
 			"confidence": "development",
 		},
-		"policy": map[string]any{"trust_class": "standard", "production_access": true},
+		"policy": map[string]any{"trust_class": "standard", "production_access": false},
 		"graph": map[string]any{
 			"nodes": map[string]any{
 				"verify": map[string]any{

@@ -27,7 +27,7 @@ func main() {
 		enrollSecret = flag.String("enroll-secret", envOr("WORKS_ENROLL_SECRET", ""), "shared challenge for POST /v1/workers/enroll; empty disables enrollment (fail-closed)")
 		policyPath   = flag.String("policy", envOr("WORKS_POLICY_BUNDLE", "policies/lease_grant.rego"), "OPA Rego policy bundle path; empty disables policy enforcement (legacy)")
 		webhookSecret = flag.String("webhook-secret", envOr("WORKS_WEBHOOK_SECRET", ""), "GitHub webhook HMAC secret; empty disables /v1/webhook/github (returns 503)")
-		webhookProduction = flag.Bool("webhook-production-access", envBool("WORKS_WEBHOOK_PRODUCTION_ACCESS", true), "mark webhook-derived Works with policy.production_access=true")
+		webhookProduction = flag.Bool("webhook-production-access", envBool("WORKS_WEBHOOK_PRODUCTION_ACCESS", false), "mark webhook-derived Works with policy.production_access=true (requires approved evidence at lease-grant; leave false for M1 verify works)")
 	)
 	flag.Parse()
 

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,13 +52,43 @@ func main() {
 	// (EnrollSecret empty) we still try — the server returns 503 and we
 	// fall back to unauthenticated mode for dev/test, but log it loudly
 	// so production operators see the misconfiguration.
+	//
+	// Boot-resilience: when started alongside works-api under systemd,
+	// the API listener may not be up yet (connection refused). Retry
+	// network errors with backoff for up to ~60s before giving up.
+	// 401/403 (bad secret) fail fast — retrying cannot fix config.
 	if *enrollSecret != "" {
-		token, err := cli.Enroll(ctx, *workerID, *enrollSecret, *enrollTTL)
-		if err != nil {
-			logger.Printf("WARNING: enrollment failed (server may have enrollment disabled): %v", err)
-		} else {
-			cli.Token = token
-			logger.Printf("enrolled: worker_id=%s ttl=%s", *workerID, *enrollTTL)
+		const maxAttempts = 30
+		var enrolled bool
+		for attempt := 1; attempt <= maxAttempts && !enrolled; attempt++ {
+			token, err := cli.Enroll(ctx, *workerID, *enrollSecret, *enrollTTL)
+			if err == nil {
+				cli.Token = token
+				logger.Printf("enrolled: worker_id=%s ttl=%s", *workerID, *enrollTTL)
+				enrolled = true
+				break
+			}
+			// Classify the error: 503 = enrollment disabled (fall back
+			// to unauthenticated dev mode); 4xx = config error (fail
+			// fast); everything else (network, 5xx) = transient (retry).
+			msg := err.Error()
+			switch {
+			case strings.Contains(msg, "503"):
+				logger.Printf("WARNING: enrollment disabled on server (503); running WITHOUT Bearer token (dev mode)")
+				enrolled = true // proceed without token
+			case strings.Contains(msg, "401") || strings.Contains(msg, "403"):
+				logger.Fatalf("enrollment rejected (%v); check -enroll-secret against the server's WORKS_ENROLL_SECRET", err)
+			default:
+				if attempt == maxAttempts {
+					logger.Fatalf("enrollment failed after %d attempts: %v", maxAttempts, err)
+				}
+				logger.Printf("enrollment attempt %d/%d failed (%v); retrying in 2s", attempt, maxAttempts, err)
+				select {
+				case <-time.After(2 * time.Second):
+				case <-ctx.Done():
+					logger.Fatalf("enrollment aborted: %v", ctx.Err())
+				}
+			}
 		}
 	} else {
 		logger.Printf("WARNING: WORKS_ENROLL_SECRET not set; worker running without Bearer token (dev mode)")
