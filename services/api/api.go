@@ -461,6 +461,7 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 		Env        map[string]string     `json:"env,omitempty"`
 		TimeoutS   int                   `json:"timeout_s,omitempty"`
 		Image      string                `json:"image,omitempty"` // slice 5: docker image; empty = host subprocess
+		Source     *workgraph.Source     `json:"source,omitempty"`
 		Assignment *scheduler.Assignment `json:"assignment,omitempty"`
 		// CacheKey (RFC-0005): when non-empty, this node's inputs are
 		// byte-identical to a previously successful execution. The
@@ -497,6 +498,7 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 				Env:      n.Env,
 				TimeoutS: n.TimeoutS,
 				Image:    n.Runtime.Image,
+				Source:   &work.Source,
 			}
 
 			// Skip the scheduler when no runners are registered. This

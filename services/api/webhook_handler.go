@@ -17,7 +17,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -170,7 +169,7 @@ func (s *Server) githubWebhookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	g.Graph.Nodes["build"] = workgraph.Node{
 		ID:       "build",
-		Run:      fmt.Sprintf("echo M1 would-build %s @ %s", delivery.RepoFullName, delivery.SHA),
+		Run:      verifyCommand(delivery),
 		TimeoutS: 600,
 		// M1 delegates actual building to services/runner which
 		// is called by the worker. The node's `Run` is a marker
@@ -201,6 +200,19 @@ func (s *Server) githubWebhookHandler(w http.ResponseWriter, r *http.Request) {
 		"event":       event,
 		"delivery_id": deliveryID,
 	})
+}
+
+func verifyCommand(d webhook.Delivery) string {
+	switch d.RepoFullName {
+	case "JonasAbde/Renos-Control":
+		return "npm ci && npm --prefix backend/operations ci && npm run verify"
+	case "JonasAbde/works-execution":
+		return "go vet ./... && go test ./..."
+	default:
+		// Allow-list configuration is the primary guard; this second guard
+		// makes an accidental config expansion fail, never succeed.
+		return "exit 78"
+	}
 }
 
 // sourceTypeFor maps a webhook delivery to its workgraph.Source.Type.

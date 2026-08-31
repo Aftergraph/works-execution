@@ -75,6 +75,7 @@ func main() {
 	if *webhookSecret != "" {
 		srv.WebhookConfig = &api.WebhookConfig{
 			Secret:           *webhookSecret,
+			AllowedRepos:     allowedReposFromEnv(),
 			ProductionAccess: *webhookProduction,
 		}
 		logger.Printf("webhook receiver enabled (/v1/webhook/github, production_access=%v)", *webhookProduction)
@@ -129,6 +130,21 @@ func main() {
 		logger.Fatalf("listen: %v", err)
 	}
 	logger.Printf("works-api stopped")
+}
+
+func allowedReposFromEnv() map[string]bool {
+	raw := strings.TrimSpace(os.Getenv("WORKS_ALLOWED_REPOS"))
+	if raw == "" {
+		return nil
+	}
+	allowed := make(map[string]bool)
+	for _, repo := range strings.Split(raw, ",") {
+		repo = strings.TrimSpace(repo)
+		if repo != "" {
+			allowed[repo] = true
+		}
+	}
+	return allowed
 }
 
 func envOr(k, def string) string {

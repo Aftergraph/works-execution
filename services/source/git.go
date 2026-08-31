@@ -136,7 +136,10 @@ func Checkout(ctx context.Context, opts Options) (*Source, error) {
 			// a tiny credential helper script we write next to
 			// the workdir, then point git at it via
 			// -c credential.helper=.
-			helperPath := filepath.Join(workdir, "..", ".git-cred-helper.sh")
+			if err := os.MkdirAll(workdir, 0o700); err != nil {
+				return nil, fmt.Errorf("create workdir: %w", err)
+			}
+			helperPath := filepath.Join(parent, ".git-cred-helper-"+randomTokenName()+".sh")
 			credScript := "#!/bin/sh\n" +
 				"case \"$1\" in\n" +
 				"  get) echo \"username=x-access-token\"; echo \"password=$WORKS_GIT_TOKEN\" ;;\n" +
@@ -146,8 +149,10 @@ func Checkout(ctx context.Context, opts Options) (*Source, error) {
 			// Write the script under parent so workdir is fresh
 			// for the clone.
 			if err := os.WriteFile(helperPath, []byte(credScript), 0o700); err != nil {
+				_ = os.RemoveAll(workdir)
 				return nil, fmt.Errorf("write cred helper: %w", err)
 			}
+			defer os.Remove(helperPath)
 			env = append(env,
 				"WORKS_GIT_TOKEN="+opts.Token,
 				"GIT_TERMINAL_PROMPT=0",
@@ -174,6 +179,7 @@ func Checkout(ctx context.Context, opts Options) (*Source, error) {
 					"clone", "--no-tags", "--depth", "1", "--filter=blob:none",
 					opts.RepoURL, workdir,
 				); err2 != nil {
+					_ = os.RemoveAll(workdir)
 					return nil, fmt.Errorf("clone failed (with auth: %v; without: %v)", err, err2)
 				}
 			}
@@ -182,6 +188,7 @@ func Checkout(ctx context.Context, opts Options) (*Source, error) {
 				"clone", "--no-tags", "--depth", "1", "--filter=blob:none",
 				opts.RepoURL, workdir,
 			); err != nil {
+				_ = os.RemoveAll(workdir)
 				return nil, fmt.Errorf("clone: %w", err)
 			}
 		}
@@ -190,7 +197,18 @@ func Checkout(ctx context.Context, opts Options) (*Source, error) {
 			"clone", "--no-tags", "--depth", "1", "--filter=blob:none",
 			opts.RepoURL, workdir,
 		); err != nil {
+			_ = os.RemoveAll(workdir)
 			return nil, fmt.Errorf("clone: %w", err)
+		}
+	}
+
+	// A shallow clone starts from the default branch. Fetch the exact
+	// webhook ref before checking out its SHA so feature branches and
+	// pull-request heads cannot accidentally verify the default branch.
+	if opts.Ref != "" {
+		if err := git(ctx, workdir, env, "fetch", "--no-tags", "--depth", "1", "origin", opts.Ref); err != nil {
+			_ = os.RemoveAll(workdir)
+			return nil, fmt.Errorf("fetch %s: %w", opts.Ref, err)
 		}
 	}
 

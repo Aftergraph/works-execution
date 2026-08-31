@@ -31,6 +31,7 @@ import (
 
 	"github.com/JonasAbde/works-execution/internal/sandbox"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
+	"github.com/JonasAbde/works-execution/services/source"
 )
 
 // Client is the minimal HTTP client the worker uses to talk to the API.
@@ -135,6 +136,7 @@ type ReadyItem struct {
 	Env      map[string]string `json:"env,omitempty"`
 	TimeoutS int               `json:"timeout_s,omitempty"`
 	Image    string            `json:"image,omitempty"` // slice 5: docker image; empty = host subprocess
+	Source   *workgraph.Source `json:"source,omitempty"`
 	// CacheKey (RFC-0005): non-empty when the node's inputs are
 	// cache-enabled and the scheduler computed a fingerprint. The
 	// worker may claim a prior identical result via CacheLookup.
@@ -423,6 +425,9 @@ type Worker struct {
 	PollEvery      time.Duration
 	LeaseTTL       time.Duration // per-lease TTL on grant; default 25s
 	HeartbeatEvery time.Duration // heartbeat interval; default 10s
+	// GitHubToken is held only in the worker process and is passed to the
+	// per-work source checkout. It is never added to the node environment.
+	GitHubToken string
 
 	// RunnerIdentity, when non-nil, is registered with the control
 	// plane at startup and re-asserted every HeartbeatEvery (BYOC,
@@ -560,10 +565,6 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 		timeout = 10 * time.Minute
 	}
 
-	// RFC-0005: content-addressed cache. When the scheduler offered a
-	// CacheKey, try to claim the hit BEFORE running anything. A claim
-	// is only trusted when the store returns exit=0; anything else
-	// falls through to real execution (correctness over hit rate).
 	cacheHit := false
 	var res execResult
 	if item.CacheKey != "" {
@@ -580,14 +581,35 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 	}
 
 	if !cacheHit {
-		w.logf("running %s/%s (lease=%s): %s", item.WorkID, item.NodeID, leaseID, item.Run)
-		if item.Image != "" {
-			res = runDocker(ctx, item.Image, item.Run, item.Env, timeout, killCh)
-		} else {
-			// Manifest was removed from Worker in RFC-0004's struct rework;
-			// the hermetic host path derives its constraints from the node
-			// itself. Pass nil (no sandbox enforcement) as before.
-			res = runCommand(ctx, item.Run, item.Env, timeout, killCh, nil)
+		executionStarted := time.Now()
+		var checkedOut *source.Source
+		var sourceDir string
+		if item.Source != nil && item.Source.CloneURL != "" && item.Source.SHA != "" {
+			checkedOut, err = source.Checkout(ctx, source.Options{
+				RepoURL: item.Source.CloneURL,
+				Ref:     item.Source.Ref,
+				SHA:     item.Source.SHA,
+				Token:   w.GitHubToken,
+			})
+			if err != nil {
+				res = execResult{
+					Status:      "failed",
+					ExitCode:    -1,
+					CombinedLog: []byte("source checkout failed: " + err.Error()),
+					Duration:    time.Since(executionStarted),
+				}
+			} else {
+				sourceDir = checkedOut.WorkDir
+				defer func() { _ = checkedOut.Cleanup() }()
+			}
+		}
+		if res.Status == "" {
+			w.logf("running %s/%s (lease=%s): %s", item.WorkID, item.NodeID, leaseID, item.Run)
+			if item.Image != "" {
+				res = runDocker(ctx, item.Image, item.Run, item.Env, timeout, killCh)
+			} else {
+				res = runCommand(ctx, item.Run, item.Env, timeout, killCh, sourceDir, nil)
+			}
 		}
 	}
 
@@ -714,12 +736,15 @@ type execResult struct {
 // denied by default. A nil manifest preserves the slice-2 behaviour
 // (os.Environ + caller-supplied env, current working directory) — used
 // by legacy callers and tests that don't opt into the sandbox.
-func runCommand(ctx context.Context, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}, manifest ...*sandbox.Manifest) execResult {
+func runCommand(ctx context.Context, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}, workDir string, manifest ...*sandbox.Manifest) execResult {
 	start := time.Now()
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cctx, "sh", "-c", command)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 
 	var prepared *sandbox.Prepared
 	if len(manifest) > 0 && manifest[0] != nil {
