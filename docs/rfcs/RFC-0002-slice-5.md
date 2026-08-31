@@ -1,6 +1,6 @@
 # RFC-0002: Slice 5 — Docker Sandbox, BYOC Workers, Real OPA, Pilot CLI
 
-**Status:** Accepted
+**Status:** IMPLEMENTED (2026-08-31)
 **Author:** Hermes Agent (atlas)
 **Date:** 2026-08-31
 **Track:** Normal (architectural change but contained; no new external dependencies beyond `moby/moby` client + `github.com/open-policy-agent/opa`)
