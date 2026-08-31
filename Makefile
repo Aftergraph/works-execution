@@ -17,6 +17,7 @@ build:
 	$(GO) build -o $(BIN)/works-runner-id ./cmd/works-runner-id
 	$(GO) build -o $(BIN)/works-publisher ./cmd/works-publisher
 	$(GO) build -o $(BIN)/works-bench    ./cmd/works-bench
+	$(GO) build -o $(BIN)/works-ci       ./cmd/works-ci
 
 vet:
 	$(GO) vet ./...

@@ -584,7 +584,60 @@
       "created_at": "2026-08-31T18:20:00Z",
       "updated_at": "2026-08-31T18:20:00Z",
       "status": "done"
+    },
+    {
+      "id": "k-impl-028",
+      "title": "Content-addressed work cache (RFC-0005)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "packages/cache: canonical fingerprint (run+source sha+env+reqs+scope, SHA-256); SQLite store refuses failed results; scheduler attaches cache_key to ready items; worker claims hit before executing (dur 0, cache:hit evidence) and stores successful misses; GET/PUT /v1/cache/{key} behind bearer.",
+      "evidence": [
+        "packages/cache/cache.go",
+        "packages/cache/cache_test.go",
+        "services/api/cache_handler.go",
+        "services/api/api.go",
+        "internal/worker/worker.go"
+      ],
+      "notes": "RFC-0005. Verified live: cold pipeline 21s, warm all-hit 3s (7x). 5 unit tests + full cycle verified on prod.",
+      "created_at": "2026-08-31T19:05:00Z",
+      "updated_at": "2026-08-31T19:05:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-029",
+      "title": "Self-hosted CI: works builds itself (RFC-0006)",
+      "lane": "verification",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "works.yml pipeline (vet->test->build, pool avc-core, cache on vet); cmd/works-ci run/watch submits + waits + exits with verdict; evidence details carry error tail on failure; sandbox env gains Go toolchain (PATH/GOMODCACHE/GOPATH/GOCACHE under /var/lib/works); systemd worker override for repo write access.",
+      "evidence": [
+        "works.yml",
+        "cmd/works-ci/main.go",
+        "cmd/works-ci/auth.go",
+        "internal/sandbox/hermetic.go",
+        "Makefile"
+      ],
+      "notes": "Dogfood: works-execution CI runs on its own control plane, zero GitHub Actions. Verified live: PASS 21s cold -> 3s warm all-cache-hit. Failure diagnosability: evidence.details.error carries log tail.",
+      "created_at": "2026-08-31T19:05:00Z",
+      "updated_at": "2026-08-31T19:05:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-030",
+      "title": "Design-partner onboarding flow (works onboard)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "works onboard <owner/repo> prints ordered day-1 checklist: webhook values, BYOC pool provisioning command, works.yml template with pool pinning, works pilot smoke test; target <5min to first green.",
+      "evidence": [
+        "cmd/works/onboard.go"
+      ],
+      "notes": "Days 61-90 pilot flow. Verified output for acme/widgets with partner-acme pool.",
+      "created_at": "2026-08-31T19:05:00Z",
+      "updated_at": "2026-08-31T19:05:00Z",
+      "status": "done"
     }
   ],
-  "updated_at": "2026-08-31T18:20:00Z"
+  "updated_at": "2026-08-31T19:05:00Z"
 }

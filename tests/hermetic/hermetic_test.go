@@ -226,7 +226,9 @@ func TestPrepare_AllowListRequiresEntries(t *testing.T) {
 }
 
 // TestDefaultDenyEnv_Helper verifies the helper builds an env with only
-// the sandbox defaults + supplied allow-list, and includes PATH/HOME/LANG.
+// the sandbox defaults + supplied allow-list, and includes PATH/HOME/LANG
+// plus the Go toolchain env (GOMODCACHE/GOPATH/GOCACHE) that keeps
+// `go vet`/`go test` functional under HOME=/tmp (RFC: self-hosted CI).
 func TestDefaultDenyEnv_Helper(t *testing.T) {
 	t.Parallel()
 	env := envMap(sandbox.DefaultDenyEnv(map[string]string{
@@ -234,13 +236,23 @@ func TestDefaultDenyEnv_Helper(t *testing.T) {
 	}))
 	for k := range env {
 		switch k {
-		case "PATH", "HOME", "LANG", "FOO":
+		case "PATH", "HOME", "LANG", "FOO", "GOMODCACHE", "GOPATH", "GOCACHE":
 		default:
 			t.Errorf("unexpected key %s=%s", k, env[k])
 		}
 	}
 	if env["FOO"] != "bar" {
 		t.Errorf("FOO=%q", env["FOO"])
+	}
+	// Go env must point into the worker-owned state directory so module
+	// downloads and build caches persist across nodes.
+	for _, k := range []string{"GOMODCACHE", "GOPATH", "GOCACHE"} {
+		if !strings.HasPrefix(env[k], "/var/lib/works/") {
+			t.Errorf("%s=%q must live under /var/lib/works/", k, env[k])
+		}
+	}
+	if !strings.Contains(env["PATH"], "/usr/local/go/bin") {
+		t.Errorf("PATH=%q missing /usr/local/go/bin", env["PATH"])
 	}
 }
 

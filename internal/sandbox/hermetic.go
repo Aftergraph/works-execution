@@ -173,11 +173,27 @@ func Prepare(ctx context.Context, cmd string, env map[string]string, m Manifest,
 // DefaultDenyEnv returns an environment that contains only PATH, HOME,
 // LANG, and the supplied allow-list. Use it when you have no manifest
 // but still want the hermetic default.
+//
+// PATH includes /usr/local/go/bin so Go toolchain workers (the
+// primary self-hosted CI use case) resolve `go` without operator
+// plumbing. This is the worker process's own PATH inheritance for
+// subprocesses — it widens what a node can call, not what the
+// network/filesystem policy allows.
+//
+// Go build cache: HOME=/tmp breaks `go vet`/`go test` ("module cache
+// not found: neither GOMODCACHE nor GOPATH is set") because Go
+// derives its cache from $HOME. We pin GOMODCACHE+GOPATH+GOCACHE to
+// worker-owned directories under /var/lib/works so module downloads
+// and build caches persist across nodes (and feed RFC-0005 cache
+// locality instead of re-downloading on every run).
 func DefaultDenyEnv(allow map[string]string) []string {
 	base := map[string]string{
-		"PATH":  "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME":  "/tmp",
-		"LANG":  "C.UTF-8",
+		"PATH":       "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME":       "/tmp",
+		"LANG":       "C.UTF-8",
+		"GOMODCACHE": "/var/lib/works/gomodcache",
+		"GOPATH":     "/var/lib/works/gopath",
+		"GOCACHE":    "/var/lib/works/gocache",
 	}
 	for k, v := range allow {
 		base[k] = v

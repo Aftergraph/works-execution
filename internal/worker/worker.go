@@ -137,6 +137,10 @@ type ReadyItem struct {
 	TimeoutS int               `json:"timeout_s,omitempty"`
 	Image    string            `json:"image,omitempty"` // slice 5: docker image; empty = host subprocess
 	Source   *workgraph.Source `json:"source,omitempty"`
+	// CacheKey (RFC-0005): non-empty when the node's inputs are
+	// cache-enabled and the scheduler computed a fingerprint. The
+	// worker may claim a prior identical result via CacheLookup.
+	CacheKey string `json:"cache_key,omitempty"`
 }
 
 // ReadyResponse is the payload from GET /v1/workers/ready.
@@ -214,6 +218,78 @@ func (c *Client) RegisterRunner(ctx context.Context, runnerID, trustClass string
 		return fmt.Errorf("register runner: %s: %s", resp.Status, b)
 	}
 	return nil
+}
+
+// cacheEntry mirrors services/api.cacheEntryBody.
+type cacheEntry struct {
+	WorkID   string `json:"work_id"`
+	NodeID   string `json:"node_id"`
+	ExitCode int    `json:"exit_code"`
+	LogTail  string `json:"log_tail,omitempty"`
+}
+
+// CacheLookup claims a cached result for a fingerprint. Returns
+// os.ErrNotExist when the store has no entry (miss); any other error
+// is a transport/server problem and callers should fall through to
+// real execution.
+func (c *Client) CacheLookup(ctx context.Context, fingerprint string) (*cacheEntry, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/v1/cache/"+fingerprint, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, os.ErrNotExist
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("cache lookup: %s: %s", resp.Status, b)
+	}
+	var e cacheEntry
+	if err := json.NewDecoder(resp.Body).Decode(&e); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// CachePut stores a successful result under its fingerprint. Failures
+// are non-fatal for the caller (the run itself already succeeded).
+func (c *Client) CachePut(ctx context.Context, fingerprint, workID, nodeID string, log []byte) error {
+	body, _ := json.Marshal(map[string]any{
+		"work_id":   workID,
+		"node_id":   nodeID,
+		"exit_code": 0,
+		"log_tail":  truncateLogTail(log),
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.BaseURL+"/v1/cache/"+fingerprint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("cache put: %s: %s", resp.Status, b)
+	}
+	return nil
+}
+
+// cacheLogTailMax mirrors packages/cache.LogTailMax.
+const cacheLogTailMax = 4096
+
+func truncateLogTail(b []byte) string {
+	if len(b) <= cacheLogTailMax {
+		return string(b)
+	}
+	return string(b[len(b)-cacheLogTailMax:])
 }
 
 // Ready polls the API for ready work.
@@ -489,39 +565,65 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 		timeout = 10 * time.Minute
 	}
 
+	cacheHit := false
 	var res execResult
-	executionStarted := time.Now()
-	var checkedOut *source.Source
-	var sourceDir string
-	if item.Source != nil && item.Source.CloneURL != "" && item.Source.SHA != "" {
-		checkedOut, err = source.Checkout(ctx, source.Options{
-			RepoURL: item.Source.CloneURL,
-			Ref:     item.Source.Ref,
-			SHA:     item.Source.SHA,
-			Token:   w.GitHubToken,
-		})
-		if err != nil {
+	if item.CacheKey != "" {
+		if e, err := w.Client.CacheLookup(ctx, item.CacheKey); err == nil && e.ExitCode == 0 {
+			cacheHit = true
 			res = execResult{
-				Status:      "failed",
-				ExitCode:    -1,
-				CombinedLog: []byte("source checkout failed: " + err.Error()),
-				Duration:    time.Since(executionStarted),
+				Status:      "succeeded",
+				ExitCode:    0,
+				CombinedLog: []byte("[cache hit " + item.CacheKey[:min(12, len(item.CacheKey))] + "] replayed from prior identical run:\n" + e.LogTail),
+				Duration:    0,
 			}
-		} else {
-			sourceDir = checkedOut.WorkDir
-			defer func() { _ = checkedOut.Cleanup() }()
+			w.logf("cache HIT %s/%s (lease=%s): replayed result", item.WorkID, item.NodeID, leaseID)
 		}
 	}
-	if res.Status == "" {
-		w.logf("running %s/%s (lease=%s): %s", item.WorkID, item.NodeID, leaseID, item.Run)
-		if item.Image != "" {
-			res = runDocker(ctx, item.Image, item.Run, item.Env, timeout, killCh)
-		} else {
-			res = runCommand(ctx, item.Run, item.Env, timeout, killCh, sourceDir, nil)
+
+	if !cacheHit {
+		executionStarted := time.Now()
+		var checkedOut *source.Source
+		var sourceDir string
+		if item.Source != nil && item.Source.CloneURL != "" && item.Source.SHA != "" {
+			checkedOut, err = source.Checkout(ctx, source.Options{
+				RepoURL: item.Source.CloneURL,
+				Ref:     item.Source.Ref,
+				SHA:     item.Source.SHA,
+				Token:   w.GitHubToken,
+			})
+			if err != nil {
+				res = execResult{
+					Status:      "failed",
+					ExitCode:    -1,
+					CombinedLog: []byte("source checkout failed: " + err.Error()),
+					Duration:    time.Since(executionStarted),
+				}
+			} else {
+				sourceDir = checkedOut.WorkDir
+				defer func() { _ = checkedOut.Cleanup() }()
+			}
+		}
+		if res.Status == "" {
+			w.logf("running %s/%s (lease=%s): %s", item.WorkID, item.NodeID, leaseID, item.Run)
+			if item.Image != "" {
+				res = runDocker(ctx, item.Image, item.Run, item.Env, timeout, killCh)
+			} else {
+				res = runCommand(ctx, item.Run, item.Env, timeout, killCh, sourceDir, nil)
+			}
 		}
 	}
 
 	cancelHB() // stop heartbeats
+
+	// RFC-0005: publish successful, really-executed results to the
+	// cache so the next byte-identical node can skip execution.
+	// Cache-replayed results are NOT re-published (they add no new
+	// information and would mask the original creator).
+	if !cacheHit && res.Status == "succeeded" && item.CacheKey != "" {
+		if err := w.Client.CachePut(ctx, item.CacheKey, item.WorkID, item.NodeID, res.CombinedLog); err != nil {
+			w.logf("cache put: %v", err) // non-fatal
+		}
+	}
 
 	// If the heartbeat reported lease loss, the attempt is already cancelled
 	// by the reaper or by RevokeLease. We still POST /complete but expect
@@ -541,6 +643,31 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 			}
 		}
 	}
+	// Failed nodes persist a log tail in evidence Details so CI
+	// failures are diagnosable from the API/CLI without SSHing to
+	// the worker. (Successful nodes store the full log as artifact.)
+	evidenceDetails := map[string]any{
+		"exit_code":   res.ExitCode,
+		"duration_ms": res.Duration.Milliseconds(),
+		"command":     item.Run,
+		"lease_lost":  res.LeaseLost,
+	}
+	if res.Status != "succeeded" && len(res.CombinedLog) > 0 {
+		tail := string(res.CombinedLog)
+		if len(tail) > 2048 {
+			tail = tail[len(tail)-2048:]
+		}
+		evidenceDetails["error"] = tail
+	}
+	if res.Status == "succeeded" {
+		if cacheHit {
+			evidenceDetails["cache"] = "hit" // replayed, zero execution
+		} else if item.CacheKey != "" {
+			evidenceDetails["cache"] = "miss" // really executed, now stored
+		} else {
+			evidenceDetails["cache"] = "disabled" // node opted out
+		}
+	}
 	evidence := []workgraph.Evidence{{
 		ID:          workgraph.NewID("evd"),
 		NodeID:      item.NodeID,
@@ -548,12 +675,7 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 		Result:      evidenceResult(res.Status),
 		Signer:      w.ID,
 		Environment: fmt.Sprintf("worker=%s", w.ID),
-		Details: map[string]any{
-			"exit_code":   res.ExitCode,
-			"duration_ms": res.Duration.Milliseconds(),
-			"command":     item.Run,
-			"lease_lost":  res.LeaseLost,
-		},
+		Details:     evidenceDetails,
 	}}
 	if err := w.Client.CompleteLease(ctx, leaseID, res.ExitCode, artifact, evidence); err != nil {
 		w.logf("complete lease: %v", err)

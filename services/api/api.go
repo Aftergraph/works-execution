@@ -18,6 +18,7 @@ import (
 
 	"github.com/JonasAbde/works-execution/internal/manifest"
 	"github.com/JonasAbde/works-execution/internal/scheduler"
+	"github.com/JonasAbde/works-execution/packages/cache"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/evidence"
 	"github.com/JonasAbde/works-execution/services/observability"
@@ -87,6 +88,10 @@ type Server struct {
 	// the state transition is not delayed by GitHub's API.
 	// Publish errors are logged and never propagated.
 	Publisher publisher.Publisher
+	// CacheStore, when non-nil, serves GET/PUT /v1/cache/{key}
+	// (RFC-0005 content-addressed work cache). When nil those
+	// endpoints return 503 and the scheduler omits cache keys.
+	CacheStore *cache.Store
 }
 
 // ensureIssuer returns s.Auth, lazily constructing a default HMACIssuer
@@ -152,6 +157,9 @@ func (s *Server) Routes() http.Handler {
 	// should firewall /v1/webhook on the listener if they want
 	// extra defense-in-depth.
 	mux.HandleFunc("/v1/webhook/github", s.githubWebhookHandler)
+	// RFC-0005: content-addressed cache. Behind Bearer auth like the
+	// worker surface — a cache write is a state mutation.
+	mux.Handle("/v1/cache/", s.requireBearer(http.HandlerFunc(s.cacheHandler)))
 	if s.Metrics != nil {
 		// GET /metrics — Prometheus exposition. Internal scrape only; not
 		// behind requireBearer so Prometheus can scrape without an enroll
@@ -455,6 +463,12 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 		Image      string                `json:"image,omitempty"` // slice 5: docker image; empty = host subprocess
 		Source     *workgraph.Source     `json:"source,omitempty"`
 		Assignment *scheduler.Assignment `json:"assignment,omitempty"`
+		// CacheKey (RFC-0005): when non-empty, this node's inputs are
+		// byte-identical to a previously successful execution. The
+		// worker may POST /v1/cache/{key}/claim instead of running
+		// the command; a 200 proves the equivalence and returns the
+		// prior result.
+		CacheKey string `json:"cache_key,omitempty"`
 	}
 	type unschedulable struct {
 		WorkID     string         `json:"work_id"`
@@ -498,6 +512,23 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 				continue
+			}
+
+			// Cache fingerprint (RFC-0005): computed for every ready
+			// node with cache enabled (node.Cache or CacheSpec). The
+			// worker decides whether to claim the hit; the key is
+			// deterministic so both sides agree without extra
+			// round-trips. Computation failures never block work —
+			// the item just goes out without a key.
+			if n.Cache || n.CacheSpec != nil {
+				scope := "organization"
+				if n.CacheSpec != nil && n.CacheSpec.Scope == "worker-local" {
+					scope = "worker"
+				}
+				key := cache.KeyFromNode(work, &n, scope)
+				if fp, fperr := key.Fingerprint(); fperr == nil {
+					item.CacheKey = fp
+				}
 			}
 
 			// Snapshot the node (value copy) so the scheduler sees an
