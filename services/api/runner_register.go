@@ -201,12 +201,25 @@ func (s *Server) registerRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Idempotent upsert: if this runner_id is already registered, return
-	// the stored record unchanged.
+	// Idempotent upsert with heartbeat refresh: if this runner_id is
+	// already registered, update LastHeartbeatAt (the worker re-POSTs
+	// the same registration as its heartbeat, RFC-0004) and refresh
+	// capabilities in place (a worker may restart with new labels).
+	// The record identity stays stable so pool membership and
+	// scheduler assignments keep working across worker restarts.
 	if s.RunnerRegistry == nil {
 		s.RunnerRegistry = newRunnerRegistry()
 	}
-	if existing, ok := s.RunnerRegistry.get(in.RunnerID); ok {
+	now := time.Now().UTC()
+	in.LastHeartbeatAt = &now
+	if existing, ok := s.RunnerRegistry.get(in.RunnerID); ok && existing != nil {
+		existing.LastHeartbeatAt = &now
+		existing.Capabilities = in.Capabilities
+		existing.TrustClass = in.TrustClass
+		existing.LifecycleState = in.LifecycleState
+		if in.SpiffeID != "" {
+			existing.SpiffeID = in.SpiffeID
+		}
 		writeJSON(w, http.StatusOK, existing)
 		return
 	}
@@ -219,8 +232,6 @@ func (s *Server) registerRunner(w http.ResponseWriter, r *http.Request) {
 	if in.EnrolledAt.IsZero() {
 		in.EnrolledAt = time.Now().UTC()
 	}
-	now := time.Now().UTC()
-	in.LastHeartbeatAt = &now
 
 	s.RunnerRegistry.put(&in)
 	s.logf("runner registered: id=%s spiffe=%s trust=%s state=%s",
