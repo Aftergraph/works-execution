@@ -1,6 +1,6 @@
 # RFC-0001: Slice 2 — Leases, Worker-Loss Recovery, Log Streaming
 
-**Status:** Accepted
+**Status:** IMPLEMENTED (2026-08-31)
 **Author:** Hermes Agent (atlas)
 **Date:** 2026-08-31
 **Implements:** `00_START_HERE/90_DAY_EXECUTION_PLAN.md` Days 31–60 (subset)

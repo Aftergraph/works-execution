@@ -505,7 +505,7 @@
       "lane": "implementation",
       "column": "done",
       "standard_ids": [],
-      "acceptance": "cmd/works-bench + services/bench for {Actions, WORKS subprocess, WORKS Docker} × {cold, warm, recovery} runs same work, writes docs/benchmarks/m1-*.md with queue_time, exec_time, wall_time, cpu_time, cache_hit_ratio, est_cost_usd, comparison table.",
+      "acceptance": "cmd/works-bench + services/bench for {Actions, WORKS subprocess, WORKS Docker} \u00d7 {cold, warm, recovery} runs same work, writes docs/benchmarks/m1-*.md with queue_time, exec_time, wall_time, cpu_time, cache_hit_ratio, est_cost_usd, comparison table.",
       "evidence": [
         "cmd/works-bench/main.go",
         "services/bench/bench.go",
@@ -649,11 +649,28 @@
         "services/api/webui.go",
         "cmd/works-api/main.go"
       ],
-      "notes": "Days 31-60 minimal web execution view — the last uncovered item. 200 on all pages locally + via works.rendetalje.dk. Public=true in prod (read-only); set WORKS_WEBUI_PUBLIC=false + token for private.",
+      "notes": "Days 31-60 minimal web execution view \u2014 the last uncovered item. 200 on all pages locally + via works.rendetalje.dk. Public=true in prod (read-only); set WORKS_WEBUI_PUBLIC=false + token for private.",
       "created_at": "2026-08-31T21:00:00Z",
       "updated_at": "2026-08-31T21:00:00Z",
       "status": "done"
+    },
+    {
+      "id": "k-impl-032",
+      "title": "Webhook honors repo works.yml (pool, DAG, cache, triggers)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "Webhook receiver fetches the repo's works.yml at the delivery SHA; honors requirements.pool, node DAG, cache flags; 200 ignored when event not in triggers; 502 on broken works.yml; falls back to single-node verify when no works.yml or no token. Verified live on prod: push on main -> 3-node DAG (vet/test/build) on pool avc-core -> SUCCEEDED -> GitHub status success.",
+      "evidence": [
+        "packages/pipeline/pipeline.go",
+        "services/api/webhook_handler.go",
+        "cmd/works-api/main.go"
+      ],
+      "notes": "PR #5 (dbd11a1, merged 2308ab1). Closes the gap where webhook-triggered CI ignored works.yml (no pool boundary, no cache) despite 'works onboard' promising it. Live proof: wrk_02653ca3d6c7339209c5432635750f12 SUCCEEDED, pool=avc-core, 3 nodes, GitHub status success on 2308ab1.",
+      "created_at": "2026-08-31T23:00:00Z",
+      "updated_at": "2026-08-31T23:00:00Z",
+      "status": "done"
     }
   ],
-  "updated_at": "2026-08-31T21:00:00Z"
+  "updated_at": "2026-08-31T23:00:00Z"
 }

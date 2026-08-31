@@ -1,6 +1,6 @@
 # RFC-0003: M1 — External Repository Pilot
 
-**Status:** Accepted
+**Status:** IMPLEMENTED (2026-08-31)
 **Author:** Hermes Agent (atlas)
 **Date:** 2026-08-31
 **Track:** Hard
