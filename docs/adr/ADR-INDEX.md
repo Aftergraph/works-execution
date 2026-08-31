@@ -10,6 +10,7 @@ Architecture Decision Records for `works-execution`.
 - **ADR-0004** — GitHub compatibility is a distribution wedge, not the core. (Source pack, `10_ADRS/`)
 - **ADR-0005** — V1 uses SQLite for durable state. (`docs/adr/ADR-0005-sqlite-for-v1-state.md`)
 - **ADR-0006** — Brand: `works-execution`. (`docs/adr/ADR-0006-brand-works-execution.md`)
+- **ADR-0007** — Open-core IP carve-up (OSS substrate vs. commercial control plane). (`docs/adr/ADR-0007-open-core-ip-carve-up.md`)
 
 ## Proposed (none yet)
 
