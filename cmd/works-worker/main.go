@@ -33,6 +33,7 @@ func main() {
 		heartbeatEvery = flag.Duration("heartbeat", 10*time.Second, "heartbeat interval")
 		enrollSecret   = flag.String("enroll-secret", envOr("WORKS_ENROLL_SECRET", ""), "shared secret for /v1/workers/enroll (Zero-Secret: required)")
 		enrollTTL      = flag.Duration("enroll-ttl", time.Hour, "requested enrollment-token TTL")
+		githubToken    = flag.String("github-token", envOr("WORKS_GITHUB_TOKEN", ""), "GitHub token for work-scoped source checkout")
 	)
 	flag.Parse()
 
@@ -102,6 +103,7 @@ func main() {
 		PollEvery:      *pollEvery,
 		LeaseTTL:       *leaseTTL,
 		HeartbeatEvery: *heartbeatEvery,
+		GitHubToken:    *githubToken,
 	}
 
 	logger.Printf("works-worker starting: id=%s api=%s lease_ttl=%s heartbeat=%s", *workerID, *apiURL, *leaseTTL, *heartbeatEvery)

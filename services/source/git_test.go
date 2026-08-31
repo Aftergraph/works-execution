@@ -18,6 +18,56 @@ func skipIfNoGit(t *testing.T) {
 	}
 }
 
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestCheckout_ExactRef checks out a non-default branch at its exact SHA.
+// This is the invariant that prevents a CI work from verifying main when a
+// webhook actually delivered a feature branch or pull-request head.
+func TestCheckout_ExactRef(t *testing.T) {
+	skipIfNoGit(t)
+	repo := t.TempDir()
+	gitOutput(t, "", "init", "-b", "main", repo)
+	gitOutput(t, repo, "config", "user.email", "works-test@example.invalid")
+	gitOutput(t, repo, "config", "user.name", "Works Test")
+	if err := os.WriteFile(filepath.Join(repo, "marker.txt"), []byte("main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "marker.txt")
+	gitOutput(t, repo, "commit", "-m", "main")
+	gitOutput(t, repo, "switch", "-c", "feature")
+	if err := os.WriteFile(filepath.Join(repo, "marker.txt"), []byte("feature\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "commit", "-am", "feature")
+	sha := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	src, err := Checkout(context.Background(), Options{
+		RepoURL: repo,
+		Ref:     "refs/heads/feature",
+		SHA:     sha,
+	})
+	if err != nil {
+		t.Fatalf("checkout feature ref: %v", err)
+	}
+	defer src.Cleanup()
+	marker, err := os.ReadFile(filepath.Join(src.WorkDir, "marker.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(marker) != "feature\n" {
+		t.Fatalf("checked out wrong ref: got %q", marker)
+	}
+}
+
 // TestCheckout_PublicRepo_NoToken: a public repo with no token
 // clones successfully and HEAD matches the requested SHA.
 func TestCheckout_PublicRepo_NoToken(t *testing.T) {
