@@ -78,8 +78,11 @@ func main() {
 			Secret:           *webhookSecret,
 			AllowedRepos:     allowedReposFromEnv(),
 			ProductionAccess: *webhookProduction,
+			// Same credential as the publisher: used to fetch the
+			// repo's works.yml (Contents API) on webhook delivery.
+			GitHubToken: envOr("WORKS_GITHUB_TOKEN", ""),
 		}
-		logger.Printf("webhook receiver enabled (/v1/webhook/github, production_access=%v)", *webhookProduction)
+		logger.Printf("webhook receiver enabled (/v1/webhook/github, production_access=%v, works.yml=%v)", *webhookProduction, srv.WebhookConfig.GitHubToken != "")
 	} else {
 		logger.Printf("webhook receiver disabled (no --webhook-secret)")
 	}

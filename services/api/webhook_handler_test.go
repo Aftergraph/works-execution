@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -363,5 +364,165 @@ func TestWebhookHandler_PersistedSource_HasGitHubProvenance(t *testing.T) {
 	}
 	if !w.Policy.ProductionAccess {
 		t.Errorf("Policy.ProductionAccess: got %v, want true", w.Policy.ProductionAccess)
+	}
+}
+
+// --- works.yml pipeline path (RFC-0006) --------------------------------------
+
+const testPipelineYML = `version: 1
+
+work:
+  verify:
+    triggers:
+      - push
+      - pull_request
+    requirements:
+      confidence: development
+      os: linux
+      arch: amd64
+      pool: avc-core
+    nodes:
+      vet:
+        run: go vet ./...
+        cache: true
+        timeout_s: 120
+      test:
+        needs: [vet]
+        run: go test ./... -count=1
+        timeout_s: 600
+`
+
+// newPipelineWebhookTestServer returns a webhook test server whose
+// works.yml fetcher is a stub returning the given raw bytes (nil =
+// repo has no works.yml).
+func newPipelineWebhookTestServer(t *testing.T, secret string, raw []byte) (*httptest.Server, store.Store) {
+	t.Helper()
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	srv := &api.Server{
+		Store: s,
+		WebhookConfig: &api.WebhookConfig{
+			Secret:           secret,
+			ProductionAccess: true,
+			GitHubToken:      "test-token",
+		},
+		PipelineFetcher: func(_ context.Context, token, repo, sha string) ([]byte, error) {
+			if token != "test-token" {
+				t.Errorf("fetcher token = %q, want test-token", token)
+			}
+			if repo != "JonasAbde/works-execution" {
+				t.Errorf("fetcher repo = %q", repo)
+			}
+			return raw, nil
+		},
+	}
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(ts.Close)
+	return ts, s
+}
+
+func TestWebhookHandler_WorksYML_UsesPipeline(t *testing.T) {
+	const secret = "shhh"
+	ts, st := newPipelineWebhookTestServer(t, secret, []byte(testPipelineYML))
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	body := pushBody("JonasAbde/works-execution", "main", sha)
+	resp := postGitHub(t, ts, secret, "push", "del-pipe-1", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		bb, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 201; body=%s", resp.StatusCode, bb)
+	}
+	var got map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	workID, _ := got["work_id"].(string)
+
+	w, err := st.GetWork(t.Context(), workID)
+	if err != nil {
+		t.Fatalf("GetWork: %v", err)
+	}
+	// The pipeline's pool must be honored (RFC-0004 boundary).
+	if w.Requirements.Pool != "avc-core" {
+		t.Errorf("Requirements.Pool = %q, want avc-core", w.Requirements.Pool)
+	}
+	// The DAG must come from works.yml, not the single-node default.
+	if len(w.Graph.Nodes) != 2 {
+		t.Fatalf("nodes = %d, want 2 (vet, test)", len(w.Graph.Nodes))
+	}
+	if _, ok := w.Graph.Nodes["vet"]; !ok {
+		t.Error("missing vet node")
+	}
+	if _, ok := w.Graph.Nodes["test"]; !ok {
+		t.Error("missing test node")
+	}
+	if !w.Graph.Nodes["vet"].Cache {
+		t.Error("vet node should have cache: true from works.yml")
+	}
+	// Source mapping must still be stamped.
+	if w.Source.SHA != sha || w.Source.Type != "github_push" {
+		t.Errorf("source = %+v", w.Source)
+	}
+}
+
+func TestWebhookHandler_WorksYML_TriggerMismatch_Ignored(t *testing.T) {
+	const secret = "shhh"
+	// Pipeline triggers on push + pull_request; deliver a "release"
+	// event — must be ignored, no work created.
+	ts, _ := newPipelineWebhookTestServer(t, secret, []byte(testPipelineYML))
+	body := pushBody("JonasAbde/works-execution", "main", "0123456789abcdef0123456789abcdef01234567")
+	resp := postGitHub(t, ts, secret, "release", "del-pipe-2", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 ignored", resp.StatusCode)
+	}
+	var got map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	if got["status"] != "ignored" {
+		t.Errorf("status = %v, want ignored", got["status"])
+	}
+}
+
+func TestWebhookHandler_WorksYML_Broken_502(t *testing.T) {
+	const secret = "shhh"
+	ts, _ := newPipelineWebhookTestServer(t, secret, []byte("version: 1\nwork: {}\n"))
+	body := pushBody("JonasAbde/works-execution", "main", "0123456789abcdef0123456789abcdef01234567")
+	resp := postGitHub(t, ts, secret, "push", "del-pipe-3", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		bb, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 502; body=%s", resp.StatusCode, bb)
+	}
+}
+
+func TestWebhookHandler_NoWorksYML_FallsBack(t *testing.T) {
+	const secret = "shhh"
+	// Fetcher returns nil = repo has no works.yml → default
+	// single-node verify work, no pool.
+	ts, st := newPipelineWebhookTestServer(t, secret, nil)
+	body := pushBody("JonasAbde/works-execution", "main", "0123456789abcdef0123456789abcdef01234567")
+	resp := postGitHub(t, ts, secret, "push", "del-pipe-4", body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		bb, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 201; body=%s", resp.StatusCode, bb)
+	}
+	var got map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&got)
+	workID, _ := got["work_id"].(string)
+	w, err := st.GetWork(t.Context(), workID)
+	if err != nil {
+		t.Fatalf("GetWork: %v", err)
+	}
+	if len(w.Graph.Nodes) != 1 {
+		t.Fatalf("nodes = %d, want 1 (default build)", len(w.Graph.Nodes))
+	}
+	if _, ok := w.Graph.Nodes["build"]; !ok {
+		t.Error("missing default build node")
+	}
+	if w.Requirements.Pool != "" {
+		t.Errorf("Requirements.Pool = %q, want empty (fallback)", w.Requirements.Pool)
 	}
 }

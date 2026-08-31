@@ -13,14 +13,17 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
+	"github.com/JonasAbde/works-execution/packages/pipeline"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/webhook"
 )
@@ -42,6 +45,11 @@ type WebhookConfig struct {
 	// admits it without further evidence. Most M1 pilot runs
 	// want this on.
 	ProductionAccess bool
+	// GitHubToken is the credential used to fetch the repo's
+	// works.yml (Contents API, Contents:read). When empty, the
+	// webhook falls back to the built-in single-node verify
+	// behavior. Usually the same PAT as the publisher.
+	GitHubToken string
 }
 
 // githubWebhookHandler handles POST /v1/webhook/github.
@@ -141,42 +149,43 @@ func (s *Server) githubWebhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build the Work. The graph is single-node ("build") with a
-	// runtime that calls out to the real runner (k-impl-019/020).
+	// Build the Work. Preferred: the repo's works.yml (RFC-0006) —
+	// the repo owns its pipeline (DAG, pool pinning, cache). When
+	// the repo has no works.yml (or no token is configured), fall
+	// back to the built-in single-node verify behavior.
 	workID := workgraph.NewID("wrk")
-	g := &workgraph.Work{
-		ID:    workID,
-		State: workgraph.StateQueued,
-		Source: workgraph.Source{
-			Type:       sourceTypeFor(delivery),
-			Repository: delivery.RepoFullName,
-			Ref:        delivery.Ref,
-			Actor:      r.Header.Get("X-GitHub-User"),
-			Branch:     branchFromRef(delivery.Ref, delivery.Event),
-			SHA:        delivery.SHA,
-			HTMLURL:    delivery.RepoHTMLURL,
-			CloneURL:   delivery.RepoCloneURL,
-			PRNumber:   delivery.PRNumber,
-			PRAction:   delivery.PRAction,
-			PRHead:     delivery.PRHead,
-			PRBase:     delivery.PRBase,
-		},
-		Objective: workgraph.Objective{Type: "verify_change"},
-		Graph:     workgraph.Graph{Nodes: map[string]workgraph.Node{}},
-		Policy: workgraph.Policy{
+	g, err := s.workFromPipeline(r.Context(), delivery)
+	if err != nil {
+		if errors.Is(err, errPipelineSkip) {
+			// The repo's works.yml exists but doesn't trigger on
+			// this event — ack and skip, like GitHub Actions.
+			writeJSON(w, http.StatusOK, map[string]string{
+				"status": "ignored",
+				"reason": "works.yml does not trigger on " + delivery.Event,
+			})
+			return
+		}
+		// A broken works.yml must not silently degrade to the
+		// fallback: the repo declared a pipeline and it failed to
+		// load. Surface it as a 502 so the operator sees it.
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error":   "pipeline_load_failed",
+			"message": err.Error(),
+		})
+		return
+	}
+	if g == nil {
+		g = s.defaultWebhookWork(delivery, workID)
+	} else {
+		g.ID = workID
+		g.State = workgraph.StateQueued
+		g.Source = webhookSource(delivery)
+		g.Policy = workgraph.Policy{
 			ProductionAccess: s.WebhookConfig.ProductionAccess,
-		},
+		}
 	}
-	g.Graph.Nodes["build"] = workgraph.Node{
-		ID:       "build",
-		Run:      verifyCommand(delivery),
-		TimeoutS: 600,
-		// M1 delegates actual building to services/runner which
-		// is called by the worker. The node's `Run` is a marker
-		// for slice-1+2 evidence; the real execution path is
-		// the worker's k-impl-020 integration that checks out
-		// source/019 and runs go test ./... directly.
-	}
+	g.Source.Actor = r.Header.Get("X-GitHub-User")
+	g.CorrelationID = workgraph.NewID("cor")
 
 	// Persist the work.
 	if err := s.Store.CreateWork(r.Context(), g); err != nil {
@@ -212,6 +221,103 @@ func verifyCommand(d webhook.Delivery) string {
 		// Allow-list configuration is the primary guard; this second guard
 		// makes an accidental config expansion fail, never succeed.
 		return "exit 78"
+	}
+}
+
+// errPipelineSkip is returned by workFromPipeline when the repo's
+// works.yml exists but does not declare the delivery's event in its
+// triggers — the webhook must not create a work at all (same as
+// GitHub Actions ignoring a workflow that doesn't trigger on the
+// event).
+var errPipelineSkip = errors.New("pipeline: event not in triggers")
+
+// workFromPipeline tries to build the Work from the repo's works.yml
+// (RFC-0006). Returns:
+//
+//   - (nil, nil) when the repo has no works.yml or no GitHub token is
+//     configured — the caller falls back to defaultWebhookWork;
+//   - (work, nil) when the pipeline loaded and the delivery's event
+//     matches a declared trigger;
+//   - (nil, errPipelineSkip) when the pipeline exists but the event is
+//     not in its triggers — the caller must NOT create a work;
+//   - (nil, err) when the pipeline exists but cannot be loaded or
+//     parsed — the caller must surface the error, not degrade.
+//
+// The returned Work is a template: ID/State/Source/Policy are stamped
+// by the caller.
+func (s *Server) workFromPipeline(ctx context.Context, d webhook.Delivery) (*workgraph.Work, error) {
+	if s.WebhookConfig == nil || s.WebhookConfig.GitHubToken == "" {
+		return nil, nil
+	}
+	fetch := s.PipelineFetcher
+	if fetch == nil {
+		fetch = pipeline.FetchFromGitHub
+	}
+	raw, err := fetch(ctx, s.WebhookConfig.GitHubToken, d.RepoFullName, d.SHA)
+	if err != nil {
+		return nil, fmt.Errorf("fetch works.yml: %w", err)
+	}
+	if raw == nil {
+		return nil, nil // repo has no works.yml — fall back
+	}
+	// Parse FIRST: a broken works.yml must surface as an error, not
+	// be masked by the trigger check (which returns false for
+	// unparseable documents).
+	w, err := pipeline.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse works.yml: %w", err)
+	}
+	if !pipeline.MatchesTrigger(raw, d.Event) {
+		return nil, errPipelineSkip
+	}
+	return w, nil
+}
+
+// defaultWebhookWork builds the built-in single-node verify Work used
+// when the repo has no works.yml (or no token is configured). The
+// graph is single-node ("build") with a runtime that calls out to the
+// real runner (k-impl-019/020).
+func (s *Server) defaultWebhookWork(d webhook.Delivery, workID string) *workgraph.Work {
+	g := &workgraph.Work{
+		ID:    workID,
+		State: workgraph.StateQueued,
+		Source: webhookSource(d),
+		Objective: workgraph.Objective{
+			Type: "verify_change",
+		},
+		Graph: workgraph.Graph{Nodes: map[string]workgraph.Node{}},
+		Policy: workgraph.Policy{
+			ProductionAccess: s.WebhookConfig.ProductionAccess,
+		},
+	}
+	g.Graph.Nodes["build"] = workgraph.Node{
+		ID:       "build",
+		Run:      verifyCommand(d),
+		TimeoutS: 600,
+		// M1 delegates actual building to services/runner which
+		// is called by the worker. The node's `Run` is a marker
+		// for slice-1+2 evidence; the real execution path is
+		// the worker's k-impl-020 integration that checks out
+		// source/019 and runs go test ./... directly.
+	}
+	return g
+}
+
+// webhookSource maps a webhook delivery to its workgraph.Source.
+func webhookSource(d webhook.Delivery) workgraph.Source {
+	return workgraph.Source{
+		Type:       sourceTypeFor(d),
+		Repository: d.RepoFullName,
+		Ref:        d.Ref,
+		Actor:      "", // set by the handler from X-GitHub-User
+		Branch:     branchFromRef(d.Ref, d.Event),
+		SHA:        d.SHA,
+		HTMLURL:    d.RepoHTMLURL,
+		CloneURL:   d.RepoCloneURL,
+		PRNumber:   d.PRNumber,
+		PRAction:   d.PRAction,
+		PRHead:     d.PRHead,
+		PRBase:     d.PRBase,
 	}
 }
 
