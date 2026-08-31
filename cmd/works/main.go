@@ -30,9 +30,14 @@ Usage:
   works init [--out works.yaml]
   works run --config works.yaml [--api http://127.0.0.1:8080] [--idempotency-key KEY]
   works status <work_id> [--api http://127.0.0.1:8080] [--follow]
+  works connect github [--api URL]    # M1 k-impl-024: print webhook URL + secret + repo-policy hint
+  works pilot <owner/repo> [--ref REF] [--sha SHA] [--api URL] [--timeout-s N] [--once]
+                                     # M1 k-impl-024: submit work for repo, poll until terminal, print timeline
 
 Environment:
-  WORKS_API          default control plane URL (default http://127.0.0.1:8080)
+  WORKS_API                default control plane URL (default http://127.0.0.1:8080)
+  WORKS_WEBHOOK_URL        public works-api URL to register as a webhook target (used by 'connect github')
+  WORKS_GITHUB_TOKEN       PAT with repo:status scope (used by 'connect github' to read repo info)
 `
 
 func main() {
@@ -47,6 +52,10 @@ func main() {
 		runCmd(os.Args[2:])
 	case "status":
 		statusCmd(os.Args[2:])
+	case "connect":
+		connectCmd(os.Args[2:])
+	case "pilot":
+		pilotCmd(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
