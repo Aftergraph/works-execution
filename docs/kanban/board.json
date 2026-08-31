@@ -421,7 +421,126 @@
       "status": "done",
       "done_at": "2026-08-31T03:04:00Z",
       "notes": "shipped slice 5. 5/5 docker tests pass, e2e_docker PASS in 2.3s, vet clean, standards-validate green, kanban-validate green, 7 binaries built."
+    },
+    {
+      "id": "k-impl-019",
+      "title": "Real repo source: work-scoped token + exact SHA checkout",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": [],
+      "acceptance": "Given a repo URL + SHA + a work-scoped token (installation token, not PAT), `services/source/git.go` clones the repo into an isolated workspace, checks out the exact SHA, and returns a Cleanup() that removes the workspace. Token never appears in process env outside the git invocation. Unit tests cover checkout, cleanup, and SHA verification.",
+      "evidence": [
+        "services/source/git.go",
+        "services/source/git_test.go"
+      ],
+      "notes": "M1 card 2/8. ~300 LOC. Uses installation token scoped to single repo, expiring in 1h. `git clone --branch <branch>` then `git checkout <sha>` into /tmp/ws-<workid>.",
+      "created_at": "2026-08-31T03:30:00Z",
+      "updated_at": "2026-08-31T03:30:00Z"
+    },
+    {
+      "id": "k-impl-018",
+      "title": "GitHub webhook receiver (HMAC verify + idempotent delivery)",
+      "lane": "implementation",
+      "column": "in_progress",
+      "standard_ids": [],
+      "acceptance": "POST /v1/webhook/github with valid HMAC-SHA256 (X-Hub-Signature-256) creates exactly one Work per (delivery_id, event). Invalid signature returns 401 and creates zero Works. Duplicate X-GitHub-Delivery is a no-op. Unit tests cover all 3 paths. Live test against a real webhook delivery works.",
+      "evidence": [
+        "services/webhook/github.go",
+        "services/webhook/github_test.go"
+      ],
+      "notes": "M1 card 1/8 (RFC-0003). services/webhook/github.go. ~300 LOC. Endpoints: POST /v1/webhook/github. HMAC-SHA256 verify against shared secret. Idempotency by X-GitHub-Delivery \u2192 webhooks table.",
+      "created_at": "2026-08-31T03:30:00Z",
+      "updated_at": "2026-08-31T03:30:00Z"
+    },
+    {
+      "id": "k-impl-020",
+      "title": "Real runner: Go stack detect, run go vet + go test ./... -count=1",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": [],
+      "acceptance": "services/runner/real.go detects Go (go.mod), runs go vet + go test ./... -count=1, captures stdout+stderr, propagates exit code. Integration: SUCCEEDED on known-good, FAILED on known-bad.",
+      "evidence": [
+        "services/runner/real.go",
+        "services/runner/real_test.go"
+      ],
+      "notes": "M1 card 3/8. ~400 LOC.",
+      "created_at": "2026-08-31T03:30:00Z",
+      "updated_at": "2026-08-31T03:30:00Z"
+    },
+    {
+      "id": "k-impl-021",
+      "title": "GitHub Check Run publisher",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": [],
+      "acceptance": "services/publisher/check.go POSTs /repos/{owner}/{repo}/check-runs with name=works-execution, head_sha, conclusion, details_url. Installation token. Idempotent on (head_sha, name).",
+      "evidence": [
+        "services/publisher/check.go",
+        "services/publisher/check_test.go"
+      ],
+      "notes": "M1 card 4/8. ~300 LOC.",
+      "created_at": "2026-08-31T03:30:00Z",
+      "updated_at": "2026-08-31T03:30:00Z"
+    },
+    {
+      "id": "k-impl-022",
+      "title": "Chaos test: kill worker mid-build, replacement recovers",
+      "lane": "verification",
+      "column": "ready",
+      "standard_ids": [],
+      "acceptance": "e2e/chaos_worker_loss_test.go: submit Work, kill worker via SIGKILL mid-exec, start replacement with same ID, assert (1) original attempt cancelled with reason, (2) new attempt starts+completes, (3) work reaches SUCCEEDED, (4) both attempts in audit log.",
+      "evidence": [
+        "e2e/chaos_worker_loss_test.go"
+      ],
+      "notes": "M1 card 5/8. test-only.",
+      "created_at": "2026-08-31T03:30:00Z",
+      "updated_at": "2026-08-31T03:30:00Z"
+    },
+    {
+      "id": "k-impl-023",
+      "title": "Benchmark: Actions vs WORKS (cold/warm/recovery) with JSON report",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": [],
+      "acceptance": "cmd/works-bench + services/bench for {Actions, WORKS subprocess, WORKS Docker} \u00d7 {cold, warm, recovery} runs same work, writes docs/benchmarks/m1-*.md with queue_time, exec_time, wall_time, cpu_time, cache_hit_ratio, est_cost_usd, comparison table.",
+      "evidence": [
+        "cmd/works-bench/main.go",
+        "services/bench/bench.go",
+        "docs/benchmarks/m1-*.md"
+      ],
+      "notes": "M1 card 6/8. ~500 LOC.",
+      "created_at": "2026-08-31T03:30:00Z",
+      "updated_at": "2026-08-31T03:30:00Z"
+    },
+    {
+      "id": "k-impl-024",
+      "title": "Pilot UX: works connect github + works pilot <repo>",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": [],
+      "acceptance": "`works connect github` prints webhook URL+secret+perms, validates with ping. `works pilot <repo>` submits Work, polls for terminal state, prints timeline, exits 0 on success.",
+      "evidence": [
+        "cmd/works/main.go"
+      ],
+      "notes": "M1 card 7/8. ~300 LOC.",
+      "created_at": "2026-08-31T03:30:00Z",
+      "updated_at": "2026-08-31T03:30:00Z"
+    },
+    {
+      "id": "k-impl-025",
+      "title": "Evidence enrichment: repo URL, SHA, runtime fingerprint, artifact SHA256",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": [],
+      "acceptance": "services/evidence/bundle.go adds source.repository/ref/sha, environment.go_version/runtime/image_digest/uname, artifacts[].sha256, attempts[].lease_id. Schema extended + validated.",
+      "evidence": [
+        "services/evidence/bundle.go",
+        "docs/standards/schemas/evidence-bundle.schema.json"
+      ],
+      "notes": "M1 card 8/8. ~200 LOC.",
+      "created_at": "2026-08-31T03:30:00Z",
+      "updated_at": "2026-08-31T03:30:00Z"
     }
   ],
-  "updated_at": "2026-08-31T03:04:00Z"
+  "updated_at": "2026-08-31T03:30:00Z"
 }
