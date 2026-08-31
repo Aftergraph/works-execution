@@ -1,12 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -20,20 +16,13 @@ import (
 //
 // Two flows:
 //
-//   1. GitHub-driven: when the repo has the WORKS webhook configured,
-//      a push/PR on that repo triggers a Work. `works pilot` here is
-//      just a status poller that watches the API for terminal
-//      Works associated with that repo. It exits when ANY terminal
-//      work for the repo appears (with --timeout) or immediately
-//      after the first poll if --once is set.
+//   1. CLI-driven (default): construct a Work locally and POST it.
+//   2. GitHub-driven (--expect-webhook): watch for a webhook-triggered
+//      terminal work for the repo to appear.
 //
-//   2. CLI-driven: when the repo does NOT have a webhook configured,
-//      `works pilot` constructs a Work locally and POSTs it. The
-//      control plane then runs the work end-to-end against the
-//      repo's local clone (services/source + services/runner).
-//
-// The flag `--expect-webhook` forces flow 1; the default is flow 2
-// for the operator-friendly "make it work right now" path.
+// Auth: since PR #1, POST/GET /v1/works require a Bearer token. The
+// CLI enrolls via the Zero-Secret flow (or takes WORKS_TOKEN /
+// --token directly). See auth.go.
 func pilotCmd(args []string) {
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, "usage: works pilot <owner/repo> [--ref REF] [--sha SHA] [--api URL] [--timeout-s N] [--once] [--expect-webhook]\n")
@@ -47,6 +36,8 @@ func pilotCmd(args []string) {
 	timeoutS := fs.Int("timeout-s", 300, "max seconds to wait for terminal state")
 	once := fs.Bool("once", false, "poll exactly once and exit (no waiting)")
 	expectWebhook := fs.Bool("expect-webhook", false, "do NOT submit a work; instead, watch for webhook-triggered work to appear")
+	token := fs.String("token", "", "bearer token (or WORKS_TOKEN env)")
+	enroll := fs.String("enroll-secret", "", "enrollment secret (or WORKS_ENROLL_SECRET env)")
 	_ = fs.Parse(args[1:])
 
 	if !strings.Contains(*repo, "/") {
@@ -55,12 +46,18 @@ func pilotCmd(args []string) {
 	}
 	owner, name := splitOwnerrepo(*repo)
 
+	auth, err := newCLIAuth(*api, *token, *enroll)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "works pilot: auth: %v\n", err)
+		os.Exit(1)
+	}
+
 	t0 := time.Now()
 	if *expectWebhook {
-		pilotWebhookFlow(*api, *repo, *timeoutS, *once, t0)
+		pilotWebhookFlow(auth, *repo, *timeoutS, *once, t0)
 		return
 	}
-	pilotSubmitFlow(*api, owner, name, *ref, *sha, *timeoutS, *once, t0)
+	pilotSubmitFlow(auth, *api, owner, name, *ref, *sha, *timeoutS, *once, t0)
 }
 
 // pilotSubmitFlow constructs and POSTs a Work for the given repo.
@@ -70,7 +67,7 @@ func pilotCmd(args []string) {
 // it is development-confidence verify work. production_access=true
 // requires approved evidence at lease-grant time (policies/
 // lease_grant.rego rule 4b), which a fresh work cannot have yet.
-func pilotSubmitFlow(api, owner, name, ref, sha string, timeoutS int, once bool, t0 time.Time) {
+func pilotSubmitFlow(auth *cliAuth, api, owner, name, ref, sha string, timeoutS int, once bool, t0 time.Time) {
 	body := map[string]any{
 		"queue": true,
 		"source": map[string]any{
@@ -101,34 +98,24 @@ func pilotSubmitFlow(api, owner, name, ref, sha string, timeoutS int, once bool,
 	if sha != "" {
 		body["source"].(map[string]any)["sha"] = sha
 	}
-	buf, _ := json.Marshal(body)
-	c := &http.Client{Timeout: 10 * time.Second}
-	resp, err := c.Post(api+"/v1/works", "application/json", bytes.NewReader(buf))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "works pilot: POST /v1/works:", err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		b, _ := io.ReadAll(resp.Body)
-		fmt.Fprintf(os.Stderr, "works pilot: POST /v1/works: status=%d body=%s\n", resp.StatusCode, string(b))
-		os.Exit(1)
-	}
 	var created struct {
 		ID    string `json:"id"`
 		State string `json:"state"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&created)
+	if _, err := auth.postJSON("/v1/works", body, &created); err != nil {
+		fmt.Fprintln(os.Stderr, "works pilot:", err)
+		os.Exit(1)
+	}
 	fmt.Printf("t=%-7.2fs  POST /v1/works             201  id=%s repo=%s/%s\n",
 		time.Since(t0).Seconds(), created.ID, owner, name)
-	pollUntilTerminal(api, created.ID, timeoutS, once, t0)
+	pollUntilTerminal(auth, created.ID, timeoutS, once, t0)
 }
 
 // pilotWebhookFlow polls /v1/works for any terminal work whose
 // Source.Repository matches the requested repo. Used when the
 // operator wants to verify the webhook round-trip without
 // submitting a CLI work of their own.
-func pilotWebhookFlow(api, repo string, timeoutS int, once bool, t0 time.Time) {
+func pilotWebhookFlow(auth *cliAuth, repo string, timeoutS int, once bool, t0 time.Time) {
 	fmt.Printf("works pilot: watching %s for webhook-triggered terminal work (timeout=%ds)\n",
 		repo, timeoutS)
 	deadline := time.Now().Add(time.Duration(timeoutS) * time.Second)
@@ -137,7 +124,7 @@ func pilotWebhookFlow(api, repo string, timeoutS int, once bool, t0 time.Time) {
 			fmt.Fprintf(os.Stderr, "works pilot: TIMEOUT after %ds, no terminal work seen for %s\n", timeoutS, repo)
 			os.Exit(1)
 		}
-		w, err := findTerminalWorkForRepo(api, repo)
+		w, err := findTerminalWorkForRepo(auth, repo)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "works pilot:", err)
 		} else if w != nil {
@@ -155,25 +142,16 @@ func pilotWebhookFlow(api, repo string, timeoutS int, once bool, t0 time.Time) {
 }
 
 type workResponse struct {
-	ID     string                `json:"id"`
-	State  workgraph.State       `json:"state"`
-	Source workgraph.Source      `json:"source"`
+	ID     string           `json:"id"`
+	State  workgraph.State  `json:"state"`
+	Source workgraph.Source `json:"source"`
 }
 
-func findTerminalWorkForRepo(api, repo string) (*workResponse, error) {
-	c := &http.Client{Timeout: 5 * time.Second}
-	resp, err := c.Get(api + "/v1/works?limit=50")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /v1/works: status=%d", resp.StatusCode)
-	}
+func findTerminalWorkForRepo(auth *cliAuth, repo string) (*workResponse, error) {
 	var list struct {
 		Works []workResponse `json:"works"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+	if _, err := auth.getJSON("/v1/works?limit=50", &list); err != nil {
 		return nil, err
 	}
 	for i := range list.Works {
@@ -190,15 +168,15 @@ func findTerminalWorkForRepo(api, repo string) (*workResponse, error) {
 
 // pollUntilTerminal polls GET /v1/works/{id} every 1s until terminal
 // state or timeout. Mirrors the works-pilot run-demo output format.
-func pollUntilTerminal(api, id string, timeoutS int, once bool, t0 time.Time) {
+func pollUntilTerminal(auth *cliAuth, id string, timeoutS int, once bool, t0 time.Time) {
 	if once {
-		printStatusOnce(api, id)
+		printStatusOnce(auth, id)
 		return
 	}
 	deadline := time.Now().Add(time.Duration(timeoutS) * time.Second)
 	var prev workgraph.State = ""
 	for {
-		w, err := fetchWork(api, id)
+		w, err := fetchWork(auth, id)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "works pilot:", err)
 		} else if w != nil && w.State != prev {
@@ -224,28 +202,16 @@ func pollUntilTerminal(api, id string, timeoutS int, once bool, t0 time.Time) {
 	}
 }
 
-func fetchWork(api, id string) (*workResponse, error) {
-	c := &http.Client{Timeout: 5 * time.Second}
-	resp, err := c.Get(api + "/v1/works/" + id)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("work %s not found", id)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET /v1/works/%s: status=%d", id, resp.StatusCode)
-	}
+func fetchWork(auth *cliAuth, id string) (*workResponse, error) {
 	var w workResponse
-	if err := json.NewDecoder(resp.Body).Decode(&w); err != nil {
+	if _, err := auth.getJSON("/v1/works/"+id, &w); err != nil {
 		return nil, err
 	}
 	return &w, nil
 }
 
-func printStatusOnce(api, id string) {
-	w, err := fetchWork(api, id)
+func printStatusOnce(auth *cliAuth, id string) {
+	w, err := fetchWork(auth, id)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "works pilot:", err)
 		os.Exit(1)

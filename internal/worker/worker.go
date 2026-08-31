@@ -49,16 +49,76 @@ type Client struct {
 	// Empty means "no token"; the client will not set an Authorization
 	// header in that case.
 	Token string
+
+	// --- Token renewal (production hardening, 2026-08-31) ---
+	// Enrollment JWTs are short-lived (default 1h). When they expire,
+	// every request 401s with token_expired. Instead of crashing or
+	// spinning, the client transparently re-enrolls once per request
+	// when all renewal fields are set. cmd/works-worker sets them from
+	// flags; cmd/works CLI sets them from --enroll-secret.
+	WorkerID     string
+	EnrollSecret string
+	EnrollTTL    time.Duration
+	// renewMu serializes re-enrollment attempts so a burst of 401s
+	// mints one token, not one per request.
+	renewMu sync.Mutex
 }
 
 // do executes an HTTP request. When c.Token is set, it attaches the
-// Bearer credential. Centralizing this here means every new request
-// method automatically inherits auth.
+// Bearer credential. On a 401 token_expired response, it re-enrolls
+// once and retries (token renewal loop). Centralizing this here means
+// every new request method automatically inherits auth AND renewal.
 func (c *Client) do(req *http.Request) (*http.Response, error) {
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
 	}
-	return c.HTTP.Do(req)
+	if resp.StatusCode != http.StatusUnauthorized || c.EnrollSecret == "" {
+		return resp, nil
+	}
+	// Drain + close the 401 body before retrying.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	if !c.renewToken(req.Context()) {
+		// Re-enrollment failed; return the original 401 so the caller
+		// logs it and the tick loop keeps trying.
+		return c.HTTP.Do(req)
+	}
+	// Re-send with the fresh token.
+	req2 := req.Clone(req.Context())
+	req2.Header.Set("Authorization", "Bearer "+c.Token)
+	if req.Body != nil {
+		// Body was consumed by the first attempt; replay it.
+		if err := req2.Body.Close(); err == nil {
+		}
+		// For retry we rely on GetBody (set by http.NewRequest for
+		// buffer-backed bodies).
+		if req.GetBody != nil {
+			b, gerr := req.GetBody()
+			if gerr == nil {
+				req2.Body = b
+			}
+		}
+	}
+	return c.HTTP.Do(req2)
+}
+
+// renewToken re-enrolls and stores the fresh token. Returns false when
+// renewal is impossible (no secret) or failed (server error). Serialized
+// so concurrent 401s share one enrollment round-trip.
+func (c *Client) renewToken(ctx context.Context) bool {
+	c.renewMu.Lock()
+	defer c.renewMu.Unlock()
+	if c.EnrollSecret == "" || c.WorkerID == "" {
+		return false
+	}
+	tok, err := c.Enroll(ctx, c.WorkerID, c.EnrollSecret, c.EnrollTTL)
+	if err != nil {
+		return false
+	}
+	c.Token = tok
+	return true
 }
 
 // ReadyItem mirrors services/api.readyItem.

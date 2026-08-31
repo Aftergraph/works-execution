@@ -45,7 +45,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	cli := &worker.Client{BaseURL: *apiURL, HTTP: &http.Client{Timeout: 10 * time.Second}}
+	cli := &worker.Client{
+		BaseURL:       *apiURL,
+		HTTP:          &http.Client{Timeout: 10 * time.Second},
+		WorkerID:      *workerID,
+		EnrollSecret:  *enrollSecret,
+		EnrollTTL:     *enrollTTL,
+	}
 
 	// Zero-Secret enrollment (k-impl-003): mint a short-lived JWT before
 	// the first /ready poll. If the server has enrollment disabled
