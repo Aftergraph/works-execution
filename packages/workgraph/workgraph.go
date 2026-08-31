@@ -159,12 +159,31 @@ type EvidenceSpec struct {
 }
 
 // Source identifies what triggered the Work.
+//
+// M1 (k-impl-018/019/021) extends this with explicit SHA / clone /
+// HTML fields that the worker uses to check out the exact commit
+// and the publisher uses to mint Check Runs. ProductionAccess
+// flows through Policy, not Source — keep these two surfaces
+// separate.
 type Source struct {
 	Type       string `json:"type"` // cli, github_pull_request, github_push, schedule, api
 	Repository string `json:"repository,omitempty"`
 	Revision   string `json:"revision,omitempty"`
 	Ref        string `json:"ref,omitempty"`
 	Actor      string `json:"actor,omitempty"`
+
+	// M1 — GitHub-source provenance (k-impl-018 / k-impl-019).
+	// All optional; legacy Works that predate M1 have none of these.
+	Branch  string `json:"branch,omitempty"`  // refs/heads/main → main
+	SHA     string `json:"sha,omitempty"`      // 40-char commit SHA
+	HTMLURL string `json:"html_url,omitempty"` // browser-friendly repo URL
+	CloneURL string `json:"clone_url,omitempty"` // git clone URL (head fork for PRs)
+
+	// PR-specific (k-impl-018). Zero for push events.
+	PRNumber int `json:"pr_number,omitempty"`
+	PRAction string `json:"pr_action,omitempty"` // opened, synchronize, reopened
+	PRHead   string `json:"pr_head,omitempty"`   // source branch
+	PRBase   string `json:"pr_base,omitempty"`   // target branch
 }
 
 // Objective describes what outcome the Work is requesting.

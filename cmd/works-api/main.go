@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -22,6 +23,8 @@ func main() {
 		dbPath       = flag.String("db", envOr("WORKS_DB", "/tmp/works.db"), "SQLite db path")
 		enrollSecret = flag.String("enroll-secret", envOr("WORKS_ENROLL_SECRET", ""), "shared challenge for POST /v1/workers/enroll; empty disables enrollment (fail-closed)")
 		policyPath   = flag.String("policy", envOr("WORKS_POLICY_BUNDLE", "policies/lease_grant.rego"), "OPA Rego policy bundle path; empty disables policy enforcement (legacy)")
+		webhookSecret = flag.String("webhook-secret", envOr("WORKS_WEBHOOK_SECRET", ""), "GitHub webhook HMAC secret; empty disables /v1/webhook/github (returns 503)")
+		webhookProduction = flag.Bool("webhook-production-access", envBool("WORKS_WEBHOOK_PRODUCTION_ACCESS", true), "mark webhook-derived Works with policy.production_access=true")
 	)
 	flag.Parse()
 
@@ -55,6 +58,15 @@ func main() {
 		EnrollSecret: *enrollSecret,
 		Policy:       policyEngine,
 		AuthEnabled:  true,
+	}
+	if *webhookSecret != "" {
+		srv.WebhookConfig = &api.WebhookConfig{
+			Secret:           *webhookSecret,
+			ProductionAccess: *webhookProduction,
+		}
+		logger.Printf("webhook receiver enabled (/v1/webhook/github, production_access=%v)", *webhookProduction)
+	} else {
+		logger.Printf("webhook receiver disabled (no --webhook-secret)")
 	}
 	httpSrv := &http.Server{
 		Addr:              *addr,
@@ -95,4 +107,18 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// envBool returns the parsed bool of an env var, falling back to
+// `def` when unset/empty or unparseable.
+func envBool(k string, def bool) bool {
+	v := os.Getenv(k)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return def
+	}
+	return b
 }

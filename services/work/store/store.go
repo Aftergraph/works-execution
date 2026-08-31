@@ -26,7 +26,7 @@ import (
 // SchemaVersion is the current schema level this store applies. Bumped
 // each time a migration lands. Exposed so callers (CI, healthz) can
 // assert they are talking to a store at the expected level.
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 // ErrSchemaTooOld is returned by health checks / smoke tests when the
 // on-disk schema is older than SchemaVersion. Operators should run
@@ -71,6 +71,14 @@ type Store interface {
 	// Provenance operations (slice 5 / k-impl-005).
 	SaveProvenance(ctx context.Context, p Provenance) error
 	GetProvenance(ctx context.Context, workID string) (*Provenance, error)
+
+	// Webhook idempotency (M1 / k-impl-018). The webhooks table is
+	// keyed by provider delivery_id; LookupWebhookDelivery returns
+	// the previously-recorded work_id (empty string + nil if absent).
+	// RecordWebhookDelivery persists the delivery idempotently
+	// (duplicate inserts are ignored via ON CONFLICT DO NOTHING).
+	LookupWebhookDelivery(ctx context.Context, deliveryID string) (string, error)
+	RecordWebhookDelivery(ctx context.Context, deliveryID, event, workID, body string) error
 
 	Close() error
 }
@@ -233,6 +241,22 @@ CREATE TABLE IF NOT EXISTS work_audit_events (
 CREATE INDEX IF NOT EXISTS idx_audit_occurred ON work_audit_events(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_audit_work ON work_audit_events(work_id);
 CREATE INDEX IF NOT EXISTS idx_audit_type ON work_audit_events(type);
+
+-- slice 7 (M1 / k-impl-018): v6 -> v7 — webhook idempotency.
+-- One row per provider delivery_id (X-GitHub-Delivery). Stores the
+-- event type, the created work_id, and the raw body for audit/replay.
+-- ON CONFLICT(delivery_id) DO NOTHING on insert; duplicates are
+-- rejected at the row level so we never create two Works for the
+-- same GitHub delivery.
+CREATE TABLE IF NOT EXISTS webhooks (
+    delivery_id TEXT PRIMARY KEY,
+    event       TEXT NOT NULL,
+    work_id     TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    body        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webhooks_work_id ON webhooks(work_id);
+CREATE INDEX IF NOT EXISTS idx_webhooks_received_at ON webhooks(received_at);
 `
 
 func (s *SQLiteStore) migrate() error {
@@ -258,9 +282,16 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("bump schema version: %w", err)
 	}
 	// Migration v5 -> v6: work_audit_events table (created idempotently
-	// above via CREATE TABLE IF NOT EXISTS, but mark the version
+	// above via CREATE TABLE IF NOT EXISTS, but mark the schema
 	// transition here). No data backfill is required: prior slices
 	// did not emit CloudEvents, so the table starts empty.
+	if err := s.bumpSchemaVersion(6); err != nil {
+		return fmt.Errorf("bump schema version: %w", err)
+	}
+	// Migration v6 -> v7: webhooks table (created idempotently above
+	// via CREATE TABLE IF NOT EXISTS, but mark the schema transition
+	// here). No data backfill required: prior slices had no webhook
+	// receiver.
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
 	}
@@ -832,6 +863,49 @@ func (s *SQLiteStore) GetProvenance(ctx context.Context, workID string) (*Proven
 	p.BuilderID = builderID
 	p.ProducedAt, _ = parseTime(producedStr)
 	return &p, nil
+}
+
+// LookupWebhookDelivery returns the work_id that was created for a
+// previously-seen (delivery_id). Returns "" + nil when the delivery
+// is unseen (first time). Returns ErrNotFound is NOT used here:
+// "unseen" is a normal first-receipt path, not an error.
+func (s *SQLiteStore) LookupWebhookDelivery(ctx context.Context, deliveryID string) (string, error) {
+	if deliveryID == "" {
+		return "", nil
+	}
+	var workID string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT work_id FROM webhooks WHERE delivery_id = ?`, deliveryID,
+	).Scan(&workID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return workID, nil
+}
+
+// RecordWebhookDelivery persists a (delivery_id → work_id) mapping.
+// INSERT ... ON CONFLICT DO NOTHING makes the call safe to retry on
+// duplicate deliveries: the second insert is a no-op, the first
+// wins. The raw body is retained for audit/replay.
+func (s *SQLiteStore) RecordWebhookDelivery(ctx context.Context, deliveryID, event, workID, body string) error {
+	if deliveryID == "" {
+		return errors.New("delivery_id is required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+        INSERT INTO webhooks (delivery_id, event, work_id, received_at, body)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(delivery_id) DO NOTHING
+    `,
+		deliveryID, event, workID,
+		time.Now().UTC().Format(time.RFC3339Nano), body,
+	)
+	if err != nil {
+		return fmt.Errorf("insert webhook: %w", err)
+	}
+	return nil
 }
 
 // auditEmit is the internal hook for store mutations. It is a no-op

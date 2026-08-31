@@ -39,13 +39,42 @@ import (
 // Component / wire types — kept separate from workgraph.* so the bundle
 // stays a stable, schema-validated shape even if the runtime Work evolves.
 
+// Source describes where the code came from. In M1 the only
+// supported source is git; future slices may add archive, local,
+// or registry sources.
+type Source struct {
+	Provider   string `json:"provider,omitempty"`    // "github" today
+	Repository string `json:"repository,omitempty"`  // "JonasAbde/works-execution"
+	Ref        string `json:"ref,omitempty"`         // refs/heads/main
+	SHA        string `json:"sha,omitempty"`         // 40-char commit
+	CloneURL   string `json:"clone_url,omitempty"`   // canonical clone URL
+	HTMLURL    string `json:"html_url,omitempty"`    // canonical web URL
+	// PRNumber is set only for pull_request-triggered Works.
+	PRNumber int `json:"pr_number,omitempty"`
+}
+
+// Environment is the runtime fingerprint the M1 pilot requires.
+// Evidence consumers can compare Environment across runs to detect
+// drift (different go version, different image, different host).
+type Environment struct {
+	GoVersion  string `json:"go_version,omitempty"`  // "go version go1.23.4 linux/amd64"
+	Runtime    string `json:"runtime,omitempty"`     // "host" | "docker"
+	Image      string `json:"image,omitempty"`       // requested OCI image, e.g. "alpine:3.20"
+	ImageDigest string `json:"image_digest,omitempty"` // resolved sha256:...@digest
+	Uname      string `json:"uname,omitempty"`        // worker host `uname -a` output
+	Platform   string `json:"platform,omitempty"`    // runtime.GOOS + "/" + runtime.GOARCH
+	Hostname   string `json:"hostname,omitempty"`    // os.Hostname()
+}
+
 // Bundle is the wire shape that satisfies
-// docs/standards/schemas/evidence-bundle.schema.json.
+// docs/standards/schemas/evidence-bundle.schema.json (M1-extended).
 type Bundle struct {
 	BundleID     string       `json:"bundle_id"`
 	WorkID       string       `json:"work_id"`
 	PolicyVer    string       `json:"policy_version,omitempty"`
 	Runner       *Runner      `json:"runner,omitempty"`
+	Source       *Source      `json:"source,omitempty"`     // M1
+	Environment  *Environment `json:"environment,omitempty"`// M1
 	CreatedAt    time.Time    `json:"created_at"`
 	Summary      Summary      `json:"summary"`
 	Components   Components   `json:"components"`

@@ -72,6 +72,12 @@ type Server struct {
 	// requireBearer middleware is a no-op. Default false; production
 	// cmd/works-api sets it true. Tests can leave it false.
 	AuthEnabled bool
+	// WebhookConfig configures the GitHub webhook receiver
+	// (M1 / k-impl-018). When nil, POST /v1/webhook/github
+	// returns 503 (webhook not enabled). The webhook endpoint
+	// is intentionally outside requireBearer — the HMAC
+	// signature is the security boundary, not a Bearer token.
+	WebhookConfig *WebhookConfig
 }
 
 // ensureIssuer returns s.Auth, lazily constructing a default HMACIssuer
@@ -132,6 +138,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/audit-events", s.auditEventsHandler) // GET = CloudEvents audit stream
 	mux.HandleFunc("/v1/dora", s.doraHandler)                // GET = DORA metrics
 	mux.HandleFunc("/healthz", s.healthz)
+	// M1 (k-impl-018): GitHub webhook receiver. Unauthenticated by
+	// design — HMAC signature is the security boundary. Operators
+	// should firewall /v1/webhook on the listener if they want
+	// extra defense-in-depth.
+	mux.HandleFunc("/v1/webhook/github", s.githubWebhookHandler)
 	if s.Metrics != nil {
 		// GET /metrics — Prometheus exposition. Internal scrape only; not
 		// behind requireBearer so Prometheus can scrape without an enroll

@@ -426,46 +426,48 @@
       "id": "k-impl-019",
       "title": "Real repo source: work-scoped token + exact SHA checkout",
       "lane": "implementation",
-      "column": "ready",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "Given a repo URL + SHA + a work-scoped token (installation token, not PAT), `services/source/git.go` clones the repo into an isolated workspace, checks out the exact SHA, and returns a Cleanup() that removes the workspace. Token never appears in process env outside the git invocation. Unit tests cover checkout, cleanup, and SHA verification.",
       "evidence": [
         "services/source/git.go",
         "services/source/git_test.go"
       ],
-      "notes": "M1 card 2/8. ~300 LOC. Uses installation token scoped to single repo, expiring in 1h. `git clone --branch <branch>` then `git checkout <sha>` into /tmp/ws-<workid>.",
+      "notes": "M1 card 2/8 (RFC-0003). SHIPPED in commit b424797 (M1 k-impl-019+020+025). 9/9 tests pass, clones JonasAbde/works-execution, verifies SHA matches expected.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T03:30:00Z"
+      "updated_at": "2026-08-31T07:15:00Z"
     },
     {
       "id": "k-impl-018",
       "title": "GitHub webhook receiver (HMAC verify + idempotent delivery)",
       "lane": "implementation",
-      "column": "review",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "POST /v1/webhook/github with valid HMAC-SHA256 (X-Hub-Signature-256) creates exactly one Work per (delivery_id, event). Invalid signature returns 401 and creates zero Works. Duplicate X-GitHub-Delivery is a no-op. Unit tests cover all 3 paths. Live test against a real webhook delivery works.",
       "evidence": [
         "services/webhook/github.go",
-        "services/webhook/github_test.go"
+        "services/webhook/github_test.go",
+        "services/api/webhook_handler.go",
+        "services/api/webhook_handler_test.go"
       ],
-      "notes": "M1 card 1/8 (RFC-0003). services/webhook/github.go. ~300 LOC. Endpoints: POST /v1/webhook/github. HMAC-SHA256 verify against shared secret. Idempotency by X-GitHub-Delivery \u2192 webhooks table. [partial: parser+HMAC verify shipped, 13/13 unit tests pass, 217 LOC. HTTP handler + store idempotency pending. Awaiting M1 card 2/8 (source) before wiring.]",
+      "notes": "M1 card 1/8 (RFC-0003). SHIPPED: services/webhook/{github,github_test}.go (HMAC verify + parser, 13/13 tests) + services/api/{webhook_handler,webhook_handler_test}.go (HTTP routing, idempotency, source mapping, repo allow-list, 13/13 tests). Endpoints: POST /v1/webhook/github. HMAC-SHA256 verify against shared secret. Idempotency by X-GitHub-Delivery -> webhooks table (migration v6->v7). workgraph.Source extended with Branch/SHA/HTMLURL/CloneURL/PRNumber/PRAction/PRHead/PRBase. cmd/works-api gains -webhook-secret + -webhook-production-access flags (WORKS_WEBHOOK_SECRET env). Live smoke test against running works-api confirms: signed push -> 201 created + work_id, duplicate delivery -> 200 duplicate, bad sig -> 401, ping -> 200 ignored.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T03:30:00Z"
+      "updated_at": "2026-08-31T07:15:00Z"
     },
     {
       "id": "k-impl-020",
       "title": "Real runner: Go stack detect, run go vet + go test ./... -count=1",
       "lane": "implementation",
-      "column": "ready",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "services/runner/real.go detects Go (go.mod), runs go vet + go test ./... -count=1, captures stdout+stderr, propagates exit code. Integration: SUCCEEDED on known-good, FAILED on known-bad.",
       "evidence": [
         "services/runner/real.go",
         "services/runner/real_test.go"
       ],
-      "notes": "M1 card 3/8. ~400 LOC.",
+      "notes": "M1 card 3/8. SHIPPED in commit b424797. 10/10 tests, runs real Go modules, captures pass/fail/vet-fail.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T03:30:00Z"
+      "updated_at": "2026-08-31T07:15:00Z"
     },
     {
       "id": "k-impl-021",
@@ -478,23 +480,24 @@
         "services/publisher/check.go",
         "services/publisher/check_test.go"
       ],
-      "notes": "M1 card 4/8. ~300 LOC.",
+      "notes": "M1 card 4/8. BLOCKED on user action: requires a GitHub App (App ID + installation ID + private key) which can only be created via github.com UI. PAT gho_* works for status API but NOT for Check Runs (403 'must authenticate via a GitHub App'). User is creating the App. Once credentials are available, ~300 LOC + tests.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T03:30:00Z"
+      "updated_at": "2026-08-31T07:15:00Z",
+      "status": "blocked"
     },
     {
       "id": "k-impl-022",
       "title": "Chaos test: kill worker mid-build, replacement recovers",
       "lane": "verification",
-      "column": "ready",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "e2e/chaos_worker_loss_test.go: submit Work, kill worker via SIGKILL mid-exec, start replacement with same ID, assert (1) original attempt cancelled with reason, (2) new attempt starts+completes, (3) work reaches SUCCEEDED, (4) both attempts in audit log.",
       "evidence": [
         "e2e/chaos_worker_loss_test.go"
       ],
-      "notes": "M1 card 5/8. test-only.",
+      "notes": "M1 card 5/8. SHIPPED in commit 841e5a8. PASS in 26.4s on real Go build, 2 attempts preserved in audit log.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T03:30:00Z"
+      "updated_at": "2026-08-31T07:15:00Z"
     },
     {
       "id": "k-impl-023",
@@ -502,15 +505,16 @@
       "lane": "implementation",
       "column": "ready",
       "standard_ids": [],
-      "acceptance": "cmd/works-bench + services/bench for {Actions, WORKS subprocess, WORKS Docker} \u00d7 {cold, warm, recovery} runs same work, writes docs/benchmarks/m1-*.md with queue_time, exec_time, wall_time, cpu_time, cache_hit_ratio, est_cost_usd, comparison table.",
+      "acceptance": "cmd/works-bench + services/bench for {Actions, WORKS subprocess, WORKS Docker} × {cold, warm, recovery} runs same work, writes docs/benchmarks/m1-*.md with queue_time, exec_time, wall_time, cpu_time, cache_hit_ratio, est_cost_usd, comparison table.",
       "evidence": [
         "cmd/works-bench/main.go",
         "services/bench/bench.go",
         "docs/benchmarks/m1-*.md"
       ],
-      "notes": "M1 card 6/8. ~500 LOC.",
+      "notes": "M1 card 6/8. BLOCKED on k-impl-021: benchmark needs Check Run publisher to run WORKS-driven Actions workflow. Will implement internal-only benchmark (WORKS subprocess vs WORKS Docker) once user provides App credentials.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T03:30:00Z"
+      "updated_at": "2026-08-31T07:15:00Z",
+      "status": "blocked"
     },
     {
       "id": "k-impl-024",
@@ -522,25 +526,26 @@
       "evidence": [
         "cmd/works/main.go"
       ],
-      "notes": "M1 card 7/8. ~300 LOC.",
+      "notes": "M1 card 7/8. BLOCKED on k-impl-018 (webhook handler - now SHIPPED) + k-impl-021 (publisher). Once publisher exists, full pilot UX is unblocked.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T03:30:00Z"
+      "updated_at": "2026-08-31T07:15:00Z",
+      "status": "blocked"
     },
     {
       "id": "k-impl-025",
       "title": "Evidence enrichment: repo URL, SHA, runtime fingerprint, artifact SHA256",
       "lane": "implementation",
-      "column": "ready",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "services/evidence/bundle.go adds source.repository/ref/sha, environment.go_version/runtime/image_digest/uname, artifacts[].sha256, attempts[].lease_id. Schema extended + validated.",
       "evidence": [
         "services/evidence/bundle.go",
         "docs/standards/schemas/evidence-bundle.schema.json"
       ],
-      "notes": "M1 card 8/8. ~200 LOC.",
+      "notes": "M1 card 8/8. SHIPPED in commit b424797 (combined with k-impl-019/020). Bundle now exposes Source + Environment fields. Working-tree changes (not yet committed) will land in the M1 k-impl-018 commit that completes the webhook work.",
       "created_at": "2026-08-31T03:30:00Z",
-      "updated_at": "2026-08-31T03:30:00Z"
+      "updated_at": "2026-08-31T07:15:00Z"
     }
   ],
-  "updated_at": "2026-08-31T03:30:00Z"
+  "updated_at": "2026-08-31T07:15:00Z"
 }
