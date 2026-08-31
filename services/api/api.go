@@ -132,7 +132,7 @@ type ProvenanceConfig struct {
 func (s *Server) Routes() http.Handler {
 	s.ensureIssuer()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/works", s.worksHandler)           // POST = create, GET = list
+	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))           // POST = create, GET = list
 	mux.HandleFunc("/v1/works/", s.workPathHandler)       // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
 	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler) // unauthenticated; issues tokens
 	// /v1/workers/ and /v1/leases/ are mounted through auth middleware.
