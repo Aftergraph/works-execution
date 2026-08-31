@@ -24,8 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
+	"github.com/JonasAbde/works-execution/packages/pipeline"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 )
 
@@ -62,82 +61,10 @@ func main() {
 	}
 }
 
-// pipelineDoc mirrors works.yml.
-type pipelineDoc struct {
-	Version int                 `yaml:"version"`
-	Work    map[string]nodeGroup `yaml:"work"`
-}
-
-type nodeGroup struct {
-	Triggers     []string       `yaml:"triggers"`
-	Requirements requirementsDoc `yaml:"requirements"`
-	Nodes        map[string]nodeDoc `yaml:"nodes"`
-}
-
-type requirementsDoc struct {
-	Confidence string `yaml:"confidence"`
-	OS         string `yaml:"os"`
-	Arch       string `yaml:"arch"`
-	Pool       string `yaml:"pool"`
-}
-
-type nodeDoc struct {
-	Run      string            `yaml:"run"`
-	Needs    []string          `yaml:"needs"`
-	Cache    bool              `yaml:"cache"`
-	TimeoutS int               `yaml:"timeout_s"`
-	Env      map[string]string `yaml:"env"`
-}
-
 // configToWork converts the pipeline document into a Work. Mirrors
 // cmd/works.configToWork but keeps pool + cache fields intact.
 func configToWork(raw []byte) (*workgraph.Work, error) {
-	var doc pipelineDoc
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("parse yaml: %w", err)
-	}
-	if len(doc.Work) == 0 {
-		return nil, fmt.Errorf("config has no work entries")
-	}
-	var name string
-	for k := range doc.Work {
-		name = k // V1: single pipeline
-		break
-	}
-	c := doc.Work[name]
-
-	nodes := map[string]workgraph.Node{}
-	for nName, n := range c.Nodes {
-		nodes[nName] = workgraph.Node{
-			ID:       nName,
-			Run:      n.Run,
-			Needs:    n.Needs,
-			Cache:    n.Cache,
-			Env:      n.Env,
-			TimeoutS: n.TimeoutS,
-		}
-	}
-	w := &workgraph.Work{
-		ID:    workgraph.NewID("wrk"),
-		State: workgraph.StateCreated,
-		Source: workgraph.Source{
-			Type:       "self_hosted_ci",
-			Repository: "JonasAbde/works-execution",
-			Ref:        "refs/heads/main",
-		},
-		Objective:    workgraph.Objective{Type: "verify_change"},
-		Requirements: workgraph.Requirements{
-			OS:         c.Requirements.OS,
-			Arch:       c.Requirements.Arch,
-			Confidence: c.Requirements.Confidence,
-			Pool:       c.Requirements.Pool,
-		},
-		Graph: workgraph.Graph{Nodes: nodes},
-	}
-	if err := w.Validate(); err != nil {
-		return nil, err
-	}
-	return w, nil
+	return pipeline.Parse(raw)
 }
 
 // runPipeline reads the config, submits the work, waits for terminal.

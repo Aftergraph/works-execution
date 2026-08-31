@@ -6,6 +6,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,6 +82,10 @@ type Server struct {
 	// is intentionally outside requireBearer — the HMAC
 	// signature is the security boundary, not a Bearer token.
 	WebhookConfig *WebhookConfig
+	// PipelineFetcher overrides the works.yml fetcher used by the
+	// webhook receiver (RFC-0006). When nil, the default GitHub
+	// Contents API fetcher is used. Tests inject a stub.
+	PipelineFetcher func(ctx context.Context, token, repoFullName, sha string) ([]byte, error)
 	// Publisher, when non-nil, is invoked once when a Work reaches
 	// a terminal state (SUCCEEDED, FAILED, CANCELLED) and the
 	// work's Source has a Repository + SHA. Publish runs in a
