@@ -23,13 +23,15 @@ import (
 
 func main() {
 	var (
-		apiURL          = flag.String("api", envOr("WORKS_API", "http://127.0.0.1:8080"), "control plane URL")
-		workerID        = flag.String("id", envOr("WORKS_WORKER_ID", "wrkr_local_"+randomSuffix()), "worker id")
-		dbPath          = flag.String("db", envOr("WORKS_DB", "/tmp/works.db"), "(unused; worker uses HTTP only — kept for backward compat)")
-		artDir          = flag.String("artifacts", envOr("WORKS_ARTIFACTS", "/tmp/works-artifacts"), "artifact directory")
-		pollEvery       = flag.Duration("poll", 2*time.Second, "poll interval")
-		leaseTTL        = flag.Duration("lease-ttl", 25*time.Second, "lease TTL")
-		heartbeatEvery  = flag.Duration("heartbeat", 10*time.Second, "heartbeat interval")
+		apiURL         = flag.String("api", envOr("WORKS_API", "http://127.0.0.1:8080"), "control plane URL")
+		workerID       = flag.String("id", envOr("WORKS_WORKER_ID", "wrkr_local_"+randomSuffix()), "worker id")
+		dbPath         = flag.String("db", envOr("WORKS_DB", "/tmp/works.db"), "(unused; worker uses HTTP only — kept for backward compat)")
+		artDir         = flag.String("artifacts", envOr("WORKS_ARTIFACTS", "/tmp/works-artifacts"), "artifact directory")
+		pollEvery      = flag.Duration("poll", 2*time.Second, "poll interval")
+		leaseTTL       = flag.Duration("lease-ttl", 25*time.Second, "lease TTL")
+		heartbeatEvery = flag.Duration("heartbeat", 10*time.Second, "heartbeat interval")
+		enrollSecret   = flag.String("enroll-secret", envOr("WORKS_ENROLL_SECRET", ""), "shared secret for /v1/workers/enroll (Zero-Secret: required)")
+		enrollTTL      = flag.Duration("enroll-ttl", time.Hour, "requested enrollment-token TTL")
 	)
 	flag.Parse()
 
@@ -42,9 +44,28 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	cli := &worker.Client{BaseURL: *apiURL, HTTP: &http.Client{Timeout: 10 * time.Second}}
+
+	// Zero-Secret enrollment (k-impl-003): mint a short-lived JWT before
+	// the first /ready poll. If the server has enrollment disabled
+	// (EnrollSecret empty) we still try — the server returns 503 and we
+	// fall back to unauthenticated mode for dev/test, but log it loudly
+	// so production operators see the misconfiguration.
+	if *enrollSecret != "" {
+		token, err := cli.Enroll(ctx, *workerID, *enrollSecret, *enrollTTL)
+		if err != nil {
+			logger.Printf("WARNING: enrollment failed (server may have enrollment disabled): %v", err)
+		} else {
+			cli.Token = token
+			logger.Printf("enrolled: worker_id=%s ttl=%s", *workerID, *enrollTTL)
+		}
+	} else {
+		logger.Printf("WARNING: WORKS_ENROLL_SECRET not set; worker running without Bearer token (dev mode)")
+	}
+
 	w := &worker.Worker{
 		ID:             *workerID,
-		Client:         &worker.Client{BaseURL: *apiURL, HTTP: &http.Client{Timeout: 10 * time.Second}},
+		Client:         cli,
 		ArtifactsDir:   *artDir,
 		Logger:         logger,
 		PollEvery:      *pollEvery,

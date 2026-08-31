@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
+	"github.com/JonasAbde/works-execution/services/classifier"
 )
 
 // ErrLeaseConflict is returned when a lease cannot be granted because the
@@ -231,6 +232,15 @@ func (s *SQLiteStore) CompleteLease(ctx context.Context, leaseID string, exitCod
 	if err != nil {
 		return nil, err
 	}
+
+	// Self-Healing (k-impl-007): classify every failed attempt in the just-
+	// completed work. Each classification is persisted as an evidence row
+	// of type "policy" so downstream consumers (Self-Healing scheduler,
+	// standards-validate, evidence bundle) can read it without a schema
+	// change. The attempt's worker-reported Error string is used as the
+	// logTail fallback; richer log parsing is a slice-5 concern.
+	s.classifyFailedAttempts(ctx, w)
+
 	allOK := true
 	anyFailed := false
 	for nodeID := range w.Graph.Nodes {
@@ -274,6 +284,86 @@ func (s *SQLiteStore) logFmt(format string, args ...any) {
 	// No-op stub; can be replaced with a real logger later.
 	_ = format
 	_ = args
+}
+
+// classifyFailedAttempts runs the Self-Healing Failure Classifier
+// (services/classifier) over every failed attempt in `w` and persists the
+// resulting Classification as an evidence row. Best-effort: any per-attempt
+// error is logged via logFmt but does not abort CompleteLease, because the
+// scheduler has already received the work's terminal state.
+//
+// This function is called from CompleteLease finalization. It runs AFTER
+// the attempt row has been written and the lease has been transitioned
+// to RELEASED, so there is no transactional coupling between
+// classification and the state machine.
+func (s *SQLiteStore) classifyFailedAttempts(ctx context.Context, w *workgraph.Work) {
+	if w == nil {
+		return
+	}
+	for _, a := range w.Attempts {
+		if !classifier.IsFailed(a) {
+			continue
+		}
+		// Skip attempts we've already classified. Evidence rows are
+		// append-only; AppendEvidence would create duplicates.
+		if s.hasClassificationEvidence(ctx, w.ID, a.ID) {
+			continue
+		}
+		node := w.Graph.Nodes[a.NodeID]
+		cls, err := classifier.Classify(ctx, node, a, a.Error)
+		if err != nil {
+			// logTail empty + no rule fired: record a minimal
+			// "unknown" classification rather than aborting.
+			cls = &classifier.Classification{
+				Class:      classifier.ClassUnknown,
+				Retryable:  false,
+				MaxRetries: 0,
+				Backoff:    "none",
+				Rule:       "no_input",
+			}
+		}
+		details := map[string]any{
+			"class":                  string(cls.Class),
+			"retryable":              cls.Retryable,
+			"max_retries":            cls.MaxRetries,
+			"backoff":                cls.Backoff,
+			"human_required":         cls.HumanRequired,
+			"autonomous_remediation": cls.AutonomousRemediation,
+			"rule":                   cls.Rule,
+		}
+		if cls.HumanRequired {
+			details["escalation_reason"] = cls.Rule
+		}
+		ev := workgraph.Evidence{
+			ID:          workgraph.NewID("evd"),
+			NodeID:      a.NodeID,
+			AttemptID:   a.ID,
+			Type:        "policy",
+			Result:      "fail",
+			RecordedAt:  time.Now().UTC(),
+			Signer:      "classifier",
+			Environment: "self-healing",
+			Details:     details,
+		}
+		if _, err := s.AppendEvidence(ctx, w.ID, ev); err != nil {
+			s.logFmt("classify: append evidence: %v", err)
+		}
+	}
+}
+
+// hasClassificationEvidence returns true if the given attempt already has
+// at least one policy-type evidence row produced by the classifier. Used
+// to keep classification idempotent across re-reads and reruns.
+func (s *SQLiteStore) hasClassificationEvidence(ctx context.Context, workID, attemptID string) bool {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM work_evidence
+		WHERE work_id = ? AND attempt_id = ? AND type = 'policy' AND signer = 'classifier'
+	`, workID, attemptID).Scan(&n)
+	if err != nil {
+		return false
+	}
+	return n > 0
 }
 
 // ReleaseLease marks the lease RELEASED and the underlying attempt
@@ -405,6 +495,35 @@ func (s *SQLiteStore) ActiveLeasesByWorkID(ctx context.Context, workID string) (
 			return nil, err
 		}
 		out[n] = true
+	}
+	return out, rows.Err()
+}
+
+// LeasesByWorkID returns every lease (any status) associated with the given
+// Work, ordered by granted_at ascending. Used by the evidence bundle
+// producer to assemble the components.leases list.
+func (s *SQLiteStore) LeasesByWorkID(ctx context.Context, workID string) ([]*workgraph.Lease, error) {
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status
+        FROM work_leases WHERE work_id = ? ORDER BY granted_at ASC
+    `, workID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*workgraph.Lease
+	for rows.Next() {
+		var l workgraph.Lease
+		var statusStr, grantedStr, expiresStr, beatStr string
+		if err := rows.Scan(&l.ID, &l.WorkID, &l.NodeID, &l.WorkerID, &l.AttemptID,
+			&grantedStr, &expiresStr, &beatStr, &statusStr); err != nil {
+			return nil, err
+		}
+		l.GrantedAt, _ = parseTime(grantedStr)
+		l.ExpiresAt, _ = parseTime(expiresStr)
+		l.LastBeatAt, _ = parseTime(beatStr)
+		l.Status = workgraph.LeaseStatus(statusStr)
+		out = append(out, &l)
 	}
 	return out, rows.Err()
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
+	"github.com/JonasAbde/works-execution/services/runner"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
@@ -21,8 +22,10 @@ type grantLeaseBody struct {
 	TTLSeconds int    `json:"ttl_seconds,omitempty"` // default 25
 }
 
-// leasesHandler routes /v1/leases (POST = grant) and /v1/leases/{id}/action.
-func (s *Server) leasesHandler(w http.ResponseWriter, r *http.Request) {
+// leasesPathHandler routes /v1/leases (POST = grant). /v1/leases/{id}/...
+// is handled by leaseItemHandler. This split is needed because
+// net/http.ServeMux disallows two handlers on the same prefix.
+func (s *Server) leasesPathHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		s.grantLease(w, r)
 		return
@@ -31,11 +34,23 @@ func (s *Server) leasesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // leaseItemHandler routes /v1/leases/{id}/{action} where action is one of
-// heartbeat, complete, release, revoke.
+// heartbeat, complete, release, revoke. It also handles the special
+// "grant" sub-action (POST /v1/leases/grant) which is the lease creation
+// endpoint; net/http.ServeMux dispatches the bare prefix to the trailing-
+// slash handler so we catch it here.
 func (s *Server) leaseItemHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/leases/")
 	parts := strings.Split(path, "/")
-	if len(parts) < 2 || parts[0] == "" {
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusBadRequest, "missing_id", "lease id required")
+		return
+	}
+	// Special case: /v1/leases/grant is the creation endpoint.
+	if len(parts) == 1 && parts[0] == "grant" {
+		s.grantLease(w, r)
+		return
+	}
+	if len(parts) < 2 {
 		writeError(w, http.StatusBadRequest, "missing_id", "lease id required")
 		return
 	}
@@ -61,6 +76,12 @@ func (s *Server) leaseItemHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // grantLease is POST /v1/leases/grant.
+//
+// Before any store mutation, the request is evaluated against the OPA
+// Rego policy bundle (slice 4 / k-impl-011). The bundle is the authoritative
+// source of policy logic — see policies/lease_grant.rego. Failures here are
+// returned to the caller as 403 + a stable error code so the worker can
+// retry or surface a user-visible message.
 func (s *Server) grantLease(w http.ResponseWriter, r *http.Request) {
 	var body grantLeaseBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -72,6 +93,62 @@ func (s *Server) grantLease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ttl := time.Duration(body.TTLSeconds) * time.Second
+
+	// Policy check FIRST. Loads the work and runner identity, builds a
+	// DecisionInput, evaluates the bundle. Denials return 403 without
+	// touching the store. Production cmd/works-api loads the bundle at
+	// startup; tests can leave Policy nil to opt out.
+	if s.Policy != nil {
+		work, err := s.Store.GetWork(r.Context(), body.WorkID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "work_not_found", body.WorkID)
+				return
+			}
+			s.logf("policy: get work: %v", err)
+			writeError(w, http.StatusInternalServerError, "policy_get_work_failed", err.Error())
+			return
+		}
+		evidence := work.Evidence
+		if evidence == nil {
+			evidence = []workgraph.Evidence{}
+		}
+		runnerView := RunnerView{
+			RunnerID:       body.WorkerID,
+			TrustClass:     runner.TrustUntrusted,
+			LifecycleState: runner.StateActive,
+		}
+		if s.RunnerRegistry != nil {
+			if id, ok := s.RunnerRegistry.get(body.WorkerID); ok && id != nil {
+				runnerView.TrustClass = id.TrustClass
+				runnerView.LifecycleState = id.LifecycleState
+			}
+		}
+		input := DecisionInput{
+			Request: RequestContext{
+				Action:   "lease.grant",
+				WorkID:   body.WorkID,
+				NodeID:   body.NodeID,
+				WorkerID: body.WorkerID,
+			},
+			Work: WorkView{
+				ID:     work.ID,
+				Policy: work.Policy,
+				State:  work.State,
+			},
+			Evidence: evidence,
+			Runner:   runnerView,
+		}
+		dec, perr := s.Policy.EvaluateOrError(r.Context(), input)
+		if perr != nil {
+			s.logf("policy denied lease grant work=%s node=%s worker=%s reason=%s",
+				body.WorkID, body.NodeID, body.WorkerID, dec.DenyReasons)
+			writeError(w, http.StatusForbidden, formatDenyReason(firstReason(dec.DenyReasons)),
+				"policy denied: "+firstReason(dec.DenyReasons))
+			return
+		}
+	}
+
 	lease, attempt, err := s.Store.GrantLease(r.Context(), body.WorkID, body.NodeID, body.WorkerID, ttl)
 	if err != nil {
 		switch {
@@ -89,6 +166,16 @@ func (s *Server) grantLease(w http.ResponseWriter, r *http.Request) {
 		"lease":   lease,
 		"attempt": attempt,
 	})
+}
+
+// firstReason returns the first deny reason in a slice, or a fallback
+// constant when the slice is empty. The policy engine guarantees the
+// slice is non-empty on deny, but defensive against future bundle changes.
+func firstReason(rs []string) string {
+	if len(rs) == 0 {
+		return ReasonProductionAccessDenied
+	}
+	return rs[0]
 }
 
 // heartbeatLeaseBody is POST /v1/leases/{id}/heartbeat.

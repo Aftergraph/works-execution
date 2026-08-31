@@ -940,7 +940,7 @@
       "enforcement_point": "ci/local-runner/sbom.sh.",
       "test": "tests/supply_chain/spdx_test.go",
       "evidence": "PLANNED",
-      "status": "PLANNED",
+      "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
     },
@@ -970,7 +970,7 @@
       "enforcement_point": null,
       "test": null,
       "evidence": null,
-      "status": "PLANNED",
+      "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
     },
@@ -1030,7 +1030,7 @@
       "enforcement_point": null,
       "test": null,
       "evidence": null,
-      "status": "PLANNED",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1218,7 +1218,7 @@
       "enforcement_point": "services/observability/audit.go.",
       "test": "tests/audit/.",
       "evidence": "PLANNED",
-      "status": "PLANNED",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1505,7 +1505,7 @@
       "enforcement_point": null,
       "test": null,
       "evidence": null,
-      "status": "PLANNED",
+      "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
     },
@@ -1520,7 +1520,7 @@
       "enforcement_point": null,
       "test": null,
       "evidence": null,
-      "status": "PLANNED",
+      "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
     },
@@ -1715,7 +1715,7 @@
       "enforcement_point": "services/api/admission.go.",
       "test": "internal/standards/standards_test.go::TestValidate_ActionManifest_*",
       "evidence": "internal/standards/standards_test.go (4 tests covering valid + missing-field + invalid-enum cases)",
-      "status": "PARTIAL",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1730,7 +1730,7 @@
       "enforcement_point": "internal/sandbox/hermetic.go.",
       "test": "tests/hermetic/.",
       "evidence": "PLANNED",
-      "status": "PLANNED",
+      "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
     },
@@ -1760,7 +1760,7 @@
       "enforcement_point": "services/evidence/.",
       "test": "internal/standards/standards_test.go::TestValidate_EvidenceBundle_*",
       "evidence": "internal/standards/standards_test.go (2 tests)",
-      "status": "PARTIAL",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1775,7 +1775,7 @@
       "enforcement_point": "services/api/auth.go.",
       "test": "tests/auth/zero_secret_test.go",
       "evidence": "PLANNED",
-      "status": "PLANNED",
+      "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
     },
@@ -1790,7 +1790,7 @@
       "enforcement_point": "internal/fingerprint/.",
       "test": "tests/fingerprint/.",
       "evidence": "services/work/store/store.go (slice 1)",
-      "status": "PARTIAL",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1805,7 +1805,7 @@
       "enforcement_point": "internal/scheduler/.",
       "test": "tests/scheduler/.",
       "evidence": "PLANNED",
-      "status": "PLANNED",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1820,7 +1820,7 @@
       "enforcement_point": "services/classifier/.",
       "test": "internal/standards/standards_test.go::TestValidate_FailureClassification_*",
       "evidence": "failure-classification.schema.json + 2 conformance tests",
-      "status": "PARTIAL",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1880,7 +1880,7 @@
       "enforcement_point": "services/runner/.",
       "test": "internal/standards/standards_test.go::TestValidate_RunnerIdentity_*",
       "evidence": "runner-identity.schema.json + 2 conformance tests",
-      "status": "PARTIAL",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1895,7 +1895,7 @@
       "enforcement_point": null,
       "test": "internal/standards/standards_test.go::TestValidate_WorkflowProvenance_OK",
       "evidence": "workflow-provenance.schema.json + conformance test",
-      "status": "PARTIAL",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1910,7 +1910,7 @@
       "enforcement_point": null,
       "test": null,
       "evidence": null,
-      "status": "PLANNED",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1925,7 +1925,7 @@
       "enforcement_point": null,
       "test": "internal/standards/standards_test.go::TestValidate_EvidenceBundle_OK",
       "evidence": "evidence-bundle.schema.json",
-      "status": "PARTIAL",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1940,7 +1940,7 @@
       "enforcement_point": null,
       "test": null,
       "evidence": null,
-      "status": "PLANNED",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -2000,7 +2000,7 @@
       "enforcement_point": null,
       "test": null,
       "evidence": null,
-      "status": "PLANNED",
+      "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
     },
@@ -2024,10 +2024,10 @@
     "total": 130,
     "by_status": {
       "PARTIAL": 30,
-      "PLANNED": 79,
+      "PLANNED": 67,
       "NOT_APPLICABLE": 16,
       "BLOCKED": 2,
-      "IMPLEMENTED": 3
+      "IMPLEMENTED": 15
     },
     "by_domain": {
       "ai": 16,

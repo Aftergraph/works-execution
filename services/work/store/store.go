@@ -20,7 +20,18 @@ import (
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registers itself
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
+	"github.com/JonasAbde/works-execution/services/audit"
 )
+
+// SchemaVersion is the current schema level this store applies. Bumped
+// each time a migration lands. Exposed so callers (CI, healthz) can
+// assert they are talking to a store at the expected level.
+const SchemaVersion = 6
+
+// ErrSchemaTooOld is returned by health checks / smoke tests when the
+// on-disk schema is older than SchemaVersion. Operators should run
+// `migrate` (slice upgrade) before serving traffic.
+var ErrSchemaTooOld = errors.New("schema too old")
 
 // ErrNotFound is returned when a Work ID does not exist.
 var ErrNotFound = errors.New("work not found")
@@ -50,13 +61,38 @@ type Store interface {
 	ListExpiredLeases(ctx context.Context, limit int) ([]*workgraph.Lease, error)
 	MarkAttemptCancelled(ctx context.Context, attemptID, reason string) error
 	ActiveLeasesByWorkID(ctx context.Context, workID string) (map[string]bool, error)
+	LeasesByWorkID(ctx context.Context, workID string) ([]*workgraph.Lease, error)
+
+	// Audit (slice 6 / k-impl-012): read the CloudEvents audit stream.
+	// Empty filter fields are unbounded; limit clamps to 200 if zero and
+	// to 1000 if greater.
+	ListAuditEvents(ctx context.Context, f audit.ListFilter) ([]audit.AuditEvent, error)
+
+	// Provenance operations (slice 5 / k-impl-005).
+	SaveProvenance(ctx context.Context, p Provenance) error
+	GetProvenance(ctx context.Context, workID string) (*Provenance, error)
 
 	Close() error
+}
+
+// Provenance is the persisted workflow-provenance attestation for a Work.
+// Attestation is the canonical JSON envelope (predicateType + subject +
+// predicate); Signature is the HMAC over the envelope bytes, hex-encoded.
+type Provenance struct {
+	WorkID      string
+	Attestation []byte // canonical envelope JSON
+	Signature   []byte // HMAC-SHA256 over Attestation, hex
+	KeyID       string // signer key identifier
+	BuilderID   string // control plane URI
+	ProducedAt  time.Time
 }
 
 // SQLiteStore is the SQLite implementation of Store.
 type SQLiteStore struct {
 	db *sql.DB
+	// Audit emits CloudEvents for every state mutation. May be nil; the
+	// helpers (auditEmit) tolerate that and treat it as "audit disabled".
+	Audit audit.Emitter
 }
 
 // Open opens (or creates) a SQLite database at the given path and applies the
@@ -75,6 +111,9 @@ func Open(path string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// Default to a SQLite-backed CloudEvents emitter. Tests can swap
+	// in their own via the Audit field before serving traffic.
+	s.Audit = audit.NewSQLiteEmitter(db, nil)
 	return s, nil
 }
 
@@ -155,6 +194,45 @@ CREATE INDEX IF NOT EXISTS idx_leases_attempt ON work_leases(attempt_id);
 -- slice 2 v2 -> v3: add lease_id column to work_attempts (nullable).
 -- ALTER TABLE ADD COLUMN is idempotent in modernc/sqlite: it returns an error
 -- if the column already exists. We detect first via pragma_table_info.
+
+-- slice 5 (k-impl-005): v4 -> v5 — workflow provenance attestation.
+-- One attestation per Work. The envelope JSON contains predicateType +
+-- subject + predicate (per docs/standards/schemas/workflow-provenance.schema.json).
+-- Signatures live alongside; we persist the canonical envelope and the
+-- signature separately so they can be independently re-validated.
+CREATE TABLE IF NOT EXISTS work_provenance (
+    work_id      TEXT PRIMARY KEY REFERENCES works(id) ON DELETE CASCADE,
+    attestation  TEXT NOT NULL,
+    signature    TEXT NOT NULL,
+    key_id       TEXT NOT NULL,
+    builder_id   TEXT NOT NULL,
+    produced_at  TEXT NOT NULL
+);
+
+-- slice 6 (k-impl-012): v5 -> v6 — CloudEvents v1.0 audit stream.
+-- Every Work state transition (and work creation) emits a CloudEvent
+-- that is persisted here. The on-wire shape (when returned by
+-- /v1/audit-events) follows the CloudEvents v1.0 spec: id, source,
+-- specversion, type, time, datacontenttype, subject, data. The
+-- denormalized columns (work_id, from_state, to_state, ...) let the
+-- query layer filter and ORDER BY without parsing 'data' JSON.
+CREATE TABLE IF NOT EXISTS work_audit_events (
+    id             TEXT PRIMARY KEY,
+    occurred_at    TEXT NOT NULL,
+    source         TEXT NOT NULL,
+    type           TEXT NOT NULL,
+    subject        TEXT,
+    work_id        TEXT,
+    from_state     TEXT,
+    to_state       TEXT,
+    correlation_id TEXT,
+    attempt_id     TEXT,
+    spec_version   TEXT NOT NULL,
+    data           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_occurred ON work_audit_events(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_audit_work ON work_audit_events(work_id);
+CREATE INDEX IF NOT EXISTS idx_audit_type ON work_audit_events(type);
 `
 
 func (s *SQLiteStore) migrate() error {
@@ -173,7 +251,42 @@ func (s *SQLiteStore) migrate() error {
 			return fmt.Errorf("migrate work_attempts.lease_id: %w", err)
 		}
 	}
+	// Migration v4 -> v5: work_provenance table (created idempotently above
+	// via CREATE TABLE IF NOT EXISTS, but mark the version transition here).
+	// No schema alteration is required because the table is net-new.
+	if err := s.bumpSchemaVersion(5); err != nil {
+		return fmt.Errorf("bump schema version: %w", err)
+	}
+	// Migration v5 -> v6: work_audit_events table (created idempotently
+	// above via CREATE TABLE IF NOT EXISTS, but mark the version
+	// transition here). No data backfill is required: prior slices
+	// did not emit CloudEvents, so the table starts empty.
+	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
+		return fmt.Errorf("bump schema version: %w", err)
+	}
 	return nil
+}
+
+// bumpSchemaVersion stores the schema version in a sidecar table. We use
+// this both to gate future migrations and to let operators inspect the
+// current schema level via `pragma user_version`-style introspection.
+func (s *SQLiteStore) bumpSchemaVersion(target int) error {
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		return err
+	}
+	var current int
+	row := s.db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`)
+	if err := row.Scan(&current); err != nil {
+		return err
+	}
+	if current >= target {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO schema_version (version, applied_at) VALUES (?, ?)`,
+		target, time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	return err
 }
 
 func (s *SQLiteStore) workAttemptsNeedsLeaseIDColumn() bool {
@@ -302,7 +415,32 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 	if err != nil {
 		return fmt.Errorf("insert work: %w", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Best-effort audit emit. A failure to persist the audit event is
+	// not surfaced to the caller — the work itself is durable. Errors
+	// are logged by the emitter.
+	s.auditEmit(ctx, &audit.CloudEvent{
+		ID:              audit.NewEventID(),
+		Source:          audit.Source,
+		SpecVersion:     audit.SpecVersion,
+		Type:            audit.TypeWorkCreated,
+		Time:            time.Now().UTC(),
+		DataContentType: "application/json",
+		Subject:         w.ID,
+		WorkID:          w.ID,
+		ToState:         string(w.State),
+		CorrelationID:   w.CorrelationID,
+		SchemaVersion:   "6",
+		Data: map[string]any{
+			"work_id":        w.ID,
+			"to_state":       string(w.State),
+			"created_at":     w.CreatedAt.UTC().Format(time.RFC3339Nano),
+			"correlation_id": w.CorrelationID,
+		},
+	})
+	return nil
 }
 
 // GetWork returns the full Work with attempts, artifacts, and evidence hydrated.
@@ -483,6 +621,28 @@ func (s *SQLiteStore) UpdateState(ctx context.Context, id string, to workgraph.S
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// CloudEvent: state_changed. Best-effort; emit AFTER commit so we
+	// never persist an event for a transition that rolled back.
+	s.auditEmit(ctx, &audit.CloudEvent{
+		ID:              audit.NewEventID(),
+		Source:          audit.Source,
+		SpecVersion:     audit.SpecVersion,
+		Type:            audit.TypeWorkStateChanged,
+		Time:            time.Now().UTC(),
+		DataContentType: "application/json",
+		Subject:         id,
+		WorkID:          id,
+		FromState:       string(current),
+		ToState:         string(to),
+		SchemaVersion:   "6",
+		Data: audit.StateTransitionData{
+			WorkID:    id,
+			FromState: string(current),
+			ToState:   string(to),
+			At:        time.Now().UTC(),
+			Actor:     "api",
+		},
+	})
 	return s.GetWork(ctx, id)
 }
 
@@ -608,4 +768,85 @@ func parseTime(s string) (time.Time, error) {
 		return t, nil
 	}
 	return time.Parse(time.RFC3339, s)
+}
+// SaveProvenance persists a Provenance row for the given Work. Re-saving
+// for the same Work replaces the previous attestation (the Work's provenance
+// is monotonic per the SLSA v1 spec — the most recent terminal-state build
+// wins). Foreign-key cascade on works(id) handles deletion.
+func (s *SQLiteStore) SaveProvenance(ctx context.Context, p Provenance) error {
+	if p.WorkID == "" {
+		return errors.New("provenance.work_id is required")
+	}
+	if len(p.Attestation) == 0 {
+		return errors.New("provenance.attestation is required")
+	}
+	if len(p.Signature) == 0 {
+		return errors.New("provenance.signature is required")
+	}
+	if p.ProducedAt.IsZero() {
+		p.ProducedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+        INSERT INTO work_provenance (work_id, attestation, signature, key_id, builder_id, produced_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(work_id) DO UPDATE SET
+            attestation = excluded.attestation,
+            signature   = excluded.signature,
+            key_id      = excluded.key_id,
+            builder_id  = excluded.builder_id,
+            produced_at = excluded.produced_at
+    `,
+		p.WorkID,
+		string(p.Attestation),
+		string(p.Signature),
+		nullable(p.KeyID),
+		nullable(p.BuilderID),
+		p.ProducedAt.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert provenance: %w", err)
+	}
+	return nil
+}
+
+// GetProvenance fetches the persisted attestation for a Work. Returns
+// ErrNotFound if the Work has no attestation yet (e.g. it has not reached a
+// terminal state or the producer has not run).
+func (s *SQLiteStore) GetProvenance(ctx context.Context, workID string) (*Provenance, error) {
+	var p Provenance
+	var attestation, signature, keyID, builderID, producedStr string
+	err := s.db.QueryRowContext(ctx, `
+        SELECT attestation, signature, key_id, builder_id, produced_at
+        FROM work_provenance WHERE work_id = ?
+    `, workID).Scan(&attestation, &signature, &keyID, &builderID, &producedStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.WorkID = workID
+	p.Attestation = []byte(attestation)
+	p.Signature = []byte(signature)
+	p.KeyID = keyID
+	p.BuilderID = builderID
+	p.ProducedAt, _ = parseTime(producedStr)
+	return &p, nil
+}
+
+// auditEmit is the internal hook for store mutations. It is a no-op
+// when no emitter is configured (e.g. tests that explicitly disable
+// audit). Errors from the emitter are logged via the emitter itself;
+// we intentionally do not propagate them so that a misconfigured audit
+// sink cannot break Work state transitions.
+func (s *SQLiteStore) auditEmit(ctx context.Context, ev *audit.CloudEvent) {
+	if s.Audit == nil || ev == nil {
+		return
+	}
+	_ = s.Audit.Emit(ctx, ev)
+}
+
+// ListAuditEvents implements Store.
+func (s *SQLiteStore) ListAuditEvents(ctx context.Context, f audit.ListFilter) ([]audit.AuditEvent, error) {
+	return audit.Query(ctx, s.db, f)
 }

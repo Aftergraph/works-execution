@@ -28,13 +28,37 @@ import (
 	"sync"
 	"time"
 
+	"github.com/JonasAbde/works-execution/internal/sandbox"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 )
 
 // Client is the minimal HTTP client the worker uses to talk to the API.
+//
+// Slice 4 (k-impl-003) added Zero-Secret enrollment: workers obtain a
+// short-lived HS256 JWT from POST /v1/workers/enroll and present it as
+// `Authorization: Bearer <token>` on every subsequent request. The
+// Client stores the token in the `Token` field; if it is empty, the
+// client transparently falls back to the pre-slice-4 behavior of
+// sending no Authorization header. That keeps unit tests of the client
+// itself trivial while production callers (cmd/works-worker) always
+// enroll first and pass the resulting token in.
 type Client struct {
 	BaseURL string
 	HTTP    *http.Client
+	// Token is the bearer credential for /v1/leases/* and /v1/workers/*.
+	// Empty means "no token"; the client will not set an Authorization
+	// header in that case.
+	Token string
+}
+
+// do executes an HTTP request. When c.Token is set, it attaches the
+// Bearer credential. Centralizing this here means every new request
+// method automatically inherits auth.
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	return c.HTTP.Do(req)
 }
 
 // ReadyItem mirrors services/api.readyItem.
@@ -52,13 +76,51 @@ type ReadyResponse struct {
 	Count int         `json:"count"`
 }
 
+// Enroll requests a short-lived JWT from the API. The returned token is
+// valid for the routes under /v1/workers/* and /v1/leases/* for the
+// duration of ttl. Set Client.Token = <returned token> to use it.
+//
+// On any non-2xx response, returns an error with the status and body
+// so the caller can log/quit.
+func (c *Client) Enroll(ctx context.Context, workerID, challenge string, ttl time.Duration) (string, error) {
+	body, _ := json.Marshal(map[string]any{
+		"worker_id":   workerID,
+		"challenge":   challenge,
+		"ttl_seconds": int(ttl.Seconds()),
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/workers/enroll", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("enroll: %s: %s", resp.Status, b)
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.Token == "" {
+		return "", errors.New("enroll: empty token in response")
+	}
+	return out.Token, nil
+}
+
 // Ready polls the API for ready work.
 func (c *Client) Ready(ctx context.Context) ([]ReadyItem, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/v1/workers/ready?limit=10", nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +150,7 @@ func (c *Client) GrantLease(ctx context.Context, workID, nodeID, workerID string
 		return "", "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return "", "", err
 	}
@@ -115,7 +177,7 @@ func (c *Client) Heartbeat(ctx context.Context, leaseID string, ttl time.Duratio
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -139,7 +201,7 @@ func (c *Client) CompleteLease(ctx context.Context, leaseID string, exitCode int
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -159,7 +221,7 @@ func (c *Client) ReleaseLease(ctx context.Context, leaseID, reason string) error
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}
@@ -178,13 +240,19 @@ type Logger interface {
 
 // Worker is the polling worker daemon.
 type Worker struct {
-	ID            string
-	Client        *Client
-	ArtifactsDir  string
-	Logger        Logger
-	PollEvery     time.Duration
-	LeaseTTL      time.Duration // per-lease TTL on grant; default 25s
+	ID             string
+	Client         *Client
+	ArtifactsDir   string
+	Logger         Logger
+	PollEvery      time.Duration
+	LeaseTTL       time.Duration // per-lease TTL on grant; default 25s
 	HeartbeatEvery time.Duration // heartbeat interval; default 10s
+
+	// Manifest, when non-nil, is the capability manifest passed to the
+	// hermetic sandbox for every subprocess. Slice-4 callers set this to
+	// the action manifest received from the API; slice-2 callers leave
+	// it nil and run without sandbox enforcement.
+	Manifest *sandbox.Manifest
 }
 
 // Run polls and executes work forever, or until ctx is done.
@@ -262,7 +330,7 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 	}
 
 	w.logf("running %s/%s (lease=%s): %s", item.WorkID, item.NodeID, leaseID, item.Run)
-	res := runCommand(ctx, item.Run, item.Env, timeout, killCh)
+	res := runCommand(ctx, item.Run, item.Env, timeout, killCh, w.Manifest)
 
 	cancelHB() // stop heartbeats
 
@@ -349,16 +417,46 @@ type execResult struct {
 //   - killCh is closed (lease lost — kill the subprocess)
 //
 // When killCh fires, the subprocess is killed and LeaseLost=true is set.
-func runCommand(ctx context.Context, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}) execResult {
+//
+// Slice-4 wiring: the subprocess runs inside a hermetic sandbox built
+// from `manifest` (or the Hermetic Execution Standard #111 defaults when
+// nil). Environment is allow-listed against the manifest, the working
+// directory is an isolated per-attempt workspace, and network egress is
+// denied by default. A nil manifest preserves the slice-2 behaviour
+// (os.Environ + caller-supplied env, current working directory) — used
+// by legacy callers and tests that don't opt into the sandbox.
+func runCommand(ctx context.Context, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}, manifest ...*sandbox.Manifest) execResult {
 	start := time.Now()
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(cctx, "sh", "-c", command)
-	cmd.Env = os.Environ()
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+
+	var prepared *sandbox.Prepared
+	if len(manifest) > 0 && manifest[0] != nil {
+		p, prepErr := sandbox.Prepare(cctx, command, env, *manifest[0])
+		if prepErr != nil {
+			return execResult{
+				Status:      "failed",
+				ExitCode:    -1,
+				CombinedLog: []byte("sandbox prepare failed: " + prepErr.Error()),
+				Duration:    time.Since(start),
+			}
+		}
+		prepared = p
+		cmd.Env = prepared.Env
+		cmd.Dir = prepared.Workdir
+		defer prepared.Cleanup()
+	} else {
+		// Legacy path: full process env + caller overrides. Kept so the
+		// slice-2 API surface (ReadyItem.Env as opaque pass-through) is
+		// unchanged. Slice-4 callers should always pass a manifest.
+		cmd.Env = os.Environ()
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

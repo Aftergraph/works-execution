@@ -6,8 +6,9 @@
 **Slice context:** Slice 1 (`d3db1d1`) shipped the `Work` primitive, SQLite
 store, HTTP API, CLI, and polling subprocess worker. Slice 2 (`dab84f2`)
 added lease-based scheduling, worker-loss recovery, and log streaming.
-This document maps the **16 platform/containers + build/reproducibility
-rows** declared in `docs/standards/registry.json` (domain = `platform`).
+This document maps the **14 platform/containers + build/reproducibility
+rows enumerated by the parent task** (8 platform/containers + 6 build/
+reproducibility, per the explicit list in the task brief).
 
 **Companion documents:**
 - `docs/standards/registry.json` — authoritative machine-readable registry (130 rows)
@@ -771,7 +772,7 @@ provenance chain) a typed, enforced CAS identifier to build on.
 
 ---
 
-## §6. Traceability table (all 16 rows)
+## §6. Traceability table (all 14 enumerated rows)
 
 | #  | Standard | Registry row | Status | Enforcement point (file) | Test (file) | Evidence pointer | Active? |
 |----|----------|--------------|--------|--------------------------|-------------|------------------|---------|
@@ -817,7 +818,7 @@ downstream PR-comment / governance checks:
 
 ## §8. Acceptance for this mapping document
 
-- [x] All 16 platform/containers + build/reproducibility rows mapped (§§3.1–3.14).
+- [x] All 14 platform/containers + build/reproducibility rows mapped (§§3.1–3.14).
 - [x] Three explicit duplicates (`oci-runtime`, `oci-image`, `oci-distribution`) called out and not double-counted (§1, §6, §7).
 - [x] Per-standard fields complete for each active row: applicability, status, gap, next step, file path (§3).
 - [x] §14 five-step rule applied to every row.

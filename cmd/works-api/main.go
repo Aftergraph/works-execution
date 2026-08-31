@@ -18,8 +18,10 @@ import (
 
 func main() {
 	var (
-		addr   = flag.String("addr", envOr("WORKS_ADDR", "127.0.0.1:8080"), "listen address")
-		dbPath = flag.String("db", envOr("WORKS_DB", "/tmp/works.db"), "SQLite db path")
+		addr         = flag.String("addr", envOr("WORKS_ADDR", "127.0.0.1:8080"), "listen address")
+		dbPath       = flag.String("db", envOr("WORKS_DB", "/tmp/works.db"), "SQLite db path")
+		enrollSecret = flag.String("enroll-secret", envOr("WORKS_ENROLL_SECRET", ""), "shared challenge for POST /v1/workers/enroll; empty disables enrollment (fail-closed)")
+		policyPath   = flag.String("policy", envOr("WORKS_POLICY_BUNDLE", "policies/lease_grant.rego"), "OPA Rego policy bundle path; empty disables policy enforcement (legacy)")
 	)
 	flag.Parse()
 
@@ -31,10 +33,28 @@ func main() {
 	}
 	defer st.Close()
 
+	// Load the policy bundle. Production deploys ship with the bundle on
+	// disk; an empty path disables enforcement (legacy behavior, NOT
+	// recommended for production).
+	var policyEngine *api.Engine
+	if *policyPath != "" {
+		engine, perr := api.LoadBundle(*policyPath)
+		if perr != nil {
+			logger.Fatalf("load policy bundle %s: %v", *policyPath, perr)
+		}
+		logger.Printf("loaded policy bundle %s (version=%s)", *policyPath, engine.BundleVersion())
+		policyEngine = engine
+	} else {
+		logger.Printf("WARNING: policy enforcement disabled (--policy=\"\")")
+	}
+
 	srv := &api.Server{
 		Store:        st,
 		Logger:       logger,
 		ArtifactsDir: envOr("WORKS_ARTIFACTS", ""),
+		EnrollSecret: *enrollSecret,
+		Policy:       policyEngine,
+		AuthEnabled:  true,
 	}
 	httpSrv := &http.Server{
 		Addr:              *addr,

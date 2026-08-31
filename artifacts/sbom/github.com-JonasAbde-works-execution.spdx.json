@@ -1,0 +1,308 @@
+{
+  "@context": "https://spdx.org/spdx-3.0.1/rdf/schema",
+  "@graph": [
+    {
+      "type": "creationInfo",
+      "spdxId": "SPDXRef-CreationInfo",
+      "creationInfo": {
+        "type": "creationInfo",
+        "spdxId": "SPDXRef-CreationInfo",
+        "created": [
+          "2026-08-30T23:42:57Z"
+        ],
+        "createdBy": [
+          "works-execution/services/sbom"
+        ],
+        "specVersion": "SPDX-3.0",
+        "dataLicense": "CC0-1.0",
+        "comment": "SBOM generated from `go list -m -json all`",
+        "standard": "ISO/IEC 5962:2021"
+      }
+    },
+    {
+      "type": "organization",
+      "spdxId": "SPDXRef-Organization-works-execution",
+      "name": "works-execution",
+      "email": "[email protected]"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-github.com-JonasAbde-works-execution",
+      "name": "github.com/JonasAbde/works-execution",
+      "description": "works-execution root package (unspecified)",
+      "softwareVersion": "unspecified",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "unspecified"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-github.com-dustin-go-humanize-v1.0.1",
+      "name": "github.com/dustin/go-humanize",
+      "softwareVersion": "v1.0.1",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.0.1"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-github.com-google-pprof-v0.0.0-20260802141513-ef3492d7dac3",
+      "name": "github.com/google/pprof",
+      "softwareVersion": "v0.0.0-20260802141513-ef3492d7dac3",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v0.0.0-20260802141513-ef3492d7dac3"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-github.com-google-uuid-v1.6.0",
+      "name": "github.com/google/uuid",
+      "softwareVersion": "v1.6.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.6.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-github.com-hashicorp-golang-lru-v2-v2.0.7",
+      "name": "github.com/hashicorp/golang-lru/v2",
+      "softwareVersion": "v2.0.7",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v2.0.7"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-github.com-mattn-go-isatty-v0.0.24",
+      "name": "github.com/mattn/go-isatty",
+      "softwareVersion": "v0.0.24",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v0.0.24"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-github.com-ncruces-go-strftime-v1.0.0",
+      "name": "github.com/ncruces/go-strftime",
+      "softwareVersion": "v1.0.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.0.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-github.com-remyoudompheng-bigfft-v0.0.0-20230129092748-24d4a6f8daec",
+      "name": "github.com/remyoudompheng/bigfft",
+      "softwareVersion": "v0.0.0-20230129092748-24d4a6f8daec",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v0.0.0-20230129092748-24d4a6f8daec"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-github.com-santhosh-tekuri-jsonschema-v5-v5.3.1",
+      "name": "github.com/santhosh-tekuri/jsonschema/v5",
+      "softwareVersion": "v5.3.1",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v5.3.1"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-golang.org-x-mod-v0.37.0",
+      "name": "golang.org/x/mod",
+      "softwareVersion": "v0.37.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v0.37.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-golang.org-x-sync-v0.21.0",
+      "name": "golang.org/x/sync",
+      "softwareVersion": "v0.21.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v0.21.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-golang.org-x-sys-v0.47.0",
+      "name": "golang.org/x/sys",
+      "softwareVersion": "v0.47.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v0.47.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-golang.org-x-tools-v0.47.0",
+      "name": "golang.org/x/tools",
+      "softwareVersion": "v0.47.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v0.47.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-gopkg.in-check.v1-v0.0.0-20161208181325-20d25e280405",
+      "name": "gopkg.in/check.v1",
+      "softwareVersion": "v0.0.0-20161208181325-20d25e280405",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v0.0.0-20161208181325-20d25e280405"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-gopkg.in-yaml.v3-v3.0.1",
+      "name": "gopkg.in/yaml.v3",
+      "softwareVersion": "v3.0.1",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v3.0.1"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-cc-v4-v4.29.1",
+      "name": "modernc.org/cc/v4",
+      "softwareVersion": "v4.29.1",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v4.29.1"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-ccgo-v4-v4.34.6",
+      "name": "modernc.org/ccgo/v4",
+      "softwareVersion": "v4.34.6",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v4.34.6"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-fileutil-v1.4.0",
+      "name": "modernc.org/fileutil",
+      "softwareVersion": "v1.4.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.4.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-gc-v2-v2.6.5",
+      "name": "modernc.org/gc/v2",
+      "softwareVersion": "v2.6.5",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v2.6.5"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-gc-v3-v3.1.4",
+      "name": "modernc.org/gc/v3",
+      "softwareVersion": "v3.1.4",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v3.1.4"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-goabi0-v0.2.0",
+      "name": "modernc.org/goabi0",
+      "softwareVersion": "v0.2.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v0.2.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-libc-v1.74.4",
+      "name": "modernc.org/libc",
+      "softwareVersion": "v1.74.4",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.74.4"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-mathutil-v1.7.1",
+      "name": "modernc.org/mathutil",
+      "softwareVersion": "v1.7.1",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.7.1"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-memory-v1.11.0",
+      "name": "modernc.org/memory",
+      "softwareVersion": "v1.11.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.11.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-opt-v0.2.0",
+      "name": "modernc.org/opt",
+      "softwareVersion": "v0.2.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v0.2.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-sortutil-v1.2.1",
+      "name": "modernc.org/sortutil",
+      "softwareVersion": "v1.2.1",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.2.1"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-sqlite-v1.57.0",
+      "name": "modernc.org/sqlite",
+      "softwareVersion": "v1.57.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.57.0"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-strutil-v1.2.1",
+      "name": "modernc.org/strutil",
+      "softwareVersion": "v1.2.1",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.2.1"
+    },
+    {
+      "type": "software",
+      "spdxId": "SPDXRef-Package-modernc.org-token-v1.1.0",
+      "name": "modernc.org/token",
+      "softwareVersion": "v1.1.0",
+      "downloadLocation": "NOASSERTION",
+      "packageVersion": "v1.1.0"
+    },
+    {
+      "type": "relationship",
+      "spdxId": "SPDXRef-Relationship-1c0bfd24",
+      "from": "SPDXRef-Package-github.com-JonasAbde-works-execution",
+      "to": [
+        "SPDXRef-Package-github.com-dustin-go-humanize-v1.0.1",
+        "SPDXRef-Package-github.com-google-pprof-v0.0.0-20260802141513-ef3492d7dac3",
+        "SPDXRef-Package-github.com-google-uuid-v1.6.0",
+        "SPDXRef-Package-github.com-hashicorp-golang-lru-v2-v2.0.7",
+        "SPDXRef-Package-github.com-mattn-go-isatty-v0.0.24",
+        "SPDXRef-Package-github.com-ncruces-go-strftime-v1.0.0",
+        "SPDXRef-Package-github.com-remyoudompheng-bigfft-v0.0.0-20230129092748-24d4a6f8daec",
+        "SPDXRef-Package-github.com-santhosh-tekuri-jsonschema-v5-v5.3.1",
+        "SPDXRef-Package-golang.org-x-mod-v0.37.0",
+        "SPDXRef-Package-golang.org-x-sync-v0.21.0",
+        "SPDXRef-Package-golang.org-x-sys-v0.47.0",
+        "SPDXRef-Package-golang.org-x-tools-v0.47.0",
+        "SPDXRef-Package-gopkg.in-check.v1-v0.0.0-20161208181325-20d25e280405",
+        "SPDXRef-Package-gopkg.in-yaml.v3-v3.0.1",
+        "SPDXRef-Package-modernc.org-cc-v4-v4.29.1",
+        "SPDXRef-Package-modernc.org-ccgo-v4-v4.34.6",
+        "SPDXRef-Package-modernc.org-fileutil-v1.4.0",
+        "SPDXRef-Package-modernc.org-gc-v2-v2.6.5",
+        "SPDXRef-Package-modernc.org-gc-v3-v3.1.4",
+        "SPDXRef-Package-modernc.org-goabi0-v0.2.0",
+        "SPDXRef-Package-modernc.org-libc-v1.74.4",
+        "SPDXRef-Package-modernc.org-mathutil-v1.7.1",
+        "SPDXRef-Package-modernc.org-memory-v1.11.0",
+        "SPDXRef-Package-modernc.org-opt-v0.2.0",
+        "SPDXRef-Package-modernc.org-sortutil-v1.2.1",
+        "SPDXRef-Package-modernc.org-sqlite-v1.57.0",
+        "SPDXRef-Package-modernc.org-strutil-v1.2.1",
+        "SPDXRef-Package-modernc.org-token-v1.1.0"
+      ],
+      "relationshipType": "describes"
+    },
+    {
+      "type": "bundle",
+      "spdxId": "SPDXRef-Document-b6cc7f5bbbef",
+      "comment": "works-execution SBOM bundle"
+    }
+  ],
+  "@id": "https://works-execution.dev/spdx/github.com/JonasAbde/works-execution#SPDXRef-Document-b6cc7f5bbbef",
+  "@type": "Bundle",
+  "spdxId": "SPDXRef-Document-b6cc7f5bbbef",
+  "name": "github.com/JonasAbde/works-execution",
+  "documentNamespace": "https://works-execution.dev/spdx/github.com/JonasAbde/works-execution"
+}
