@@ -517,7 +517,7 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 		if item.Image != "" {
 			res = runDocker(ctx, item.Image, item.Run, item.Env, timeout, killCh)
 		} else {
-			res = runCommand(ctx, item.Run, item.Env, timeout, killCh, sourceDir, w.Manifest)
+			res = runCommand(ctx, item.Run, item.Env, timeout, killCh, sourceDir, nil)
 		}
 	}
 
