@@ -13,6 +13,10 @@ build:
 	$(GO) build -o $(BIN)/works-kanban   ./cmd/works-kanban
 	$(GO) build -o $(BIN)/works-standards ./cmd/works-standards
 	$(GO) build -o $(BIN)/works-sbom     ./cmd/works-sbom
+	$(GO) build -o $(BIN)/works-pilot    ./cmd/works-pilot
+	$(GO) build -o $(BIN)/works-runner-id ./cmd/works-runner-id
+	$(GO) build -o $(BIN)/works-publisher ./cmd/works-publisher
+	$(GO) build -o $(BIN)/works-bench    ./cmd/works-bench
 
 vet:
 	$(GO) vet ./...
