@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/JonasAbde/works-execution/packages/cache"
 	"github.com/JonasAbde/works-execution/services/api"
 	"github.com/JonasAbde/works-execution/services/publisher"
 	"github.com/JonasAbde/works-execution/services/work/store"
@@ -38,6 +39,15 @@ func main() {
 		logger.Fatalf("open store: %v", err)
 	}
 	defer st.Close()
+
+	// RFC-0005: content-addressed cache shares the works database.
+	// The cache package owns its table; failures to open it disable
+	// caching but must not take down the control plane.
+	cacheStore, err := cache.New(st.DB())
+	if err != nil {
+		logger.Printf("WARNING: cache store disabled: %v", err)
+		cacheStore = nil
+	}
 
 	// Load the policy bundle. Production deploys ship with the bundle on
 	// disk; an empty path disables enforcement (legacy behavior, NOT
@@ -80,6 +90,12 @@ func main() {
 	} else {
 		srv.Publisher = pub
 		logger.Printf("publisher enabled (kind=%s)", pub.Kind())
+	}
+
+	// RFC-0005: cache store (nil = disabled with a boot warning).
+	srv.CacheStore = cacheStore
+	if cacheStore != nil {
+		logger.Printf("cache store enabled (/v1/cache/{key})")
 	}
 	httpSrv := &http.Server{
 		Addr:              *addr,

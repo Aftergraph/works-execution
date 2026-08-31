@@ -386,6 +386,11 @@ func (s *SQLiteStore) migrateWorkArtifacts() error {
 // Close releases the database handle.
 func (s *SQLiteStore) Close() error { return s.db.Close() }
 
+// DB exposes the underlying handle for co-located subsystems that
+// share the database file (e.g. the RFC-0005 cache store). The cache
+// package owns its own table; callers must not touch works tables.
+func (s *SQLiteStore) DB() *sql.DB { return s.db }
+
 // CreateWork persists a new Work. Returns ErrIdempotencyConflict if a Work
 // with the same idempotency key already exists with a different payload.
 func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
