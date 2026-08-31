@@ -416,6 +416,7 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 		Run        string                `json:"run"`
 		Env        map[string]string     `json:"env,omitempty"`
 		TimeoutS   int                   `json:"timeout_s,omitempty"`
+		Image      string                `json:"image,omitempty"` // slice 5: docker image; empty = host subprocess
 		Assignment *scheduler.Assignment `json:"assignment,omitempty"`
 	}
 	type unschedulable struct {
@@ -445,6 +446,7 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 				Run:      n.Run,
 				Env:      n.Env,
 				TimeoutS: n.TimeoutS,
+				Image:    n.Runtime.Image,
 			}
 
 			// Skip the scheduler when no runners are registered. This

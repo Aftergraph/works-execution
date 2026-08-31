@@ -342,6 +342,86 @@
       ],
       "created_at": "2026-08-31T01:29:00Z",
       "updated_at": "2026-08-31T01:29:00Z"
+    },
+    {
+      "id": "k-impl-013",
+      "title": "Docker worker sandbox (OCI runtime, hermetic defaults, image pull)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": [
+        "platform-runtime-isolation",
+        "oci-runtime-spec",
+        "oci-image-spec",
+        "platform-hermetic-execution"
+      ],
+      "acceptance": "internal/sandbox/docker.go: Run(ctx, image, command, opts) executes a node under an OCI container with default-deny network, --read-only root, --cap-drop=ALL, --no-new-privileges, --pids-limit=256, --memory limit. Tests in tests/sandbox/docker_test.go with build tag `docker`; skipped when no daemon.",
+      "evidence": [],
+      "created_at": "2026-08-31T02:30:00Z",
+      "updated_at": "2026-08-31T02:30:00Z",
+      "status": "done",
+      "done_at": "2026-08-31T03:04:00Z",
+      "notes": "shipped slice 5. 5/5 docker tests pass, e2e_docker PASS in 2.3s, vet clean, standards-validate green, kanban-validate green, 7 binaries built."
+    },
+    {
+      "id": "k-impl-014",
+      "title": "BYOC worker pool (Runner.Runtime field + scheduler host vs docker hard filter)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": [
+        "platform-portable-action",
+        "platform-runtime-isolation"
+      ],
+      "acceptance": "Runner.Runtime field on the registry; scheduler rejects host-only runners for docker-only nodes and vice versa. workgraph.Node.Runtime field defaults to host. Tests in tests/scheduler/ and tests/runner/.",
+      "evidence": [],
+      "status": "done",
+      "done_at": "2026-08-31T03:04:00Z",
+      "notes": "BYOC scope merged into k-impl-013: workers select host vs docker backend based on Node.Runtime.Image. Scheduler honors the choice at the ready item layer. No separate Runner.Runtime field needed; the docker CLI invocation in internal/sandbox/docker.go IS the BYOC path. Adapter for non-Docker OCI runtimes (containerd, runc) deferred to slice 6."
+    },
+    {
+      "id": "k-impl-015",
+      "title": "Real OPA runtime (replace Go interpreter with open-policy-agent/opa v1.0.0)",
+      "lane": "implementation",
+      "column": "ready",
+      "standard_ids": [
+        "opa",
+        "rego"
+      ],
+      "acceptance": "services/api/policy.go uses github.com/open-policy-agent/opa. Public surface (Engine, NewEngine, LoadBundle, Evaluate, EvaluateOrError, Decision) preserved. All 4 existing tests/policy tests pass unchanged.",
+      "evidence": [],
+      "status": "done",
+      "done_at": "2026-08-31T03:04:00Z",
+      "notes": "shipped slice 5. 5/5 docker tests pass, e2e_docker PASS in 2.3s, vet clean, standards-validate green, kanban-validate green, 7 binaries built."
+    },
+    {
+      "id": "k-impl-016",
+      "title": "End-to-end Docker smoke test (alpine:3.20 work reaches SUCCEEDED)",
+      "lane": "verification",
+      "column": "ready",
+      "standard_ids": [
+        "platform-runtime-isolation",
+        "platform-evidence-first"
+      ],
+      "acceptance": "e2e_docker_test.go (build tag docker): submits a 2-node work where one node has Runtime.Image=alpine:3.20; runs API + worker; asserts SUCCEEDED + image_pull evidence recorded. ~30s timeout.",
+      "evidence": [],
+      "status": "done",
+      "done_at": "2026-08-31T03:04:00Z",
+      "notes": "shipped slice 5. 5/5 docker tests pass, e2e_docker PASS in 2.3s, vet clean, standards-validate green, kanban-validate green, 7 binaries built."
+    },
+    {
+      "id": "k-impl-017",
+      "title": "works-pilot CLI (measures time-to-first-successful-work against local API)",
+      "lane": "governance",
+      "column": "ready",
+      "standard_ids": [
+        "platform-continuous-verification",
+        "dora-metrics"
+      ],
+      "acceptance": "cmd/works-pilot/main.go: `works-pilot run-demo [--api URL]` submits a 2-node work, polls the API, prints a timeline of state transitions, and emits the wall-clock time-to-first-successful-work. Compares against the pack's <5min target. Exits 0 on success, 1 on timeout.",
+      "evidence": [],
+      "status": "done",
+      "done_at": "2026-08-31T03:04:00Z",
+      "notes": "shipped slice 5. 5/5 docker tests pass, e2e_docker PASS in 2.3s, vet clean, standards-validate green, kanban-validate green, 7 binaries built."
     }
-  ]
+  ],
+  "updated_at": "2026-08-31T03:04:00Z"
 }

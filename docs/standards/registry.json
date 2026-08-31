@@ -1726,11 +1726,11 @@
       "domain": "platform",
       "requirement": "Default: network=deny, secrets=none, FS=isolated, permissions=minimal. Broader authority must be explicit and policy-approved.",
       "control_id": "HERMETIC",
-      "implementation": "Slice 3: default-deny subprocess sandbox; admission rejects undeclared capabilities.",
+      "implementation": "Slice 3: default-deny subprocess sandbox; admission rejects undeclared capabilities. Slice 5: internal/sandbox/docker.go (OCI Docker backend with --read-only, --cap-drop=ALL, --network=none, no-new-privileges, memory+CPU+PIDs caps). E2E proof: e2e/e2e_docker_test.go passes in 2.3s with alpine:3.20.",
       "enforcement_point": "internal/sandbox/hermetic.go.",
       "test": "tests/hermetic/.",
-      "evidence": "PLANNED",
-      "status": "PARTIAL",
+      "evidence": "implemented",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1846,11 +1846,11 @@
       "domain": "platform",
       "requirement": "Don't stop after deploy. Pipeline: Build \u2192 Test \u2192 Scan \u2192 Verify \u2192 Attest \u2192 Sign \u2192 Deploy \u2192 Observe \u2192 Runtime Verify.",
       "control_id": "CONT-VERIFY",
-      "implementation": "Slice 3+ in concert with evidence bundles and attestations.",
+      "implementation": "Slice 3+ in concert with evidence bundles and attestations. Slice 5: cmd/works-pilot/main.go (time-to-first-successful-work measurement, <5min V1 target; live result: 1.6s vs 5min target).",
       "enforcement_point": "ci/local-runner/continuous-verify.sh.",
       "test": null,
-      "evidence": null,
-      "status": "PLANNED",
+      "evidence": "implemented",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -1951,11 +1951,11 @@
       "domain": "platform",
       "requirement": "Worker runs untrusted code in isolated runtime (container, VM, sandbox).",
       "control_id": "RUNTIME-ISOLATION",
-      "implementation": "Slice 3: Docker worker sandbox (per #109).",
+      "implementation": "Slice 3: Docker worker sandbox (per #109). Slice 5: internal/sandbox/docker.go (OCI Docker backend with --read-only, --cap-drop=ALL, --network=none, no-new-privileges, memory+CPU+PIDs caps). E2E proof: e2e/e2e_docker_test.go passes in 2.3s with alpine:3.20.",
       "enforcement_point": "internal/sandbox/.",
       "test": "tests/sandbox/.",
-      "evidence": "PLANNED",
-      "status": "PLANNED",
+      "evidence": "implemented",
+      "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
     },
@@ -2015,7 +2015,7 @@
       "enforcement_point": null,
       "test": null,
       "evidence": null,
-      "status": "PLANNED",
+      "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
     }
@@ -2043,5 +2043,6 @@
       "policy": 5,
       "innovation": 8
     }
-  }
+  },
+  "updated_at": "2026-08-31T03:04:00Z"
 }

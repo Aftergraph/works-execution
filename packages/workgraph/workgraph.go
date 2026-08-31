@@ -82,6 +82,22 @@ var ErrInvalidTransition = errors.New("invalid state transition")
 //
 // Capability fields (Permissions, SideEffects, Retries, Cache) describe the
 // per-node action-manifest contract. They are optional on the wire; admission
+// RuntimeSpec declares an OCI container image for the node. When
+// set, the worker executes the node's `run` command inside the
+// container via the internal/sandbox.Docker backend (slice 5). When
+// empty, the worker falls back to the slice-1+2 host-subprocess
+// path with hermetic defaults from internal/sandbox.Hermetic.
+//
+// The Docker backend enforces the same hermetic guarantees as the
+// host path: --read-only, --cap-drop=ALL, --network=none, no-new-
+// privileges, memory + CPU + PIDs caps. See internal/sandbox/docker.go.
+type RuntimeSpec struct {
+	// Image is the OCI image reference (e.g. "alpine:3.20",
+	// "ghcr.io/org/app@sha256:..."). The worker calls `docker pull`
+	// before creating the container.
+	Image string `json:"image,omitempty"`
+}
+
 // (internal/manifest) fills safe defaults and rejects undeclared side effects
 // or permissions before persistence.
 type Node struct {
@@ -92,6 +108,11 @@ type Node struct {
 	Evidence EvidenceSpec      `json:"evidence,omitempty"`
 	Env      map[string]string `json:"env,omitempty"`
 	TimeoutS int               `json:"timeout_s,omitempty"`
+
+	// Runtime is the optional OCI container spec. Slice 5 added this
+	// so a node can declare an image and have the worker run it
+	// hermetically in Docker instead of on the host.
+	Runtime RuntimeSpec `json:"runtime,omitempty"`
 
 	// --- Capability manifest (action-manifest.schema.json) ---
 

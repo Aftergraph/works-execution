@@ -68,6 +68,7 @@ type ReadyItem struct {
 	Run      string            `json:"run"`
 	Env      map[string]string `json:"env,omitempty"`
 	TimeoutS int               `json:"timeout_s,omitempty"`
+	Image    string            `json:"image,omitempty"` // slice 5: docker image; empty = host subprocess
 }
 
 // ReadyResponse is the payload from GET /v1/workers/ready.
@@ -330,7 +331,12 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 	}
 
 	w.logf("running %s/%s (lease=%s): %s", item.WorkID, item.NodeID, leaseID, item.Run)
-	res := runCommand(ctx, item.Run, item.Env, timeout, killCh, w.Manifest)
+	var res execResult
+	if item.Image != "" {
+		res = runDocker(ctx, item.Image, item.Run, item.Env, timeout, killCh)
+	} else {
+		res = runCommand(ctx, item.Run, item.Env, timeout, killCh, w.Manifest)
+	}
 
 	cancelHB() // stop heartbeats
 
@@ -507,6 +513,64 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 	res.Status = "succeeded"
 	res.ExitCode = 0
 	return res
+}
+
+// runDocker is the slice-5 path: execute `command` inside an OCI
+// container pulled from `image`. Same external behaviour as
+// runCommand (returns when the command exits, the context is
+// cancelled, or killCh is closed) but uses internal/sandbox.Docker
+// instead of a host subprocess. The Docker backend enforces the
+// slice-4 hermetic defaults (--read-only, --cap-drop=ALL,
+// --network=none, no-new-privileges, memory + CPU + PIDs caps) so a
+// docker run is strictly more isolated than the host path.
+func runDocker(ctx context.Context, image, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}) execResult {
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Watch for lease loss and abort the docker run.
+	leaseLost := false
+	if killCh != nil {
+		doneCh := make(chan struct{})
+		go func() {
+			select {
+			case <-killCh:
+				leaseLost = true
+				cancel()
+			case <-doneCh:
+			}
+		}()
+		defer close(doneCh)
+	}
+
+	res, err := sandbox.Run(cctx, image, command, sandbox.RunOptions{
+		Env: env,
+	})
+	r := execResult{}
+	if res != nil {
+		r.CombinedLog = res.CombinedLog
+		r.Duration = res.Duration
+		r.ExitCode = res.ExitCode
+	}
+	if leaseLost {
+		r.Status = "cancelled"
+		r.ExitCode = -1
+		return r
+	}
+	if err != nil {
+		// Distinguish OOM from other failures for the classifier.
+		if res != nil && res.OOMKilled {
+			r.Status = "oom_killed"
+		} else {
+			r.Status = "failed"
+		}
+		return r
+	}
+	if res.ExitCode != 0 {
+		r.Status = "failed"
+		return r
+	}
+	r.Status = "succeeded"
+	return r
 }
 
 // writeArtifact saves bytes to <dir>/<workID>/<nodeID>.log and returns the
