@@ -1,0 +1,35 @@
+{
+  "$id": "contract:sync.rules/1.0",
+  "properties": {
+    "entity": {
+      "type": "string"
+    },
+    "owner": {
+      "enum": [
+        "pulse_local",
+        "works_kernel"
+      ]
+    },
+    "revoke_precedence": {
+      "const": true
+    },
+    "sync_state": {
+      "enum": [
+        "queued",
+        "synced",
+        "failed_retry",
+        "conflict_flag",
+        "cleared_by_revoke"
+      ]
+    },
+    "watermark": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "entity",
+    "owner",
+    "sync_state"
+  ],
+  "type": "object"
+}

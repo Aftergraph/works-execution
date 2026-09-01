@@ -1,0 +1,63 @@
+{
+  "$id": "contract:quittance.rules/1.0",
+  "not": {
+    "properties": {
+      "price_hint": {
+        "type": "number"
+      },
+      "verification": {
+        "const": "failed"
+      }
+    }
+  },
+  "properties": {
+    "bundle_id": {
+      "type": "string"
+    },
+    "idempotency": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "price_hint": {
+      "type": "number"
+    },
+    "quittance_id": {
+      "type": "string"
+    },
+    "usage": {
+      "properties": {
+        "compute_eur": {
+          "type": "number"
+        },
+        "tokens": {
+          "type": "integer"
+        },
+        "wall_clock_s": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "compute_eur",
+        "wall_clock_s"
+      ],
+      "type": "object"
+    },
+    "verification": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    },
+    "work_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "quittance_id",
+    "work_id",
+    "bundle_id",
+    "verification",
+    "usage"
+  ],
+  "type": "object"
+}

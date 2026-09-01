@@ -1,0 +1,69 @@
+{
+  "$id": "contract:brain.ns/1.0",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "authoritative": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "promotion": {
+            "const": "human_stamped"
+          }
+        }
+      }
+    }
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "class"
+      ]
+    },
+    {
+      "required": [
+        "object_class"
+      ]
+    }
+  ],
+  "properties": {
+    "authoritative": {
+      "type": "boolean"
+    },
+    "class": {
+      "enum": [
+        "immutable",
+        "mutable_with_revision",
+        "ephemeral"
+      ]
+    },
+    "object_class": {
+      "enum": [
+        "immutable",
+        "mutable_with_revision",
+        "ephemeral"
+      ]
+    },
+    "path": {
+      "pattern": "^/org/[a-f0-9-]+/(missions|decisions|capabilities|evidence|notes)/[A-Za-z0-9_/-]+$",
+      "type": "string"
+    },
+    "promotion": {
+      "enum": [
+        "none",
+        "human_stamped"
+      ]
+    },
+    "tombstone": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "path"
+  ],
+  "type": "object"
+}

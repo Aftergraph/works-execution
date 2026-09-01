@@ -1,0 +1,198 @@
+{
+  "authority": "final-freeze-review.md (READY_FOR_CONTRACT_FREEZE) \u2014 approved by Jonas",
+  "contracts": [
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "work.schema",
+      "owner": "works-kernel",
+      "schema": "contracts/schemas/work.schema.schema.json",
+      "sha256": "235e9a900aee49256c482b179ea465ae593dfb3951d502b58670e4590018c88f",
+      "source_adr": "ADR-0008, ADR-0009",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "kernel.budget",
+      "owner": "works-kernel",
+      "schema": "contracts/schemas/kernel.budget.schema.json",
+      "sha256": "64240b63a887286f99bb0d6e5bcfd7fee1818b682e543d507ae769ef521410f2",
+      "source_adr": "ADR-0009",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "handoff.schema",
+      "owner": "works-kernel",
+      "schema": "contracts/schemas/handoff.schema.schema.json",
+      "sha256": "d0614e277f52afc462a4fcc227c55f3cf09cec831149abe0c58ec54f5929d45d",
+      "source_adr": "ADR-0010",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "evidence.schema",
+      "owner": "works-evidence",
+      "schema": "contracts/schemas/evidence.schema.schema.json",
+      "sha256": "f46ba9cd350daafe0c388cc7ae74dd623c821cb9cac844ed8134416d2d116153",
+      "source_adr": "ADR-0011, ADR-0024",
+      "version": "1.1"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "quittance.rules",
+      "owner": "works-evidence",
+      "schema": "contracts/schemas/quittance.rules.schema.json",
+      "sha256": "3adef1d540d7da025dd25637e0dedf66228ddcf8d5cdcaae6533ed805c388f63",
+      "source_adr": "ADR-0011",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "cpi",
+      "owner": "works-hal",
+      "schema": "contracts/schemas/cpi.schema.json",
+      "sha256": "602088bb1aaab3875c2d828a3f23eb233e22b58c46e44d1ce06cb6be0b5fde51",
+      "source_adr": "ADR-0012, ADR-0018",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "rab",
+      "owner": "works-runtime",
+      "schema": "contracts/schemas/rab.schema.json",
+      "sha256": "8b81590134721463a92bd5134938eb6c38b011bc45353ba6a1928a7deda60b88",
+      "source_adr": "ADR-0012, ADR-0014",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "identity",
+      "owner": "works-identity",
+      "schema": "contracts/schemas/identity.schema.json",
+      "sha256": "f747f0970b975c09c44735d5f0b45bc415031fee973126a036e5da58fd94ed11",
+      "source_adr": "ADR-0016",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "policy.token",
+      "owner": "works-kernel",
+      "schema": "contracts/schemas/policy.token.schema.json",
+      "sha256": "6ed2dc23e99a68d5f3613f5ae653f1e9380600bef6249987237412904c06a4c0",
+      "source_adr": "ADR-0017",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "events",
+      "owner": "works-kernel",
+      "schema": "contracts/schemas/events.schema.json",
+      "sha256": "e853bacd1a26b1f95a1ffdc761d281e74e30f3a4442683e514b39fef7ec4a4ed",
+      "source_adr": "ADR-0019",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "sync.rules",
+      "owner": "pulse-link",
+      "schema": "contracts/schemas/sync.rules.schema.json",
+      "sha256": "036dbc49de0e8dcd5b73ae8270b59884eae00e3322dc86c13f0a8f4091041751",
+      "source_adr": "ADR-0020",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "proto.charter",
+      "owner": "works-kernel",
+      "schema": "contracts/schemas/proto.charter.schema.json",
+      "sha256": "b693f1619370fca9ed229203529a6d24d845e4848739bc533d11a22afda7a95a",
+      "source_adr": "ADR-0021",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "secret.ref",
+      "owner": "works-kernel",
+      "schema": "contracts/schemas/secret.ref.schema.json",
+      "sha256": "7ee458c2dbf3259986226a1d672dc9589a5f941aced9f7852d01563e0338e97e",
+      "source_adr": "ADR-0022",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "brain.ns",
+      "owner": "works-brain",
+      "schema": "contracts/schemas/brain.ns.schema.json",
+      "sha256": "0f5ed656e68ff32c2ec34c60ac02ea8b4227c5d05ad85f28edee8538c6ec35f4",
+      "source_adr": "ADR-0023",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "obs.evidence.rules",
+      "owner": "works-observability",
+      "schema": "contracts/schemas/obs.evidence.rules.schema.json",
+      "sha256": "f3723c1ad0d7b2d0d86a466b0c7e3e400ccef9a5130ee678adcef09f30d44ebe",
+      "source_adr": "ADR-0024",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "shell.contracts",
+      "owner": "works-shell",
+      "schema": "contracts/schemas/shell.contracts.schema.json",
+      "sha256": "cd850623f84e010c8bd35aa7daed4fe765fd02c3c76a91ed3b1dc40473805bfd",
+      "source_adr": "ADR-0025",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "link.wire",
+      "owner": "pulse-link",
+      "schema": "contracts/schemas/link.wire.schema.json",
+      "sha256": "644cd18f9fa8547bb08b880c9ec9544d6060279eeaa3527fc2156c375e3945c0",
+      "source_adr": "ADR-0026",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "pairing",
+      "owner": "pulse-link",
+      "schema": "contracts/schemas/pairing.schema.json",
+      "sha256": "4080670dd7dd2f74ff17c56b44b468e84bc7a526c1643c850d29ca440added3f",
+      "source_adr": "ADR-0027",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "kernel.lifecycle",
+      "owner": "works-kernel",
+      "schema": "contracts/schemas/kernel.lifecycle.schema.json",
+      "sha256": "2ddf1ee7847eb7dde91ddfb37533b758a4298a985d71c8963cf85f988db8112b",
+      "source_adr": "ADR-0009/0010/0014 + closure-doc",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "pulse.db",
+      "owner": "pulse-core",
+      "schema": "contracts/schemas/pulse.db.schema.json",
+      "sha256": "20637f9b09716349e75b7d5c676b5493156382c429199a6b3c8ef110dfcd8853",
+      "source_adr": "ADR-0013 + domain model",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "release.rings",
+      "owner": "pulse-release",
+      "schema": "contracts/schemas/release.rings.schema.json",
+      "sha256": "9677b52862fa6dd13e46d84c7572f1d34f7b6cc3627b46611f0cdfc50b340a19",
+      "source_adr": "ADR-0013 + runbook",
+      "version": "1.0"
+    }
+  ],
+  "entry_count": 21,
+  "generated_by": "Contract Freeze Slice 0",
+  "manifest_version": "1.0",
+  "note": "hash over denne fil = freeze-attestation; endringer i schemas \u00e6ndrer hashen (drift, aldrig stille)"
+}

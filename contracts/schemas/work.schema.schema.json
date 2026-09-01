@@ -1,0 +1,170 @@
+{
+  "$id": "contract:work.schema/1.0",
+  "properties": {
+    "artifacts": {
+      "type": "array"
+    },
+    "attempts": {
+      "type": "array"
+    },
+    "budget_ceiling": {
+      "properties": {
+        "compute_eur": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "wall_clock_h": {
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "compute_eur",
+        "wall_clock_h"
+      ],
+      "type": "object"
+    },
+    "correlation_id": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "array"
+    },
+    "graph": {
+      "properties": {
+        "nodes": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "nodes"
+      ],
+      "type": "object"
+    },
+    "handoff": {
+      "properties": {
+        "decision_log": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "narrative": {
+          "type": "string"
+        },
+        "payload_schema": {
+          "type": "string"
+        },
+        "priority_queue": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "state_snapshot": {
+          "type": "object"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "state_snapshot",
+        "narrative",
+        "decision_log",
+        "priority_queue",
+        "warnings",
+        "payload_schema"
+      ],
+      "type": "object"
+    },
+    "id": {
+      "pattern": "^[a-z0-9-]+:[a-f0-9]{32}$",
+      "type": "string"
+    },
+    "idempotency_key": {
+      "type": "string"
+    },
+    "kill_switch": {
+      "enum": [
+        "always",
+        "policy"
+      ]
+    },
+    "objective": {
+      "type": "object"
+    },
+    "policy": {
+      "type": "object"
+    },
+    "purpose_bindings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "requirements": {
+      "type": "object"
+    },
+    "source": {
+      "type": "object"
+    },
+    "state": {
+      "enum": [
+        "CREATED",
+        "PLANNING",
+        "QUEUED",
+        "RUNNING",
+        "VERIFYING",
+        "SUCCEEDED",
+        "BLOCKED",
+        "FAILED",
+        "CANCELLED",
+        "WAITING_HUMAN",
+        "SUSPENDED",
+        "BUDGET_EXHAUSTED"
+      ]
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "verification": {
+      "items": {
+        "properties": {
+          "criterion": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "deterministic",
+              "human_review"
+            ]
+          }
+        },
+        "required": [
+          "criterion"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "created_at",
+    "updated_at",
+    "source",
+    "objective",
+    "graph",
+    "requirements",
+    "policy",
+    "state"
+  ],
+  "type": "object"
+}

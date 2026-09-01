@@ -1,0 +1,81 @@
+{
+  "$id": "contract:kernel.budget/1.0",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "clock_state": {
+            "const": "PAUSED_WAITING_HUMAN"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "clock_running": {
+            "const": false
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "ceiling": {
+      "required": [
+        "compute_eur",
+        "wall_clock_h"
+      ],
+      "type": "object"
+    },
+    "clock_state": {
+      "enum": [
+        "RUNNING",
+        "PAUSED_WAITING_HUMAN",
+        "STOPPED"
+      ]
+    },
+    "consumed": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "hard_stop": {
+      "enum": [
+        "wall_clock",
+        "compute",
+        "none"
+      ]
+    },
+    "late_bill_entries": {
+      "items": {
+        "properties": {
+          "amount_eur": {
+            "type": "number"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_eur",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "reserved": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "work_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "work_id",
+    "ceiling",
+    "reserved",
+    "consumed",
+    "clock_state"
+  ],
+  "type": "object"
+}

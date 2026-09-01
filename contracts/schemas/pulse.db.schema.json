@@ -1,0 +1,38 @@
+{
+  "$id": "contract:pulse.db/1.0",
+  "properties": {
+    "consent_rule": {
+      "const": "no upload without active ConsentGrant; revoke is locally authoritative"
+    },
+    "entities": {
+      "items": {
+        "enum": [
+          "PulseContext",
+          "PulseResource",
+          "PulseNote",
+          "PulseTimer",
+          "PulseActivity",
+          "PulseClipboardItem",
+          "PulsePrivacySettings",
+          "ConsentGrant",
+          "ContextMount",
+          "WorksLinkStatus",
+          "PulseEvent"
+        ]
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "type": "integer"
+    },
+    "wal": {
+      "const": true
+    }
+  },
+  "required": [
+    "entities",
+    "consent_rule"
+  ],
+  "type": "object"
+}

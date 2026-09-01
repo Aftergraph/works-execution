@@ -1,0 +1,40 @@
+{
+  "$id": "contract:events/1.0",
+  "properties": {
+    "payload_ref": {
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "source": {
+      "enum": [
+        "works-org",
+        "pulse-device"
+      ]
+    },
+    "subject": {
+      "type": "string"
+    },
+    "ts": {
+      "description": "informative only; ordering is (source, seq)",
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "source",
+    "seq",
+    "type",
+    "subject",
+    "ts",
+    "version"
+  ],
+  "type": "object"
+}

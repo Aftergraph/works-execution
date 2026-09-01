@@ -1,0 +1,61 @@
+{
+  "$id": "contract:evidence.schema/1.1",
+  "properties": {
+    "bundle_id": {
+      "type": "string"
+    },
+    "cites_events": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "cpi_generation": {
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "driver_segments": {
+      "items": {
+        "properties": {
+          "driver": {
+            "enum": [
+              "agent",
+              "human"
+            ]
+          },
+          "from_seq": {
+            "type": "integer"
+          },
+          "to_seq": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "driver",
+          "from_seq",
+          "to_seq"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "identity_chain": {
+      "type": "object"
+    },
+    "provider_id": {
+      "type": "string"
+    },
+    "records": {
+      "type": "array"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "identity_chain",
+    "created_at",
+    "records"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,135 @@
+{
+  "$id": "contract:shell.contracts/1.0",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "system": {
+            "const": "pulse"
+          },
+          "tier": {
+            "const": "local_only"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "commands": {
+            "not": {
+              "contains": {
+                "enum": [
+                  "kill",
+                  "approve",
+                  "deny",
+                  "take",
+                  "hand_back"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "system": {
+            "const": "pulse"
+          },
+          "tier": {
+            "const": "T3_privileged"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "surface": {
+            "const": "COMMAND"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "commands": {
+      "items": {
+        "enum": [
+          "watch",
+          "approve",
+          "deny",
+          "tell",
+          "stop",
+          "kill",
+          "resume",
+          "run",
+          "cron",
+          "take",
+          "hand_back",
+          "mount",
+          "unmount",
+          "export",
+          "pair",
+          "unpair",
+          "pause",
+          "open",
+          "switch",
+          "pin",
+          "note",
+          "timer",
+          "action",
+          "search",
+          "grant",
+          "revoke",
+          "inspect_evidence"
+        ]
+      },
+      "type": "array"
+    },
+    "executor": {
+      "const": "works_kernel"
+    },
+    "renders": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "surface": {
+      "enum": [
+        "NOW",
+        "SPACE",
+        "FOCUS",
+        "LIVE",
+        "MEMORY",
+        "COMMAND",
+        "CONTEXT",
+        "SWITCH",
+        "ACT",
+        "MOUNT",
+        "WORKS"
+      ]
+    },
+    "system": {
+      "enum": [
+        "works",
+        "pulse"
+      ]
+    },
+    "tier": {
+      "enum": [
+        "T1_read",
+        "T2_action",
+        "T3_privileged",
+        "local_only",
+        "none"
+      ]
+    }
+  },
+  "required": [
+    "surface",
+    "system",
+    "renders",
+    "commands"
+  ],
+  "type": "object"
+}

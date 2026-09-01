@@ -1,0 +1,30 @@
+{
+  "$id": "contract:proto.charter/1.0",
+  "properties": {
+    "capabilities": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "n_minus_1_supported": {
+      "type": "boolean"
+    },
+    "name": {
+      "type": "string"
+    },
+    "unknown_field_tolerance": {
+      "const": true
+    },
+    "version": {
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "capabilities"
+  ],
+  "type": "object"
+}
