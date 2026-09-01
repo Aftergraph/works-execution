@@ -1,0 +1,39 @@
+{
+  "$id": "contract:kernel.lifecycle/1.0",
+  "properties": {
+    "invariants": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "machine": {
+      "enum": [
+        "mission",
+        "runtime",
+        "takeover_baton",
+        "consent",
+        "pairing",
+        "evidence"
+      ]
+    },
+    "states": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "terminals": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "machine",
+    "states",
+    "terminals"
+  ],
+  "type": "object"
+}

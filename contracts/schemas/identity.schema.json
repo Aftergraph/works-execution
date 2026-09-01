@@ -1,0 +1,63 @@
+{
+  "$id": "contract:identity/1.0",
+  "properties": {
+    "device": {
+      "type": "string"
+    },
+    "human": {
+      "type": "string"
+    },
+    "org": {
+      "pattern": "^org_[a-f0-9]{8,}$",
+      "type": "string"
+    },
+    "privilege_note": {
+      "enum": [
+        "service_principals_never_approve"
+      ]
+    },
+    "runtime": {
+      "properties": {
+        "lease_id": {
+          "type": "string"
+        },
+        "work_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "work_id",
+        "lease_id"
+      ],
+      "type": "object"
+    },
+    "service_principal": {
+      "type": "boolean"
+    },
+    "worker": {
+      "properties": {
+        "role": {
+          "enum": [
+            "engineering",
+            "growth",
+            "ops",
+            "research",
+            "ci"
+          ]
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "human",
+    "org",
+    "device",
+    "worker",
+    "runtime"
+  ],
+  "type": "object"
+}

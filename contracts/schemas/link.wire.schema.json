@@ -1,0 +1,42 @@
+{
+  "$id": "contract:link.wire/1.0",
+  "properties": {
+    "auth": {
+      "const": "mTLS+device_token"
+    },
+    "endpoint": {
+      "enum": [
+        "/link/v1/pair",
+        "/link/v1/mounts",
+        "/link/v1/missions",
+        "/link/v1/commands",
+        "/link/v1/revoke"
+      ]
+    },
+    "idempotency_key": {
+      "type": "string"
+    },
+    "method": {
+      "enum": [
+        "POST",
+        "GET"
+      ]
+    },
+    "payload_hash": {
+      "type": "string"
+    },
+    "scope": {
+      "enum": [
+        "T1_read",
+        "T2_action",
+        "T3_privileged"
+      ]
+    }
+  },
+  "required": [
+    "endpoint",
+    "method",
+    "auth"
+  ],
+  "type": "object"
+}

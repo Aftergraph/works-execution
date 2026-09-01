@@ -1,0 +1,46 @@
+{
+  "$id": "contract:policy.token/1.0",
+  "properties": {
+    "budget_line": {
+      "type": "object"
+    },
+    "delegated_from": {
+      "type": "string"
+    },
+    "expiry": {
+      "type": "string"
+    },
+    "org": {
+      "type": "string"
+    },
+    "purpose_bindings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "scopes": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "token_id": {
+      "type": "string"
+    },
+    "work_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "token_id",
+    "work_id",
+    "org",
+    "scopes",
+    "purpose_bindings",
+    "budget_line",
+    "expiry"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,41 @@
+{
+  "$id": "contract:handoff.schema/1.0",
+  "properties": {
+    "decision_log": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "narrative": {
+      "type": "string"
+    },
+    "payload_schema": {
+      "type": "string"
+    },
+    "priority_queue": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "state_snapshot": {
+      "type": "object"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "state_snapshot",
+    "narrative",
+    "decision_log",
+    "priority_queue",
+    "warnings",
+    "payload_schema"
+  ],
+  "type": "object"
+}

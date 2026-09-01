@@ -1,0 +1,33 @@
+{
+  "$id": "contract:cpi/1.0",
+  "properties": {
+    "abi": {
+      "const": "cpi/1.0"
+    },
+    "caps": {
+      "items": {
+        "enum": [
+          "fs",
+          "shell",
+          "git",
+          "browser",
+          "snap",
+          "teardown_retain"
+        ]
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "generation": {
+      "type": "string"
+    },
+    "provider_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "abi",
+    "caps"
+  ],
+  "type": "object"
+}

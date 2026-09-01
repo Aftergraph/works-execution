@@ -1,0 +1,33 @@
+{
+  "$id": "contract:release.rings/1.0",
+  "properties": {
+    "beta_soak_hours": {
+      "const": 48
+    },
+    "kill_switch": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "no_ring_skips": {
+      "const": true
+    },
+    "rings": {
+      "items": {
+        "enum": [
+          "internal",
+          "alpha",
+          "beta",
+          "stable"
+        ]
+      },
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "rings"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,29 @@
+{
+  "$id": "contract:rab/1.0",
+  "properties": {
+    "abi": {
+      "const": "rab/1.0"
+    },
+    "caps": {
+      "items": {
+        "enum": [
+          "screenshot",
+          "input",
+          "record",
+          "observe",
+          "control"
+        ]
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "control_token_required": {
+      "const": true
+    }
+  },
+  "required": [
+    "abi",
+    "caps"
+  ],
+  "type": "object"
+}

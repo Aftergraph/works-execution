@@ -1,0 +1,41 @@
+{
+  "$id": "contract:pairing/1.0",
+  "properties": {
+    "device_id": {
+      "type": "string"
+    },
+    "key_store": {
+      "const": "DPAPI"
+    },
+    "sas_code": {
+      "pattern": "^[A-Z0-9]{6}$",
+      "type": "string"
+    },
+    "scopes": {
+      "items": {
+        "enum": [
+          "T1_read",
+          "T2_action",
+          "T3_privileged"
+        ]
+      },
+      "type": "array"
+    },
+    "state": {
+      "enum": [
+        "UNPAIRED",
+        "PAIRING_REQUEST",
+        "DISPLAY_CODE",
+        "KEY_EXCHANGE",
+        "PAIRED",
+        "RE_PAIR",
+        "REVOKED"
+      ]
+    }
+  },
+  "required": [
+    "state",
+    "device_id"
+  ],
+  "type": "object"
+}

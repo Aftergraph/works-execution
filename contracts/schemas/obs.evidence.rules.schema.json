@@ -1,0 +1,61 @@
+{
+  "$id": "contract:obs.evidence.rules/1.0",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "evidence"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "signed": {
+            "const": true
+          },
+          "trimmable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "event"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "signed": {
+            "const": false
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "cites_hash": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "event",
+        "evidence"
+      ]
+    },
+    "signed": {
+      "type": "boolean"
+    },
+    "trimmable": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "kind"
+  ],
+  "type": "object"
+}
