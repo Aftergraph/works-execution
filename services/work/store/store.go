@@ -11,7 +11,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,12 +28,23 @@ import (
 // SchemaVersion is the current schema level this store applies. Bumped
 // each time a migration lands. Exposed so callers (CI, healthz) can
 // assert they are talking to a store at the expected level.
-const SchemaVersion = 7
+//
+// k-mission-02 (v8): works.mission_json column + work_handoffs table
+// (ADR-0010 checkpoint persistence).
+const SchemaVersion = 8
 
-// ErrSchemaTooOld is returned by health checks / smoke tests when the
-// on-disk schema is older than SchemaVersion. Operators should run
-// `migrate` (slice upgrade) before serving traffic.
-var ErrSchemaTooOld = errors.New("schema too old")
+// ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
+// does not match its persisted payload hash (ADR-0010: corruption is
+// detected, reported and NEVER silently resumed from).
+var ErrCorruptHandoff = errors.New("corrupt handoff checkpoint")
+
+// ErrNoHandoff is returned when a resume is attempted without a checkpoint
+// (stum resume is forbidden — fail closed).
+var ErrNoHandoff = errors.New("no handoff checkpoint for resume")
+
+// ErrStaleHandoff is returned when a checkpoint was taken at a state the
+// Work has since moved past; the caller must reconcile explicitly.
+var ErrStaleHandoff = errors.New("stale handoff checkpoint")
 
 // ErrNotFound is returned when a Work ID does not exist.
 var ErrNotFound = errors.New("work not found")
@@ -242,6 +255,20 @@ CREATE INDEX IF NOT EXISTS idx_audit_occurred ON work_audit_events(occurred_at);
 CREATE INDEX IF NOT EXISTS idx_audit_work ON work_audit_events(work_id);
 CREATE INDEX IF NOT EXISTS idx_audit_type ON work_audit_events(type);
 
+-- k-mission-02 (ADR-0010): checkpoint handoffs. One row per suspend event.
+-- content_hash is sha256 over canonical handoff JSON: corruption detection
+-- at read time (a stored handoff whose re-derived hash differs is rejected,
+-- never silently resumed from).
+CREATE TABLE IF NOT EXISTS work_handoffs (
+    id            TEXT PRIMARY KEY,
+    work_id       TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+    to_state      TEXT NOT NULL,
+    payload_hash  TEXT NOT NULL,
+    payload_json  TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_handoffs_work ON work_handoffs(work_id, created_at DESC);
+
 -- slice 7 (M1 / k-impl-018): v6 -> v7 — webhook idempotency.
 -- One row per provider delivery_id (X-GitHub-Delivery). Stores the
 -- event type, the created work_id, and the raw body for audit/replay.
@@ -292,10 +319,56 @@ func (s *SQLiteStore) migrate() error {
 	// via CREATE TABLE IF NOT EXISTS, but mark the schema transition
 	// here). No data backfill required: prior slices had no webhook
 	// receiver.
+	if err := s.bumpSchemaVersion(7); err != nil {
+		return fmt.Errorf("bump schema version: %w", err)
+	}
+	// Migration v7 -> v8 (k-mission-02, ADR-0008/0010): mission contract
+	// column on works + work_handoffs checkpoint table. Both are
+	// idempotent adds; no data backfill (pre-mission Works have no
+	// contract and no checkpoints).
+	if err := s.migrateMissionAndHandoffs(); err != nil {
+		return fmt.Errorf("migrate mission/handoff: %w", err)
+	}
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
 	}
 	return nil
+}
+
+// migrateMissionAndHandoffs adds the v8 artifacts: works.mission_json and
+// the work_handoffs table. Idempotent (checked with column/table introspection).
+func (s *SQLiteStore) migrateMissionAndHandoffs() error {
+	hasMission, err := s.worksHasMissionColumn()
+	if err != nil {
+		return err
+	}
+	if !hasMission {
+		if _, err := s.db.Exec(`ALTER TABLE works ADD COLUMN mission_json TEXT`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) worksHasMissionColumn() (bool, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(works)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == "mission_json" {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // bumpSchemaVersion stores the schema version in a sidecar table. We use
@@ -433,8 +506,8 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 	}
 
 	_, err = tx.ExecContext(ctx, `
-        INSERT INTO works (id, created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, idempotency_key, correlation_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO works (id, created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, mission_json, idempotency_key, correlation_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
 		w.ID,
 		w.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -445,13 +518,15 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 		mustJSON(w.Graph),
 		mustJSON(w.Requirements),
 		mustJSON(w.Policy),
+		missionJSON(w),
 		nullable(w.IdempotencyKey),
 		nullable(w.CorrelationID),
 	)
 	if err != nil {
 		return fmt.Errorf("insert work: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	err = tx.Commit()
+	if err != nil {
 		return err
 	}
 	// Best-effort audit emit. A failure to persist the audit event is
@@ -483,16 +558,16 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 func (s *SQLiteStore) GetWork(ctx context.Context, id string) (*workgraph.Work, error) {
 	w := &workgraph.Work{ID: id}
 	var stateStr string
-	var sourceJ, objJ, graphJ, reqJ, polJ string
+	var sourceJ, objJ, graphJ, reqJ, polJ, missionJ string
 	var idemKey, corrID sql.NullString
 	var createdStr, updatedStr string
 
 	err := s.db.QueryRowContext(ctx, `
-        SELECT created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, idempotency_key, correlation_id
+        SELECT created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, COALESCE(mission_json,''), idempotency_key, correlation_id
         FROM works WHERE id = ?
     `, id).Scan(
 		&createdStr, &updatedStr, &stateStr,
-		&sourceJ, &objJ, &graphJ, &reqJ, &polJ,
+		&sourceJ, &objJ, &graphJ, &reqJ, &polJ, &missionJ,
 		&idemKey, &corrID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -519,6 +594,13 @@ func (s *SQLiteStore) GetWork(ctx context.Context, id string) (*workgraph.Work, 
 	}
 	if err := json.Unmarshal([]byte(polJ), &w.Policy); err != nil {
 		return nil, fmt.Errorf("decode policy: %w", err)
+	}
+	if missionJ != "" {
+		var m workgraph.MissionContract
+		if err := json.Unmarshal([]byte(missionJ), &m); err != nil {
+			return nil, fmt.Errorf("decode mission: %w", err)
+		}
+		w.Mission = &m
 	}
 	if idemKey.Valid {
 		w.IdempotencyKey = idemKey.String
@@ -772,9 +854,184 @@ func (s *SQLiteStore) AppendArtifact(ctx context.Context, workID string, art wor
 func mustJSON(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
-		panic(fmt.Sprintf("store: marshal failed: %v", err))
+		// Structural types here are all JSON-safe by construction; a failure
+		// is a programmer error and must not silently persist emptiness.
+		panic(fmt.Sprintf("store: mustJSON: %v", err))
 	}
 	return string(b)
+}
+
+// missionJSON serializes the mission contract for the works.mission_json
+// column ("" for legacy CI Works — N-1 readers see NULL/'' and skip).
+func missionJSON(w *workgraph.Work) string {
+	if w.Mission == nil {
+		return ""
+	}
+	return mustJSON(w.Mission)
+}
+
+// SuspendWork atomically transitions a mission Work to `to` (WAITING_HUMAN or
+// SUSPENDED) and persists its checkpoint handoff in the SAME transaction
+// (ADR-0010: the handoff IS the suspend's evidence — a suspend without a
+// handoff cannot happen; a handoff without the state cannot either).
+// Idempotent for the same (work, to_state, payload) tuple.
+func (s *SQLiteStore) SuspendWork(ctx context.Context, id string, to workgraph.State, h *workgraph.Handoff) (*workgraph.Work, error) {
+	if h == nil {
+		return nil, errors.New("handoff required for suspend")
+	}
+	if err := workgraph.ValidateHandoff(h); err != nil {
+		return nil, fmt.Errorf("invalid handoff: %w", err)
+	}
+	payload := mustJSON(h)
+	hash := handoffHash(payload)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Load current state and lock the row (BEGIN IMMEDIATE via the pool's
+	// single connection serializes writers).
+	var currentState string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM works WHERE id = ?`, id).Scan(&currentState); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	// Hydrate the mission contract for state-machine checks: mission-only
+	// states require the contract (fail-closed at the kernel, not by trust).
+	var missionRaw, createdStr, updatedStr, sourceJ, objJ, graphJ, reqJ, polJ string
+	var idemKey, corrID sql.NullString
+	if err := tx.QueryRowContext(ctx, `
+        SELECT COALESCE(mission_json,''), created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, idempotency_key, correlation_id
+        FROM works WHERE id = ?`, id).Scan(
+		&missionRaw, &createdStr, &updatedStr, &currentState, &sourceJ, &objJ, &graphJ, &reqJ, &polJ, &idemKey, &corrID); err != nil {
+		return nil, err
+	}
+	w := &workgraph.Work{ID: id, State: workgraph.State(currentState)}
+	if missionRaw != "" {
+		var m workgraph.MissionContract
+		if err := json.Unmarshal([]byte(missionRaw), &m); err != nil {
+			return nil, fmt.Errorf("decode mission: %w", err)
+		}
+		w.Mission = &m
+	}
+	if err := w.ValidateTransition(to); err != nil {
+		return nil, err
+	}
+	// mission-only states require the mission contract (freeze law)
+	if err := w.ValidateMissionWork(); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE works SET state = ?, updated_at = ? WHERE id = ?`,
+		string(to), now.UTC().Format(time.RFC3339Nano), id); err != nil {
+		return nil, err
+	}
+	// Idempotent checkpoint: same (work, to_state, payload hash) ⇒ no-op.
+	var existingID string
+	err = tx.QueryRowContext(ctx,
+		`SELECT id FROM work_handoffs WHERE work_id = ? AND to_state = ? AND payload_hash = ?`,
+		id, string(to), hash).Scan(&existingID)
+	if err == nil {
+		// identical checkpoint already persisted — idempotent success
+	} else if errors.Is(err, sql.ErrNoRows) {
+		handoffID := workgraph.NewID("handoff")
+		if _, err := tx.ExecContext(ctx, `
+            INSERT INTO work_handoffs (id, work_id, to_state, payload_hash, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+			handoffID, id, string(to), hash, payload, now.UTC().Format(time.RFC3339Nano)); err != nil {
+			return nil, fmt.Errorf("insert handoff: %w", err)
+		}
+	} else {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetWork(ctx, id)
+}
+
+// LatestHandoff returns the most recent checkpoint for a Work.
+func (s *SQLiteStore) LatestHandoff(ctx context.Context, workID string) (*workgraph.Handoff, string, error) {
+	var payload, hash, toState string
+	err := s.db.QueryRowContext(ctx, `
+        SELECT to_state, payload_hash, payload_json FROM work_handoffs
+        WHERE work_id = ? ORDER BY created_at DESC LIMIT 1
+    `, workID).Scan(&toState, &hash, &payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", ErrNoHandoff
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	// Corruption detection: re-derive hash, compare, fail closed.
+	if handoffHash(payload) != hash {
+		return nil, "", ErrCorruptHandoff
+	}
+	var h workgraph.Handoff
+	if err := json.Unmarshal([]byte(payload), &h); err != nil {
+		return nil, "", fmt.Errorf("%w: decode: %v", ErrCorruptHandoff, err)
+	}
+	if err := workgraph.ValidateHandoff(&h); err != nil {
+		return nil, "", fmt.Errorf("%w: %v", ErrCorruptHandoff, err)
+	}
+	return &h, toState, nil
+}
+
+// handoffHash is sha256 over the exact payload bytes. The store persists the
+// canonical serialization it wrote, so hash equality is byte-level.
+func handoffHash(payload string) string {
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
+}
+
+// ResumeFromCheckpoint restores a suspended/waiting mission Work from its
+// latest checkpoint and transitions it back to RUNNING — atomically.
+//
+// Authority law (ADR-0009/0010 + freeze invariant): the CALLER must carry
+// kernel authorization. The store can only verify structural preconditions:
+//
+//   - a checkpoint MUST exist (ErrNoHandoff — stum resume forbidden)
+//   - the checkpoint MUST pass corruption detection (ErrCorruptHandoff)
+//   - the checkpoint's recorded state must be the Work's CURRENT state
+//     (ErrStaleHandoff — the world moved on; caller reconciles explicitly)
+//   - only SUSPENDED and WAITING_HUMAN works may resume
+//
+// There is deliberately NO parameter accepting the runtime's word for
+// authority: this method is only reachable through services that the kernel
+// owns (CLI/API with policy checks). The budget ledger for a resumed mission
+// is the operator-granted, kernel-instantiated BudgetLedger — never agent-
+// constructed (see test TestUnauthorizedResumeRejected).
+func (s *SQLiteStore) ResumeFromCheckpoint(ctx context.Context, id string) (*workgraph.Work, *workgraph.Handoff, error) {
+	w, err := s.GetWork(ctx, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !w.IsMission() {
+		return nil, nil, fmt.Errorf("resume requires a mission contract (ADR-0008): %s", id)
+	}
+	switch w.State {
+	case workgraph.StateSuspended, workgraph.StateWaitingHuman:
+		// resumable states
+	default:
+		return nil, nil, fmt.Errorf("%w: work %s is %s, not resumable", ErrStaleHandoff, id, w.State)
+	}
+	h, checkpointState, err := s.LatestHandoff(ctx, id)
+	if err != nil {
+		return nil, nil, err // ErrNoHandoff / ErrCorruptHandoff — fail closed
+	}
+	if checkpointState != string(w.State) {
+		return nil, nil, fmt.Errorf("%w: checkpoint at %s, work at %s",
+			ErrStaleHandoff, checkpointState, w.State)
+	}
+	resumed, err := s.UpdateState(ctx, id, workgraph.StateRunning)
+	if err != nil {
+		return nil, nil, err
+	}
+	return resumed, h, nil
 }
 
 // nullable returns the sql.NullString-compatible value. SQLite driver uses

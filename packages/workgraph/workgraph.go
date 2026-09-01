@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -357,10 +358,47 @@ type VerificationCriterion struct {
 }
 
 type MissionContract struct {
-	BudgetCeiling   *BudgetCeiling         `json:"budget_ceiling,omitempty"`
+	BudgetCeiling   *BudgetCeiling          `json:"budget_ceiling,omitempty"`
 	Verification    []VerificationCriterion `json:"verification,omitempty"`
-	PurposeBindings []string               `json:"purpose_bindings,omitempty"`
-	KillSwitch      string                 `json:"kill_switch,omitempty"` // always | policy
+	PurposeBindings []string                `json:"purpose_bindings,omitempty"`
+	KillSwitch      string                  `json:"kill_switch,omitempty"` // always | policy
+}
+
+// Handoff is the frozen 5-layer checkpoint payload (ADR-0010,
+// handoff.schema/1.0). PayloadSchema versions the content; the kernel owns
+// the shape, agents fill it in. A handoff is written only on kernel-
+// recognized suspend/wait/fail transitions — never free-floating.
+type Handoff struct {
+	StateSnapshot map[string]any `json:"state_snapshot"` // typed, validated current values
+	Narrative     string         `json:"narrative"`      // why the state looks like this
+	DecisionLog   []string       `json:"decision_log"`   // what was decided, deferred, why
+	PriorityQueue []string       `json:"priority_queue"` // next session's first/second/third
+	Warnings      []string       `json:"warnings"`       // gotchas: rate limits, env issues
+	PayloadSchema string         `json:"payload_schema"` // e.g. "handoff/1.0"
+}
+
+// HandoffVersion is the frozen payload-schema version this kernel writes.
+const HandoffVersion = "handoff/1.0"
+
+// ValidateHandoff checks the 5-layer shape (fail-closed: an invalid handoff
+// is never persisted and never silently resumed from — ADR-0010).
+func ValidateHandoff(h *Handoff) error {
+	if h == nil {
+		return errors.New("handoff is required")
+	}
+	if h.StateSnapshot == nil {
+		return errors.New("handoff.state_snapshot is required")
+	}
+	if strings.TrimSpace(h.Narrative) == "" {
+		return errors.New("handoff.narrative is required")
+	}
+	if h.PayloadSchema == "" {
+		h.PayloadSchema = HandoffVersion
+	}
+	if h.PayloadSchema != HandoffVersion {
+		return fmt.Errorf("handoff.payload_schema %q unsupported (kernel speaks %s)", h.PayloadSchema, HandoffVersion)
+	}
+	return nil
 }
 
 // BudgetLedger is the kernel.metering view of a mission Work's budget
@@ -454,6 +492,20 @@ type Work struct {
 	// k-mission-01 (ADR-0008): mission contract fields. Empty Mission ==
 	// legacy CI Work with frozen behavior.
 	Mission *MissionContract `json:"mission,omitempty"`
+}
+
+// SuspendWithHandoff atomically moves a mission Work into `to` (WAITING_HUMAN
+// or SUSPENDED) and records the checkpoint handoff in one step. Only the
+// kernel (store layer) may call this; the handoff IS the state transition's
+// evidence — a suspend without a handoff cannot happen (ADR-0010).
+//
+//go:noinline // kept as a method so callers read: work.SuspendWithHandoff(...)
+func (w *Work) SuspendFields(to State) error {
+	if to != StateWaitingHuman && to != StateSuspended {
+		return fmt.Errorf("%w: handoff suspend requires %s or %s, got %s",
+			ErrInvalidTransition, StateWaitingHuman, StateSuspended, to)
+	}
+	return w.ValidateTransition(to)
 }
 
 // IsMission reports whether this Work carries the mission contract

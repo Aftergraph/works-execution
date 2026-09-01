@@ -49,6 +49,16 @@ func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID s
 	if state.IsTerminal() {
 		return nil, nil, fmt.Errorf("work is in terminal state %s", state)
 	}
+	// k-mission-02 authority law (ADR-0009/0010 freeze invariant): a paused
+	// mission (WAITING_HUMAN / SUSPENDED / BUDGET_EXHAUSTED) may never lease
+	// nodes — leases are the runtime's path to execution, and granting one
+	// would be an indirect agent-self-resume. Resume goes ONLY through
+	// ResumeFromCheckpoint after kernel-authorized budget/human approval.
+	switch state {
+	case workgraph.StateWaitingHuman, workgraph.StateSuspended, workgraph.StateBudgetExhausted:
+		return nil, nil, fmt.Errorf("%w: paused mission %s (%s) cannot lease; resume via kernel authorization only",
+			ErrLeaseConflict, workID, state)
+	}
 
 	// Check for existing active lease on this node.
 	var existingID string
