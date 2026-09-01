@@ -173,6 +173,12 @@ func (s *Server) Routes() http.Handler {
 	if s.WebUI != nil {
 		s.RegisterUI(mux)
 	}
+	// Conversation V1: resumable per-work SSE event stream (journal-backed)
+	// and the platform-bridge-bound governed resume endpoint. Both live
+	// behind requireBearer; /resume additionally enforces the bridge secret
+	// (WORKS_PLATFORM_BRIDGE_SECRET, min 32 bytes; empty = 503 fail-closed).
+	WireWorkEventRoutes(mux, s)
+	WireResumeRoutes(mux, s, bridgeSecretFromEnv())
 	if s.Metrics != nil {
 		// GET /metrics — Prometheus exposition. Internal scrape only; not
 		// behind requireBearer so Prometheus can scrape without an enroll
