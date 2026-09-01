@@ -179,6 +179,10 @@ func (s *Server) Routes() http.Handler {
 	// (WORKS_PLATFORM_BRIDGE_SECRET, min 32 bytes; empty = 503 fail-closed).
 	WireWorkEventRoutes(mux, s)
 	WireResumeRoutes(mux, s, bridgeSecretFromEnv())
+	// Conversation V1 checkpoint surface: suspend (-> WAITING_HUMAN with a
+	// persisted ADR-0010 handoff) and the read-only handoff binding. Same
+	// bridge boundary as /resume; see work_bridge.go.
+	WireCheckpointRoutes(mux, s, bridgeSecretFromEnv())
 	if s.Metrics != nil {
 		// GET /metrics — Prometheus exposition. Internal scrape only; not
 		// behind requireBearer so Prometheus can scrape without an enroll
