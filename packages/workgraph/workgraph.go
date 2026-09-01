@@ -19,6 +19,10 @@ import (
 //
 // CREATED -> PLANNING -> QUEUED -> RUNNING -> VERIFYING -> SUCCEEDED
 // BLOCKED, FAILED, CANCELLED are terminal/side states.
+//
+// k-mission-01 (ADR-0008/0009, work.schema/1.0): mission-contract Works add
+// forward states a CI Work never reaches. They are only reachable when the
+// Work carries a BudgetCeiling (see IsMission).
 type State string
 
 const (
@@ -31,6 +35,14 @@ const (
 	StateBlocked   State = "BLOCKED"
 	StateFailed    State = "FAILED"
 	StateCancelled State = "CANCELLED"
+
+	// Forward states (work.schema/1.0, frozen). WaitingHuman pauses the
+	// budget clock (ADR-0009). Suspended is the hard-stop/checkpoint state.
+	// BudgetExhausted is terminal-for-current-budget: resumable only by a
+	// human-granted budget increase — never by the runtime itself.
+	StateWaitingHuman    State = "WAITING_HUMAN"
+	StateSuspended       State = "SUSPENDED"
+	StateBudgetExhausted State = "BUDGET_EXHAUSTED"
 )
 
 // IsTerminal returns true if the state is a terminal state (no further
@@ -49,12 +61,33 @@ func (s State) IsTerminal() bool {
 //
 // FAILED is intentionally not in any forward path: a failed Work stays failed
 // until a human or policy explicitly resets it (a future slice).
+//
+// k-mission-01: forward mission states (ADR-0009). Budget-gov transitions are
+// only valid on mission Works (IsMission); the kernel enforces that at the
+// transition site, not in this table, because the table has no Work context.
 var validTransitions = map[State]map[State]bool{
 	StateCreated:   {StatePlanning: true, StateQueued: true, StateCancelled: true, StateFailed: true, StateBlocked: true},
 	StatePlanning:  {StateQueued: true, StateFailed: true, StateBlocked: true, StateCancelled: true},
 	StateQueued:    {StateRunning: true, StateCancelled: true, StateFailed: true, StateBlocked: true},
-	StateRunning:   {StateVerifying: true, StateFailed: true, StateCancelled: true},
-	StateVerifying: {StateSucceeded: true, StateFailed: true, StateCancelled: true},
+	StateRunning:   {StateVerifying: true, StateFailed: true, StateCancelled: true, StateWaitingHuman: true, StateSuspended: true, StateBudgetExhausted: true},
+	StateVerifying: {StateSucceeded: true, StateFailed: true, StateCancelled: true, StateWaitingHuman: true, StateSuspended: true},
+
+	// From budget-governed pause states:
+	//   WAITING_HUMAN -> RUNNING  (human approved the blocking syscall)
+	//   WAITING_HUMAN -> CANCELLED/FAILED/BLOCKED (side paths, generic rule)
+	//   SUSPENDED     -> RUNNING  (resumed from checkpoint after budget grant)
+	//   BUDGET_EXHAUSTED -> SUSPENDED (human granted budget; checkpoint resume path)
+	StateWaitingHuman:    {StateRunning: true, StateFailed: true, StateBlocked: true, StateCancelled: true},
+	StateSuspended:       {StateRunning: true, StateWaitingHuman: true, StateFailed: true, StateBlocked: true, StateCancelled: true},
+	StateBudgetExhausted: {StateSuspended: true, StateFailed: true, StateCancelled: true},
+}
+
+// missionOnlyStates may only be entered by Works carrying a full mission
+// contract (ADR-0008). CI Works must never emit them (freeze law).
+var missionOnlyStates = map[State]bool{
+	StateWaitingHuman:    true,
+	StateSuspended:       true,
+	StateBudgetExhausted: true,
 }
 
 // CanTransition reports whether moving from `from` to `to` is allowed by the
@@ -310,6 +343,97 @@ func ValidateLeaseTransition(from, to LeaseStatus) bool {
 	return false
 }
 
+// MissionContract carries the frozen ADR-0008 fields that make a Work a
+// mission: a priced, verifiable, purpose-bound process. All fields are
+// optional on the wire for CI Works; ValidateMissionWork requires them.
+type BudgetCeiling struct {
+	ComputeEUR float64 `json:"compute_eur"`   // hard compute-cost stop (EUR)
+	WallClockH float64 `json:"wall_clock_h"`  // hard wall-clock stop (hours)
+}
+
+type VerificationCriterion struct {
+	Criterion string `json:"criterion"`                  // human/CI-checkable statement
+	Kind      string `json:"kind,omitempty"`             // deterministic | human_review
+}
+
+type MissionContract struct {
+	BudgetCeiling   *BudgetCeiling         `json:"budget_ceiling,omitempty"`
+	Verification    []VerificationCriterion `json:"verification,omitempty"`
+	PurposeBindings []string               `json:"purpose_bindings,omitempty"`
+	KillSwitch      string                 `json:"kill_switch,omitempty"` // always | policy
+}
+
+// BudgetLedger is the kernel.metering view of a mission Work's budget
+// (kernel.budget/1.0): reserved at lease time, consumed continuously,
+// clock paused exactly when the Work is WAITING_HUMAN (human-syscall wait),
+// stopped on hard stop. Late provider bills after teardown are recorded but
+// never push user-visible consumption past the ceiling (operator absorbs).
+type BudgetLedger struct {
+	WorkID         string        `json:"work_id"`
+	Ceiling        BudgetCeiling `json:"ceiling"`
+	Reserved       float64       `json:"reserved"`
+	Consumed       float64       `json:"consumed"`
+	ClockState     string        `json:"clock_state"` // RUNNING | PAUSED_WAITING_HUMAN | STOPPED
+	HardStop       string        `json:"hard_stop,omitempty"` // wall_clock | compute | none
+	LateBillEntries []LateBill   `json:"late_bill_entries,omitempty"`
+}
+
+type LateBill struct {
+	AmountEUR float64 `json:"amount_eur"`
+	Reason    string  `json:"reason"`
+}
+
+// CanReserve reports whether reserving delta on top of current reservations
+// keeps the mission within its ceiling (ADR-0009: sum(reserved) <= ceiling).
+func (b *BudgetLedger) CanReserve(delta float64) bool {
+	return b.Reserved+delta <= b.Ceiling.ComputeEUR+1e-9
+}
+
+// Consume applies actual usage. It clamps at the ceiling and flags the hard
+// stop — it never reports consumption beyond what the operator committed to.
+// A stopped clock never meters (hard-stop race law). A paused clock
+// (WAITING_HUMAN) never meters either — but cannot trigger a hard stop.
+func (b *BudgetLedger) Consume(delta float64) (exceeded bool) {
+	switch b.ClockState {
+	case "STOPPED":
+		return false
+	case "PAUSED_WAITING_HUMAN":
+		return false // fair billing: clock paused, no metering at all
+	}
+	if b.Consumed+delta >= b.Ceiling.ComputeEUR {
+		b.Consumed = b.Ceiling.ComputeEUR
+		b.ClockState = "STOPPED"
+		b.HardStop = "compute"
+		return true
+	}
+	b.Consumed += delta
+	return false
+}
+
+// PauseClock pauses the metering clock for WAITING_HUMAN (ADR-0009: fair
+// billing — the budget clock runs only under active execution). Only the
+// kernel calls this on the kernel- recognized transition; an agent's own
+// claim of waiting has no clock effect (anti-abuse law from the freeze).
+func (b *BudgetLedger) PauseClock() {
+	if b.ClockState == "RUNNING" {
+		b.ClockState = "PAUSED_WAITING_HUMAN"
+	}
+}
+
+// ResumeClock restarts metering after a human syscall approval.
+func (b *BudgetLedger) ResumeClock() {
+	if b.ClockState == "PAUSED_WAITING_HUMAN" {
+		b.ClockState = "RUNNING"
+	}
+}
+
+// RecordLateBill registers provider billing that arrived after teardown.
+// It is evidence-class data; it never re-opens the clock or breaches the
+// operator's committed ceiling.
+func (b *BudgetLedger) RecordLateBill(amount float64, reason string) {
+	b.LateBillEntries = append(b.LateBillEntries, LateBill{AmountEUR: amount, Reason: reason})
+}
+
 // Work is the durable execution object. It is the source of execution truth.
 type Work struct {
 	ID             string       `json:"id"`
@@ -326,6 +450,16 @@ type Work struct {
 	Evidence       []Evidence   `json:"evidence,omitempty"`
 	IdempotencyKey string       `json:"idempotency_key,omitempty"`
 	CorrelationID  string       `json:"correlation_id,omitempty"`
+
+	// k-mission-01 (ADR-0008): mission contract fields. Empty Mission ==
+	// legacy CI Work with frozen behavior.
+	Mission *MissionContract `json:"mission,omitempty"`
+}
+
+// IsMission reports whether this Work carries the mission contract
+// (ADR-0008: Mission = Work with contract fields filled).
+func (w *Work) IsMission() bool {
+	return w.Mission != nil && w.Mission.BudgetCeiling != nil
 }
 
 // Graph is the execution DAG. Nodes is a map keyed by node ID for cheap lookup;
@@ -371,10 +505,54 @@ func (w *Work) Validate() error {
 	return nil
 }
 
+// ValidateMissionWork enforces the ADR-0008 fail-closed rule: a Work that
+// declares itself a mission (or tries to enter mission-only states) must
+// carry the complete contract. CI Works (nil Mission) keep frozen behavior.
+func (w *Work) ValidateMissionWork() error {
+	if !w.IsMission() {
+		// A CI Work must never enter mission-only states (freeze law).
+		if missionOnlyStates[w.State] {
+			return fmt.Errorf("work %s: state %s requires a mission contract (ADR-0008)", w.ID, w.State)
+		}
+		return nil
+	}
+	m := w.Mission
+	if m.BudgetCeiling.ComputeEUR <= 0 && m.BudgetCeiling.WallClockH <= 0 {
+		return errors.New("mission.budget_ceiling must set compute_eur or wall_clock_h")
+	}
+	if m.BudgetCeiling.ComputeEUR < 0 || m.BudgetCeiling.WallClockH < 0 {
+		return errors.New("mission.budget_ceiling values must be non-negative")
+	}
+	if len(m.Verification) == 0 {
+		return errors.New("mission.verification must contain at least one criterion")
+	}
+	for i, v := range m.Verification {
+		if v.Criterion == "" {
+			return fmt.Errorf("mission.verification[%d]: criterion is required", i)
+		}
+		switch v.Kind {
+		case "", "deterministic", "human_review":
+		default:
+			return fmt.Errorf("mission.verification[%d]: unknown kind %q", i, v.Kind)
+		}
+	}
+	switch m.KillSwitch {
+	case "always", "policy":
+	default:
+		return errors.New("mission.kill_switch must be \"always\" or \"policy\"")
+	}
+	return nil
+}
+
 // ValidateTransition checks that moving w.State from `to` is permitted.
 func (w *Work) ValidateTransition(to State) error {
 	if !CanTransition(w.State, to) {
 		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, w.State, to)
+	}
+	// Freeze law: mission-only states require the mission contract.
+	if missionOnlyStates[to] && !w.IsMission() {
+		return fmt.Errorf("%w: %s -> %s requires a mission contract (ADR-0008)",
+			ErrInvalidTransition, w.State, to)
 	}
 	return nil
 }
