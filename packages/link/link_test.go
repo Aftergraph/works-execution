@@ -53,6 +53,18 @@ func (m *memStore) GetMount(_ context.Context, id string) (*MountRecord, error) 
 	return rec, nil
 }
 
+func (m *memStore) ListMountWorkIDs(_ context.Context, deviceID string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, rec := range m.mounts {
+		if rec.DeviceID == deviceID && !seen[rec.WorkID] {
+			seen[rec.WorkID] = true
+			out = append(out, rec.WorkID)
+		}
+	}
+	return out, nil
+}
+
 // --- helpers -----------------------------------------------------------------
 
 func newTestService(t *testing.T) (*Service, *memStore) {
@@ -231,8 +243,8 @@ func TestWireRequestValidate(t *testing.T) {
 		q    WireRequest
 		want error
 	}{
-		"unknown endpoint":   {q: base(func(q *WireRequest) { q.Endpoint = "/link/v1/mission_create" }), want: ErrBadRequest},
-		"PUT not in enum":    {q: base(func(q *WireRequest) { q.Method = "PUT" }), want: ErrBadRequest},
+		"unknown endpoint":          {q: base(func(q *WireRequest) { q.Endpoint = "/link/v1/mission_create" }), want: ErrBadRequest},
+		"PUT not in enum":           {q: base(func(q *WireRequest) { q.Method = "PUT" }), want: ErrBadRequest},
 		"API token copy-paste auth": {q: base(func(q *WireRequest) { q.Auth = "api_token" }), want: ErrBadRequest},
 		"T3 commands on link":       {q: base(func(q *WireRequest) { q.Endpoint = EndpointCommands; q.Scope = ScopeT3Privileged }), want: ErrBadRequest},
 		"bad payload hash":          {q: base(func(q *WireRequest) { q.PayloadHash = "deadbeef" }), want: ErrBadRequest},
@@ -328,7 +340,7 @@ func TestRevokeIdempotentAndBlocksEveryCall(t *testing.T) {
 	}
 	// Revoke is idempotent (sync.rules/1.0).
 	again, err := s.Revoke(ctx, d, RevokeRequest{DeviceID: "dev_rv"})
-	if err != nil || again.State != StateRevoked {
+	if err != nil || again.Device.State != StateRevoked {
 		t.Fatalf("double revoke: %v %+v", err, again)
 	}
 	// The old token is dead: Authenticate re-reads state (double enforcement).
@@ -345,6 +357,124 @@ func TestRevokeCannotTargetAnotherDevice(t *testing.T) {
 	dA, _ := s.Authenticate(ctx, tokA)
 	if _, err := s.Revoke(ctx, dA, RevokeRequest{DeviceID: "dev_b1"}); !errors.Is(err, ErrUnknownDevice) {
 		t.Fatalf("cross-device revoke: got %v, want ErrUnknownDevice", err)
+	}
+}
+
+// --- k-035: revoke cascade law -------------------------------------------------
+
+// cascadeCalls records every cascade invocation to assert the once-only law.
+type cascadeCalls struct {
+	calls []string
+	works map[string][]string
+	err   error
+}
+
+func (c *cascadeCalls) fn() func(ctx context.Context, deviceID string) ([]string, error) {
+	return func(_ context.Context, deviceID string) ([]string, error) {
+		c.calls = append(c.calls, deviceID)
+		if c.err != nil {
+			return nil, c.err
+		}
+		return c.works[deviceID], nil
+	}
+}
+
+// pairMount pairs a device and mounts workID at T1 (the link-side mount law
+// needs no purpose binding at T1), returning the authenticated device.
+func pairMount(t *testing.T, s *Service, deviceID, workID string) *Device {
+	t.Helper()
+	ctx := context.Background()
+	tok := pairToToken(t, s, deviceID, []string{ScopeT1Read})
+	d, err := s.Authenticate(ctx, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Mount(ctx, d, MountRequest{WireRequest: WireRequest{Scope: ScopeT1Read}, DeviceID: deviceID, WorkID: workID}); err != nil {
+		t.Fatalf("mount: %v", err)
+	}
+	return d
+}
+
+func TestRevokeCascadeRunsOnceOnFirstRevokeOnly(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	calls := &cascadeCalls{works: map[string][]string{"dev_cas": {"wrk_a", "wrk_b"}}}
+	s.Cascade = calls.fn()
+
+	d := pairMount(t, s, "dev_cas", "wrk_a")
+	d = pairMount(t, s, "dev_cas", "wrk_a") // idempotent replay: same mount twice
+	res, err := s.Revoke(ctx, d, RevokeRequest{DeviceID: "dev_cas"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Law: cascade once per FIRST revoke, distinct work ids ride back.
+	if len(calls.calls) != 1 || calls.calls[0] != "dev_cas" {
+		t.Fatalf("cascade calls = %v, want exactly one for dev_cas", calls.calls)
+	}
+	if len(res.SuspendedWorks) != 2 {
+		t.Fatalf("SuspendedWorks = %v, want the mounted works", res.SuspendedWorks)
+	}
+	if res.CascadeErr != nil {
+		t.Fatalf("unexpected cascade error: %v", res.CascadeErr)
+	}
+	if res.Device.State != StateRevoked {
+		t.Fatalf("device state after revoke = %s, want REVOKED", res.Device.State)
+	}
+
+	// Idempotent replay: revoke again — cascade must NOT re-run and the
+	// suspended list must come back empty (sync law + cascade law).
+	replay, err := s.Revoke(ctx, d, RevokeRequest{DeviceID: "dev_cas"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls.calls) != 1 {
+		t.Fatalf("cascade re-ran on idempotent replay (calls=%v) — replay is a no-op by law", calls.calls)
+	}
+	if len(replay.SuspendedWorks) != 0 {
+		t.Fatalf("replay SuspendedWorks = %v, want empty", replay.SuspendedWorks)
+	}
+	if replay.CascadeErr != nil {
+		t.Fatalf("replay cascade error: %v", replay.CascadeErr)
+	}
+}
+
+func TestRevokeCascadeErrorNeverUnrevokes(t *testing.T) {
+	s, ms := newTestService(t)
+	ctx := context.Background()
+	calls := &cascadeCalls{err: errors.New("kernel suspend path exploded")}
+	s.Cascade = calls.fn()
+
+	d := pairMount(t, s, "dev_cf", "wrk_cf")
+	res, err := s.Revoke(ctx, d, RevokeRequest{DeviceID: "dev_cf"})
+	if err != nil {
+		t.Fatalf("revoke must succeed even when the cascade fails: %v", err)
+	}
+	if res.CascadeErr == nil {
+		t.Fatal("cascade failure must surface on RevokeResult.CascadeErr")
+	}
+	if len(res.SuspendedWorks) != 0 {
+		t.Fatalf("SuspendedWorks = %v on failed cascade, want empty", res.SuspendedWorks)
+	}
+	// The durable revoke stands: the device row is REVOKED and the token is
+	// dead — best-effort semantics, never un-revoke.
+	got, err := ms.GetDevice(ctx, "dev_cf")
+	if err != nil || got.State != StateRevoked {
+		t.Fatalf("cascade error un-revoked the device: %v %+v", err, got)
+	}
+}
+
+func TestRevokeWithoutCascadeStillLawful(t *testing.T) {
+	// No Cascade wired (nil): revoke behaves exactly as before k-035 —
+	// empty suspended list, no error. The kernel may lag the link law.
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	d := pairMount(t, s, "dev_nc", "wrk_nc")
+	res, err := s.Revoke(ctx, d, RevokeRequest{DeviceID: "dev_nc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.SuspendedWorks) != 0 || res.CascadeErr != nil || res.Device.State != StateRevoked {
+		t.Fatalf("nil-cascade revoke: %+v %v", res, err)
 	}
 }
 

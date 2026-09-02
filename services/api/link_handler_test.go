@@ -255,3 +255,72 @@ func TestLinkBodyLimitFailClosed(t *testing.T) {
 	}
 	_ = time.Now // clock discipline: no timing assertions on the limit path
 }
+
+// TestLinkRevokeCascadeSuspendsMountedMission is the k-035 law end-to-end:
+// pair a T1 device, mount a running mission Work, revoke — the response
+// lists suspended_works, the store shows SUSPENDED with a durable handoff,
+// and the idempotent revoke replay returns an empty list.
+func TestLinkRevokeCascadeSuspendsMountedMission(t *testing.T) {
+	srv, ts := newLinkServer(t, testLinkSecret)
+	ctx := context.Background()
+
+	// The mounted mission (RUNNING: a state with a frozen edge to SUSPENDED).
+	mission := &workgraph.Work{
+		ID: "wrk_mission", State: workgraph.StateRunning,
+		Source:    workgraph.Source{Type: "cli"},
+		Objective: workgraph.Objective{Type: "grow_revenue"},
+		Graph:     workgraph.Graph{Nodes: map[string]workgraph.Node{"a": {ID: "a", Run: "true"}}},
+		Mission: &workgraph.MissionContract{
+			BudgetCeiling: &workgraph.BudgetCeiling{ComputeEUR: 50},
+			Verification:  []workgraph.VerificationCriterion{{Criterion: "done"}},
+			KillSwitch:    "always",
+		},
+	}
+	if err := srv.Store.CreateWork(ctx, mission); err != nil {
+		t.Fatal(err)
+	}
+
+	tok := fullPair(t, ts, "dev_t1", []string{link.ScopeT1Read, link.ScopeT2Action})
+	resp, body := postJSON(t, ts.URL+"/link/v1/mounts",
+		map[string]any{"device_id": "dev_t1", "work_id": "wrk_mission", "scope": "T2_action", "purpose_bindings": []string{"wrk_mission"}},
+		map[string]string{"Authorization": bearer(tok)})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("mount: %d %v", resp.StatusCode, body)
+	}
+
+	// Revoke -> the cascade suspends the mounted mission and reports it.
+	resp, body = postJSON(t, ts.URL+"/link/v1/revoke",
+		map[string]any{"device_id": "dev_t1"},
+		map[string]string{"Authorization": bearer(tok)})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("revoke: %d %v", resp.StatusCode, body)
+	}
+	if body["state"] != "REVOKED" || body["device_id"] != "dev_t1" {
+		t.Fatalf("revoke body drift: %v", body)
+	}
+	suspended, ok := body["suspended_works"].([]any)
+	if !ok || len(suspended) != 1 || suspended[0] != "wrk_mission" {
+		t.Fatalf("suspended_works = %v, want [wrk_mission]", body["suspended_works"])
+	}
+
+	// The Work is durably SUSPENDED in the store.
+	w, err := srv.Store.GetWork(ctx, "wrk_mission")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.State != workgraph.StateSuspended {
+		t.Fatalf("work state = %s, want SUSPENDED", w.State)
+	}
+
+	// Second revoke is an idempotent replay: empty suspended list, 200.
+	resp2, body2 := postJSON(t, ts.URL+"/link/v1/revoke",
+		map[string]any{"device_id": "dev_t1"},
+		map[string]string{"Authorization": bearer(tok)})
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("revoke replay: %d %v", resp2.StatusCode, body2)
+	}
+	replayList, _ := body2["suspended_works"].([]any)
+	if len(replayList) != 0 {
+		t.Fatalf("replay suspended_works = %v, want empty (no re-cascade on replay)", replayList)
+	}
+}

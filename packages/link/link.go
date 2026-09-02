@@ -62,18 +62,18 @@ const TokenTTL = 24 * time.Hour
 // Frozen endpoint vocabulary from link.wire/1.0. The schema's endpoint enum
 // is law: anything else cannot even be named here.
 const (
-	EndpointPair    = "/link/v1/pair"
-	EndpointMounts  = "/link/v1/mounts"
+	EndpointPair     = "/link/v1/pair"
+	EndpointMounts   = "/link/v1/mounts"
 	EndpointMissions = "/link/v1/missions"
 	EndpointCommands = "/link/v1/commands"
-	EndpointRevoke  = "/link/v1/revoke"
+	EndpointRevoke   = "/link/v1/revoke"
 )
 
 // Scopes from pairing/1.0 (T1_read | T2_action | T3_privileged).
 const (
-	ScopeT1Read         = "T1_read"
-	ScopeT2Action       = "T2_action"
-	ScopeT3Privileged   = "T3_privileged"
+	ScopeT1Read       = "T1_read"
+	ScopeT2Action     = "T2_action"
+	ScopeT3Privileged = "T3_privileged"
 )
 
 // Device states mirror the frozen pairing/1.0 state enum. The kernel only
@@ -187,11 +187,11 @@ type PairClaimRequest struct {
 
 // Device is the persisted pairing/1.0 record (PAIRED or REVOKED).
 type Device struct {
-	DeviceID   string    `json:"device_id"`
-	Scopes     []string  `json:"scopes"`
-	State      string    `json:"state"`
-	PairedAt   time.Time `json:"paired_at"`
-	RevokedAt  time.Time `json:"revoked_at,omitempty"`
+	DeviceID  string    `json:"device_id"`
+	Scopes    []string  `json:"scopes"`
+	State     string    `json:"state"`
+	PairedAt  time.Time `json:"paired_at"`
+	RevokedAt time.Time `json:"revoked_at,omitempty"`
 }
 
 // MountRequest is the consent-bearing context mount (ADR-0026 §4):
@@ -275,6 +275,10 @@ type DeviceStore interface {
 	PutDevice(ctx context.Context, d *Device) error
 	InsertMount(ctx context.Context, m *MountRecord) (bool, error) // false = idempotent replay
 	GetMount(ctx context.Context, id string) (*MountRecord, error)
+	// ListMountWorkIDs returns the distinct Work IDs the device has mounted
+	// (link_mounts, deduped). k-035: the revoke cascade's read side — the
+	// kernel needs to know WHICH missions a dying device was attached to.
+	ListMountWorkIDs(ctx context.Context, deviceID string) ([]string, error)
 }
 
 // -----------------------------------------------------------------------------
@@ -284,9 +288,9 @@ type DeviceStore interface {
 
 // TokenIssuer mints and verifies short-lived device tokens.
 type TokenIssuer struct {
-	key    []byte
-	NowFn  func() time.Time
-	TTL    time.Duration
+	key   []byte
+	NowFn func() time.Time
+	TTL   time.Duration
 }
 
 func NewTokenIssuer() *TokenIssuer {
@@ -303,10 +307,10 @@ func NewTokenIssuerWithKey(key []byte) *TokenIssuer {
 }
 
 type tokenClaims struct {
-	DeviceID string `json:"dev"`
-	ScopeKey string `json:"sk"` // sha256(dev|scopes|paired_at) — state binding
-	IssuedAt int64  `json:"iat"`
-	ExpiresAt int64 `json:"exp"`
+	DeviceID  string `json:"dev"`
+	ScopeKey  string `json:"sk"` // sha256(dev|scopes|paired_at) — state binding
+	IssuedAt  int64  `json:"iat"`
+	ExpiresAt int64  `json:"exp"`
 }
 
 func (t *TokenIssuer) claimsDigest(d *Device) string {
@@ -384,8 +388,15 @@ type Service struct {
 	Devices DeviceStore
 	Issuer  *TokenIssuer
 
-	offers   map[string]*Offer // sas code -> offer
-	now      func() time.Time
+	// Cascade (k-035, optional): invoked AFTER the durable revoke succeeds
+	// to suspend every active mission the device had mounted. Best-effort
+	// by law — a cascade failure never un-revokes the device. The link
+	// package owns the device law, not the mission store; the kernel wires
+	// its own suspend sink here (SQLiteStore.SuspendMissionsForDevice).
+	Cascade func(ctx context.Context, deviceID string) ([]string, error)
+
+	offers map[string]*Offer // sas code -> offer
+	now    func() time.Time
 }
 
 // NewService wires a link service. Either argument may be nil in
@@ -496,6 +507,22 @@ func (s *Service) ClaimPair(ctx context.Context, req PairClaimRequest) (*Device,
 // double enforcement (ADR-0026 §6): a revoked or re-paired device is
 // refused even with a still-signed token.
 func (s *Service) Authenticate(ctx context.Context, rawToken string) (*Device, error) {
+	d, err := s.AuthenticateToken(ctx, rawToken)
+	if err != nil {
+		return nil, err
+	}
+	if d.State == StateRevoked {
+		return nil, ErrRevoked
+	}
+	return d, nil
+}
+
+// AuthenticateToken verifies the token signature/expiry and re-reads the
+// durable device WITHOUT the revoked-state refusal — k-035: the revoke
+// route must let an already-revoked device through to the idempotent
+// replay (sync.rules/1.0). The re-pair digest check still applies, so a
+// token from a since-re-paired device is refused here too.
+func (s *Service) AuthenticateToken(ctx context.Context, rawToken string) (*Device, error) {
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
@@ -507,11 +534,8 @@ func (s *Service) Authenticate(ctx context.Context, rawToken string) (*Device, e
 	if err != nil {
 		return nil, err
 	}
-	if d.State == StateRevoked {
-		return nil, ErrRevoked
-	}
 	if s.Issuer.claimsDigest(d) != claims.ScopeKey {
-		return nil, ErrBadToken // state moved under the token (re-pair, scope change)
+		return nil, ErrBadToken // state moved under the token (re-pair)
 	}
 	return d, nil
 }
@@ -584,10 +608,31 @@ func (s *Service) Missions(d *Device, rows []*MissionRow) ([]*MissionRow, error)
 	return out, nil
 }
 
+// RevokeResult is the outcome of a revoke (k-035): the durable device record
+// plus the revoke cascade's effect on mounted missions.
+type RevokeResult struct {
+	Device *Device
+	// SuspendedWorks lists the mission Work IDs the cascade suspended
+	// (empty on idempotent replay, on a nil Cascade, or when the device had
+	// no active missions mounted).
+	SuspendedWorks []string
+	// CascadeErr carries a cascade failure. Law: best-effort — the revoke
+	// STANDS even when the cascade failed; the caller surfaces this error
+	// without un-revoking the device.
+	CascadeErr error
+}
+
 // Revoke marks the device REVOKED on the kernel side (notify-only from
 // PULSE; local revoke always wins, ADR-0020). Idempotent: revoking twice is
 // a no-op that still answers 200 (sync law).
-func (s *Service) Revoke(ctx context.Context, caller *Device, req RevokeRequest) (*Device, error) {
+//
+// k-035 cascade law: on the FIRST successful revoke, every active mission
+// the device has mounted is suspended (via Cascade, if wired) with a durable
+// handoff; the suspended work ids ride back on the result. The cascade runs
+// strictly AFTER the device row is durably REVOKED and never blocks it: a
+// cascade error leaves the revoke standing (SuspendedWorks nil, CascadeErr
+// set). An idempotent replay does NOT re-run the cascade.
+func (s *Service) Revoke(ctx context.Context, caller *Device, req RevokeRequest) (*RevokeResult, error) {
 	req.Endpoint = EndpointRevoke
 	req.Method = "POST"
 	req.Auth = "mTLS+device_token"
@@ -604,14 +649,26 @@ func (s *Service) Revoke(ctx context.Context, caller *Device, req RevokeRequest)
 		return nil, err
 	}
 	if d.State == StateRevoked {
-		return d, nil // idempotent replay (sync.rules/1.0)
+		return &RevokeResult{Device: d, SuspendedWorks: []string{}}, nil // idempotent replay (sync.rules/1.0)
 	}
 	d.State = StateRevoked
 	d.RevokedAt = s.now().UTC()
 	if err := s.Devices.PutDevice(ctx, d); err != nil {
 		return nil, err
 	}
-	return d, nil
+	// Cascade only now: the device is durably revoked, so the mounted
+	// missions must stop. Best-effort — a failure never un-revokes.
+	res := &RevokeResult{Device: d, SuspendedWorks: []string{}}
+	if s.Cascade != nil {
+		suspended, cerr := s.Cascade(ctx, req.DeviceID)
+		if cerr != nil {
+			res.CascadeErr = cerr
+		} else if suspended == nil {
+			suspended = []string{}
+		}
+		res.SuspendedWorks = suspended
+	}
+	return res, nil
 }
 
 func (s *Service) gcOffers() {
