@@ -377,6 +377,7 @@ const uiWorkBodyTmpl = `
 {{end}}
 </tbody>
 </table>
+{{.Journal}}
 {{end}}`
 
 const uiRunnersTmpl = `{{define "uiRunnersTmpl"}}
@@ -524,16 +525,20 @@ func (s *Server) uiWork(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	nodes, attempts := s.workViews(wk)
+	// k-038: durable journal timeline (fully escaped at build time).
+	journal := template.HTML(s.renderJournal(r.Context(), id))
 	uiExec(w, "uiDetailTmpl", struct {
 		uiPage
 		Work     *workgraph.Work
 		Nodes    []nodeView
 		Attempts []workgraph.Attempt
+		Journal  template.HTML
 	}{
 		uiPage:   uiPage{Count: len(nodes), Now: time.Now().UTC().Format(time.RFC3339)},
 		Work:     wk,
 		Nodes:    nodes,
 		Attempts: attempts,
+		Journal:  journal,
 	})
 }
 
@@ -548,7 +553,8 @@ func (s *Server) uiFragmentWork(w http.ResponseWriter, r *http.Request, id strin
 	uiExec(w, "workBody", struct {
 		Nodes    []nodeView
 		Attempts []workgraph.Attempt
-	}{nodes, attempts})
+		Journal  template.HTML
+	}{nodes, attempts, template.HTML(s.renderJournal(r.Context(), id))})
 }
 
 // workViews converts a Work into node cards + attempts for templates.
