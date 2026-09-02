@@ -43,6 +43,37 @@ docs/
 e2e/             End-to-end tests
 ```
 
+## Kernel & contracts (v0.2)
+
+v0.2 freezes the kernel's external behavior behind hash-attested contracts.
+Full release notes: [docs/RELEASE-v0.2.0.md](docs/RELEASE-v0.2.0.md).
+
+- **Freeze manifest:** `contracts/manifest.json` — 21 draft-07 schemas under
+  `contracts/schemas/`, attested by the SHA-256 in `contracts/manifest.sha256`.
+  Editing a schema changes the hash (visible drift, by design); regenerate
+  with `python3 contracts/gen_freeze.py`.
+- **Contract tests:** `tests/contracts/` — 21 regression-law tests
+  (conformance, baseline, adversarial, compatibility) over the frozen
+  schemas. Compatibility rule: N-1 read tolerance per `proto.charter/1.0`;
+  breaking = major bump.
+- **/link/v1 surface** (k-link-01, ADR-0026/0027): the only routes a PULSE
+  device may present to the kernel. Mounted always; without
+  `WORKS_LINK_PAIRING_SECRET` every route answers 503 fail-closed. Setup:
+  [docs/runbooks/link-surface.md](docs/runbooks/link-surface.md).
+
+  | Endpoint | Method | Auth | Purpose |
+  |---|---|---|---|
+  | `/link/v1/pair` | POST | none (SAS code is the boundary) | `begin` (offer) → `claim` (device token) |
+  | `/link/v1/mounts` | POST | Bearer device token | consent-bearing context mount (purpose-bound) |
+  | `/link/v1/missions` | GET | Bearer device token (T1_read) | read-only mission projection |
+  | `/link/v1/revoke` | POST | Bearer device token | local-revoke-notify, idempotent |
+
+  `/link/v1/commands` exists in the frozen `link.wire/1.0` enum but is
+  **deliberately un-mounted**: the request-only law (PULSE is never a
+  controller) makes every privileged command structurally unmountable on the
+  link surface — mounting a route that must refuse everything is how a hole
+  gets opened later.
+
 ## Deviations from the pack
 
 - **ADR-0005:** V1 uses SQLite instead of PostgreSQL for state. Migration path documented.
