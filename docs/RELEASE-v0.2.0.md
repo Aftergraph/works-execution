@@ -122,8 +122,11 @@ mounted and answers **503 fail-closed** — never a silent default. See
 - **No breaking wire changes.** All new surfaces are additive and the frozen
   compatibility rule is N-1 read tolerance per `proto.charter/1.0`; existing
   API clients keep working unchanged.
-- **Schema migration v7 → v10, automatic and idempotent on restart.** The
-  production store (`/var/lib/works/works.db`) is currently at schema v7.
+- **Schema migration v9 → v10, automatic and idempotent on restart.** The
+  production store (`/var/lib/works/works.db`) is currently at schema v9
+  (measured 2026-09-02 23:00 via `select version from schema_version`; the
+  ledger records 5,6,7,9 — v8's mission/handoff tables were applied
+  idempotently without their own ledger row, which is cosmetic, not drift).
   Restarting `works-api`/`works-worker` with the new binary applies, in order:
   v8 (`works.mission_json` + `work_handoffs`, PRAGMA-checked column add),
   v9 (`work_events` journal), v10 (`link_devices` + `link_mounts`). All
