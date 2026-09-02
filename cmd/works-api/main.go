@@ -133,6 +133,14 @@ func main() {
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
 
+	// Conversation V1: platform bridge secret for the governed /resume
+	// endpoint. Never logged; empty means the endpoint returns 503.
+	if s := os.Getenv("WORKS_PLATFORM_BRIDGE_SECRET"); s != "" {
+		logger.Printf("platform bridge resume endpoint enabled")
+	} else {
+		logger.Printf("platform bridge resume endpoint unavailable (no WORKS_PLATFORM_BRIDGE_SECRET)")
+	}
+
 	logger.Printf("works-api listening on %s (db=%s)", *addr, *dbPath)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("listen: %v", err)

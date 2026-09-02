@@ -31,7 +31,10 @@ import (
 //
 // k-mission-02 (v8): works.mission_json column + work_handoffs table
 // (ADR-0010 checkpoint persistence).
-const SchemaVersion = 8
+// v9: work_events — durable per-work event journal (WORKS Conversation V1
+// Task 1). Sequences are globally monotonic (AUTOINCREMENT) and survive
+// restarts; SSE consumers resume with sequence > cursor.
+const SchemaVersion = 9
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -284,6 +287,21 @@ CREATE TABLE IF NOT EXISTS webhooks (
 );
 CREATE INDEX IF NOT EXISTS idx_webhooks_work_id ON webhooks(work_id);
 CREATE INDEX IF NOT EXISTS idx_webhooks_received_at ON webhooks(received_at);
+
+-- v9 (WORKS Conversation V1 Task 1): durable per-work event journal.
+-- sequence is a globally monotonic AUTOINCREMENT rowid; SSE consumers
+-- resume with sequence > cursor. Appends are idempotent by event id
+-- (UNIQUE + INSERT OR IGNORE). Journal rows cascade on Work deletion.
+CREATE TABLE IF NOT EXISTS work_events (
+    sequence     INTEGER PRIMARY KEY AUTOINCREMENT,
+    id           TEXT NOT NULL UNIQUE,
+    work_id      TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+    type         TEXT NOT NULL,
+    observed_at  TEXT NOT NULL,
+    data_json    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_work_events_work_sequence
+ON work_events(work_id, sequence);
 `
 
 func (s *SQLiteStore) migrate() error {
@@ -329,6 +347,12 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateMissionAndHandoffs(); err != nil {
 		return fmt.Errorf("migrate mission/handoff: %w", err)
 	}
+	// Migration v8 -> v9 (WORKS Conversation V1 Task 1): work_events
+	// journal table + index, created idempotently above via
+	// CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS (the
+	// PRAGMA table_info introspection style used for column adds is not
+	// needed for a net-new table). No data backfill: prior versions
+	// journaled nothing.
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
 	}
@@ -1027,7 +1051,7 @@ func (s *SQLiteStore) ResumeFromCheckpoint(ctx context.Context, id string) (*wor
 		return nil, nil, fmt.Errorf("%w: checkpoint at %s, work at %s",
 			ErrStaleHandoff, checkpointState, w.State)
 	}
-	resumed, err := s.UpdateState(ctx, id, workgraph.StateRunning)
+	resumed, err := s.UpdateStateEventful(ctx, id, workgraph.StateRunning)
 	if err != nil {
 		return nil, nil, err
 	}

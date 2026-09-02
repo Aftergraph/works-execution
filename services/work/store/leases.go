@@ -120,6 +120,25 @@ func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID s
 		return nil, nil, err
 	}
 
+	// Live timeline (Conversation V1 mirror): every canonical state
+	// transition must appear in the durable journal — the AVC conversation
+	// worker mirrors work.state.changed into the live execution timeline.
+	// Emission happens AFTER commit and is best-effort: a journal row that
+	// fails to append must never roll the lease back (the work IS running);
+	// the mirror converges on the next poll via the cursor.
+	if state == workgraph.StateQueued {
+		_ = s.journalWorkEvent(ctx, journalEvent{
+			ID:     workgraph.NewID("evt"),
+			WorkID: workID,
+			Type:   EventWorkStateChanged,
+			Data: map[string]any{
+				"work_id": workID,
+				"state":   string(workgraph.StateRunning),
+				"from":    string(workgraph.StateQueued),
+			},
+		})
+	}
+
 	return &workgraph.Lease{
 		ID:         leaseID,
 		WorkID:     workID,
@@ -277,10 +296,12 @@ func (s *SQLiteStore) CompleteLease(ctx context.Context, leaseID string, exitCod
 		}
 	case allOK:
 		if w.State == workgraph.StateRunning {
-			if _, err := s.UpdateState(ctx, workID, workgraph.StateVerifying); err != nil {
+			// Live timeline (Conversation V1 mirror): terminal transitions
+			// are journaled so the AVC worker can mirror work.state.changed.
+			if _, err := s.UpdateStateEventful(ctx, workID, workgraph.StateVerifying); err != nil {
 				s.logFmt("complete: transition to VERIFYING: %v", err)
 			}
-			if _, err := s.UpdateState(ctx, workID, workgraph.StateSucceeded); err != nil {
+			if _, err := s.UpdateStateEventful(ctx, workID, workgraph.StateSucceeded); err != nil {
 				s.logFmt("complete: transition to SUCCEEDED: %v", err)
 			}
 		}
