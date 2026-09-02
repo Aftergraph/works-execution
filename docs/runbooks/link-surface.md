@@ -63,7 +63,7 @@ sudo journalctl -u works-api -n 20 --no-pager | grep WORKS-Link
 
 ## 3. Schema migration check
 
-First restart with the new binary also migrates the store (v7 → v8 → v9 →
+First restart with the new binary also migrates the store (v9 →
 v10, idempotent, no backfill):
 
 ```bash
