@@ -1,6 +1,6 @@
 # v0.2.0 — Governed kernel: contracts, missions, evidence, link
 
-**Date:** 2026-09-02 · **Base:** main @ `05cdacb` · **Range:** `0eca06b` (freeze-slice-0, PR #9) → `4f9bc69` (k-link-01, PR #20)
+**Date:** 2026-09-02 · **Base:** main @ `05cdacb` · **Range:** `0eca06b` (freeze-slice-0, PR #9) → `fb5bbfb` (kanban closure for the v0.2 wave, PR #27)
 
 v0.1 built the execution machinery: durable `Work` objects, lease-based
 scheduling, disposable workers, webhook ingestion, result publishing. v0.2
@@ -170,3 +170,20 @@ is not vendored in-repo.
 - `go test ./tests/contracts/ -count=1` — 21/21 PASS
 - Full suite `go test ./... -count=1` — all packages ok (per
   `contracts/FREEZE_EVIDENCE.md`: 30/30 packages, exit 0)
+- v0.2.0 wave slices (PRs #22–#27) — exact-head CI + post-merge main CI
+  both SUCCESS; e2e green; `works-kanban validate` green; standards
+  registry parses.
+
+## v0.2.0 wave (the last 5 PRs in this release)
+
+| Slice | Title | PR | Merge SHA |
+|---|---|---|---|
+| k-039 | v0.2.0 release notes + WORKS-Link runbook + README kernel section | #22 | `46a7a10` |
+| k-035 | Revoke cascades mission suspension with handoff (ADR-0020/0026) | #23 | `8ec59b3` |
+| k-036 | Wire conformance of `/link/v1` vs frozen `link.wire/1.0` + `pairing/1.0` | #24 | `8d0ee8d` |
+| k-037 | `works missions` CLI — NOW-ordered mission projection | #25 | `03ba423` |
+| k-038 | WebUI work-detail journal timeline (escaped, last 50 events) | #26 | `e405f9e` |
+| kanban | `k-impl-035..039` closed on the board | #27 | `fb5bbfb` |
+
+Five workers, disjoint file-ownership, all exact-head CI SUCCESS, all
+post-merge main CI SUCCESS, no scope drift into other slices.
