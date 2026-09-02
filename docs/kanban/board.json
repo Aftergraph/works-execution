@@ -753,7 +753,7 @@
       "id": "k-impl-034",
       "title": "k-link-01: WORKS-Link server surface (/link/v1 pair|mounts|missions|revoke)",
       "lane": "implementation",
-      "column": "review",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "link.wire/1.0 + pairing/1.0 materialized server-side: SAS pairing with re-roll and no-burn claims, short-lived HMAC device tokens bound to durable state, scope-ceiling law (T2 mounts need purpose binding), content-addressed idempotent mounts, read-only missions feed (T1 only, CI works invisible), idempotent revoke that kills tokens mid-mission, commands route structurally unmounted, unwired secret = 503 everywhere. All laws tested positive + adversarial.",
       "evidence": [
@@ -762,12 +762,13 @@
         "services/api/link_handler.go",
         "services/api/link_handler_test.go",
         "services/work/store/link_store.go",
-        "services/work/store/link_store_test.go"
+        "services/work/store/link_store_test.go",
+        "merged PR #20 @ 4f9bc69 (exact-head CI success + post-merge main CI success)"
       ],
       "notes": "ADR-0026/0027; schema v10 (link_devices, link_mounts). PULSE side exists since k-pulse-01 (packages/providers/pulse_provider.go) — this is the server half it speaks to. Budget 'consumed' deliberately not projected (kernel-in-metering, memory-only).",
       "created_at": "2026-09-02T19:40:00Z",
-      "updated_at": "2026-09-02T19:40:00Z",
-      "status": "review"
+      "updated_at": "2026-09-02T19:45:00Z",
+      "status": "done"
     }
   ],
   "updated_at": "2026-09-01T00:20:00Z"
