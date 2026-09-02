@@ -258,3 +258,118 @@ func TestWorkEventsSSERequiresBearer(t *testing.T) {
 		t.Fatalf("status without bearer = %d, want 401", resp.StatusCode)
 	}
 }
+
+// TestWorkEventsRESTJournalListing — Task 8 cross-repo mirror loop: the
+// AVC conversation worker polls the journal as REST JSON
+// (GET /v1/works/{id}/events?after=&limit=) in the WorksEventEnvelope
+// wire shape. The SSE stream (no query cursors) must be unaffected.
+func TestWorkEventsRESTJournalListing(t *testing.T) {
+	s := openEventsTestStore(t)
+	w := journalWork(t, s, "work:rest-journal", workgraph.StateRunning)
+	first := appendEvent(t, s, w.ID, "evt_r1", "work.created", `{"state":"CREATED"}`)
+	second := appendEvent(t, s, w.ID, "evt_r2", "work.state.changed", `{"state":"RUNNING"}`)
+
+	ts := newEventsTestServer(t, s)
+
+	// Full listing from cursor 0, camelCase envelope shape.
+	resp, err := http.Get(ts.URL + fmt.Sprintf("/v1/works/%s/events?after=0&limit=10", w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	var got struct {
+		WorkID string `json:"work_id"`
+		Events []struct {
+			ID         string          `json:"id"`
+			WorkID     string          `json:"workId"`
+			Type       string          `json:"type"`
+			ObservedAt string          `json:"observedAt"`
+			Sequence   int64           `json:"sequence"`
+			Data       json.RawMessage `json:"data"`
+		} `json:"events"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode listing: %v", err)
+	}
+	if got.WorkID != w.ID {
+		t.Fatalf("work_id = %q, want %q", got.WorkID, w.ID)
+	}
+	if len(got.Events) != 2 {
+		t.Fatalf("events = %d, want 2", len(got.Events))
+	}
+	if got.Events[0].ID != "evt_r1" || got.Events[1].ID != "evt_r2" {
+		t.Fatalf("event order wrong: %v", got.Events)
+	}
+	if got.Events[1].WorkID != w.ID || got.Events[1].Type != "work.state.changed" || got.Events[1].Sequence != second.Sequence {
+		t.Fatalf("envelope fields wrong: %+v", got.Events[1])
+	}
+	if _, err := time.Parse(time.RFC3339Nano, got.Events[0].ObservedAt); err != nil {
+		t.Fatalf("observedAt not RFC3339Nano: %q (%v)", got.Events[0].ObservedAt, err)
+	}
+	if string(got.Events[1].Data) != `{"state":"RUNNING"}` {
+		t.Fatalf("data passthrough = %s", got.Events[1].Data)
+	}
+
+	// Cursor semantics: after=first.Sequence returns only later events.
+	resp2, err := http.Get(ts.URL + fmt.Sprintf("/v1/works/%s/events?after=%d", w.ID, first.Sequence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	var only struct {
+		Events []struct {
+			ID       string `json:"id"`
+			Sequence int64  `json:"sequence"`
+		} `json:"events"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&only); err != nil {
+		t.Fatalf("decode cursor listing: %v", err)
+	}
+	if len(only.Events) != 1 || only.Events[0].ID != "evt_r2" {
+		t.Fatalf("after=%d must return only later events, got %+v", first.Sequence, only.Events)
+	}
+
+	// Limit clamp: limit=1 returns the single oldest eligible row.
+	resp3, err := http.Get(ts.URL + fmt.Sprintf("/v1/works/%s/events?after=0&limit=1", w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp3.Body.Close()
+	var clamped struct {
+		Events []struct {
+			ID string `json:"id"`
+		} `json:"events"`
+	}
+	if err := json.NewDecoder(resp3.Body).Decode(&clamped); err != nil {
+		t.Fatalf("decode clamped listing: %v", err)
+	}
+	if len(clamped.Events) != 1 || clamped.Events[0].ID != "evt_r1" {
+		t.Fatalf("limit=1 must clamp to one row, got %+v", clamped.Events)
+	}
+
+	// Validation and isolation.
+	for _, bad := range []string{"after=-1", "after=abc", "limit=0", "limit=-5"} {
+		resp4, err := http.Get(ts.URL + fmt.Sprintf("/v1/works/%s/events?%s", w.ID, bad))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp4.Body.Close()
+		if resp4.StatusCode != http.StatusBadRequest {
+			t.Fatalf("GET events?%s = %d, want 400", bad, resp4.StatusCode)
+		}
+	}
+	resp5, err := http.Get(ts.URL + "/v1/works/work:nope/events?after=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp5.Body.Close()
+	if resp5.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown work listing = %d, want 404", resp5.StatusCode)
+	}
+}

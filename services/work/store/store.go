@@ -1051,7 +1051,7 @@ func (s *SQLiteStore) ResumeFromCheckpoint(ctx context.Context, id string) (*wor
 		return nil, nil, fmt.Errorf("%w: checkpoint at %s, work at %s",
 			ErrStaleHandoff, checkpointState, w.State)
 	}
-	resumed, err := s.UpdateState(ctx, id, workgraph.StateRunning)
+	resumed, err := s.UpdateStateEventful(ctx, id, workgraph.StateRunning)
 	if err != nil {
 		return nil, nil, err
 	}

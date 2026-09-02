@@ -122,6 +122,73 @@ func (l storeLister) OldestWorkEventSequence(ctx context.Context, workID string)
 	return o.OldestWorkEventSequence(ctx, workID)
 }
 
+// serveJournalList is the REST cursor listing the AVC conversation worker
+// consumes (works-client listWorkEvents): GET /v1/works/{id}/events
+// ?after=<seq>&limit=<n> returns the durable journal rows after the cursor
+// as a JSON envelope array in the cross-repo wire shape
+// (apps/conversation-worker WorksEventEnvelope: camelCase workId/
+// observedAt, RFC3339Nano timestamps, opaque data passthrough). The
+// response is the conversation mirror's only view of the journal; there is
+// no pagination token beyond the monotonic sequence itself.
+func (h *workEventsHandler) serveJournalList(w http.ResponseWriter, r *http.Request, workID string) {
+	q := r.URL.Query()
+	after := int64(0)
+	if v := q.Get("after"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_cursor", "after must be a non-negative integer")
+			return
+		}
+		after = n
+	}
+	limit := 200
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be a positive integer")
+			return
+		}
+		if n > 1000 {
+			n = 1000
+		}
+		limit = n
+	}
+
+	rows, err := h.lister.ListWorkEventsAfter(r.Context(), workID, after, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "journal_unavailable", "journal unavailable")
+		return
+	}
+
+	// Cross-repo envelope (AVC contracts WorksEventEnvelope). Data is
+	// passed through untouched when valid; a corrupt row degrades to the
+	// same "{}" the SSE stream uses.
+	type envelope struct {
+		ID         string          `json:"id"`
+		WorkID     string          `json:"workId"`
+		Type       string          `json:"type"`
+		ObservedAt string          `json:"observedAt"`
+		Sequence   int64           `json:"sequence"`
+		Data       json.RawMessage `json:"data"`
+	}
+	events := make([]envelope, 0, len(rows))
+	for _, ev := range rows {
+		data := ev.Data
+		if !json.Valid(data) {
+			data = json.RawMessage("{}")
+		}
+		events = append(events, envelope{
+			ID:         ev.ID,
+			WorkID:     ev.WorkID,
+			Type:       ev.Type,
+			ObservedAt: ev.ObservedAt.UTC().Format(time.RFC3339Nano),
+			Sequence:   ev.Sequence,
+			Data:       data,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"work_id": workID, "events": events})
+}
+
 // ServeHTTP implements the SSE stream. See package comment for the wire
 // contract.
 func (h *workEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +209,16 @@ func (h *workEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !exists {
 		writeError(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+
+	// Task 8 (cross-repo mirror loop): the AVC conversation worker polls
+	// the journal as REST JSON using query cursors
+	// (works-client listWorkEvents: ?after=&limit=). SSE subscriptions
+	// never send query cursors — Last-Event-ID is their resume mechanism —
+	// so the two wire formats disambiguate cleanly on one route.
+	if r.URL.Query().Has("after") || r.URL.Query().Has("limit") {
+		h.serveJournalList(w, r, workID)
 		return
 	}
 
