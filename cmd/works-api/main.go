@@ -106,6 +106,15 @@ func main() {
 	// RFC-0007: execution view.
 	srv.WebUI = &api.WebUIConfig{Public: *webUIPublic}
 	logger.Printf("web ui enabled (/v1/ui, public=%v)", *webUIPublic)
+	// k-link-01: WORKS-Link device surface. Always mounted so the surface
+	// shape is stable; without WORKS_LINK_PAIRING_SECRET (min 32 bytes) the
+	// service is unwired and every route answers 503 (fail closed, L6).
+	srv.Link = api.NewLinkServiceFromEnv(st.LinkDevices(), envOr("WORKS_LINK_PAIRING_SECRET", ""))
+	if srv.Link.Service != nil {
+		logger.Printf("WORKS-Link enabled (/link/v1, pairing secret configured)")
+	} else {
+		logger.Printf("WORKS-Link mounted but unavailable (no WORKS_LINK_PAIRING_SECRET)")
+	}
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Routes(),
