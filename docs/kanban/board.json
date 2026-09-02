@@ -769,6 +769,93 @@
       "created_at": "2026-09-02T19:40:00Z",
       "updated_at": "2026-09-02T19:45:00Z",
       "status": "done"
+    },
+    {
+      "id": "k-impl-035",
+      "title": "k-035: revoke cascades mission suspension with handoff",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; exact-head CI + post-merge main gates green.",
+      "evidence": [
+        "packages/link/link.go",
+        "services/work/store/link_suspend.go",
+        "services/api/link_handler.go",
+        "PR #23 (merged 8ec59b3)"
+      ],
+      "notes": "v0.2.0 wave (5-parallel worker dispatch, disjoint ownership).",
+      "created_at": "2026-09-02T20:15:00Z",
+      "updated_at": "2026-09-02T20:15:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-036",
+      "title": "k-036: wire conformance tests vs frozen link.wire/1.0 + pairing/1.0",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; exact-head CI + post-merge main gates green.",
+      "evidence": [
+        "tests/link/conformance_test.go",
+        "tests/link/report_test.go",
+        "PR #24 (merged 8d0ee8d)"
+      ],
+      "notes": "v0.2.0 wave (5-parallel worker dispatch, disjoint ownership).",
+      "created_at": "2026-09-02T20:15:00Z",
+      "updated_at": "2026-09-02T20:15:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-037",
+      "title": "k-037: works missions CLI (NOW-ordered mission projection)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; exact-head CI + post-merge main gates green.",
+      "evidence": [
+        "cmd/works/missions.go",
+        "cmd/works/missions_test.go",
+        "PR #25 (merged 03ba423)"
+      ],
+      "notes": "v0.2.0 wave (5-parallel worker dispatch, disjoint ownership).",
+      "created_at": "2026-09-02T20:15:00Z",
+      "updated_at": "2026-09-02T20:15:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-038",
+      "title": "k-038: WebUI work-detail journal timeline (escaped)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; exact-head CI + post-merge main gates green.",
+      "evidence": [
+        "services/api/webui_timeline.go",
+        "services/api/webui_timeline_test.go",
+        "PR #26 (merged e405f9e)"
+      ],
+      "notes": "v0.2.0 wave (5-parallel worker dispatch, disjoint ownership).",
+      "created_at": "2026-09-02T20:15:00Z",
+      "updated_at": "2026-09-02T20:15:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-039",
+      "title": "k-039: v0.2.0 release notes + WORKS-Link runbook + README kernel section",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; exact-head CI + post-merge main gates green.",
+      "evidence": [
+        "docs/RELEASE-v0.2.0.md",
+        "docs/runbooks/link-surface.md",
+        "README.md",
+        "PR #22 (merged 46a7a10)"
+      ],
+      "notes": "v0.2.0 wave (5-parallel worker dispatch, disjoint ownership).",
+      "created_at": "2026-09-02T20:15:00Z",
+      "updated_at": "2026-09-02T20:15:00Z",
+      "status": "done"
     }
   ],
   "updated_at": "2026-09-01T00:20:00Z"
