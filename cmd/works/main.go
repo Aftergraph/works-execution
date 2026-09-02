@@ -31,6 +31,7 @@ Usage:
   works run --config works.yaml [--api http://127.0.0.1:8080] [--idempotency-key KEY]
   works status <work_id> [--api http://127.0.0.1:8080] [--follow]
   works runners [--pool NAME] [--alive] [--api URL]   # BYOC: list scheduler-visible runners
+  works missions [--limit N] [--json] [--api URL]     # k-037: NOW-ordered mission projection (needs-human first)
   works onboard <owner/repo> [--pool NAME] [--api URL] # design-partner day-1 checklist
   works connect github [--api URL]    # M1 k-impl-024: print webhook URL + secret + repo-policy hint
   works pilot <owner/repo> [--ref REF] [--sha SHA] [--api URL] [--timeout-s N] [--once]
@@ -56,6 +57,8 @@ func main() {
 		statusCmd(os.Args[2:])
 	case "runners":
 		runnersCmd(os.Args[2:])
+	case "missions":
+		missionsCmd(os.Args[2:])
 	case "onboard":
 		onboardCmd(os.Args[2:])
 	case "connect":
