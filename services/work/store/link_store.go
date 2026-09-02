@@ -53,10 +53,18 @@ func (s *SQLiteStore) migrateLink() error {
 	return nil
 }
 
-// LinkDevices returns the store-backed link.DeviceStore implementation.
-func (s *SQLiteStore) LinkDevices() link.DeviceStore { return &linkStore{db: s.db} }
+// LinkDevices returns the store-backed link.DeviceStore implementation. The
+// returned value also carries the kernel's revoke-cascade sink (k-035):
+// linkStore embeds the owning *SQLiteStore, so a type assertion to
+// interface{ SuspendMissionsForDevice(ctx, deviceID) ([]string, error) }
+// succeeds and the link Service can cascade mission suspensions through the
+// same store that owns the works.
+func (s *SQLiteStore) LinkDevices() link.DeviceStore { return &linkStore{db: s.db, sqlite: s} }
 
-type linkStore struct{ db *sql.DB }
+type linkStore struct {
+	db     *sql.DB
+	sqlite *SQLiteStore // k-035: back-reference for the revoke-cascade sink
+}
 
 func (l *linkStore) GetDevice(ctx context.Context, deviceID string) (*link.Device, error) {
 	var (
@@ -133,8 +141,8 @@ func (l *linkStore) InsertMount(ctx context.Context, m *link.MountRecord) (bool,
 
 func (l *linkStore) GetMount(ctx context.Context, id string) (*link.MountRecord, error) {
 	var (
-		m           = &link.MountRecord{ID: id}
-		createdAt   string
+		m         = &link.MountRecord{ID: id}
+		createdAt string
 	)
 	err := l.db.QueryRowContext(ctx,
 		`SELECT device_id, work_id, payload_hash, scope, purpose_binding, created_at
@@ -150,4 +158,39 @@ func (l *linkStore) GetMount(ctx context.Context, id string) (*link.MountRecord,
 		m.CreatedAt = t
 	}
 	return m, nil
+}
+
+// ListMountWorkIDs (k-035) returns the DISTINCT Work IDs the device has
+// mounted, oldest mount first. The revoke cascade's read side: which missions
+// were attached to a device that just died. DISTINCT because two different
+// mounts of the same Work (different payloads) are legitimate rows.
+func (l *linkStore) ListMountWorkIDs(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT DISTINCT work_id FROM link_mounts WHERE device_id = ? ORDER BY created_at`,
+		deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("link store: list mount work ids: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("link store: scan mount work id: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("link store: list mount work ids: %w", err)
+	}
+	return out, nil
+}
+
+// SuspendMissionsForDevice (k-035) is the revoke-cascade sink the link
+// Service calls after a durable revoke: suspend every active mission the
+// device mounted, with a durable ADR-0010 handoff each. linkStore implements
+// it on behalf of the owning SQLiteStore so the api package can wire the
+// cascade by type-asserting the DeviceStore it already holds.
+func (l *linkStore) SuspendMissionsForDevice(ctx context.Context, deviceID string) ([]string, error) {
+	return l.sqlite.SuspendMissionsForDevice(ctx, deviceID)
 }

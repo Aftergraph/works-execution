@@ -25,6 +25,7 @@ package api
 // loud, never a silent default.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -48,12 +49,22 @@ const defaultLinkBodyLimit = 64 * 1024
 // 32 bytes, same law as the platform bridge). Empty/short secret -> nil
 // Service: the surface stays mounted and every route 503s, loudly, with no
 // default secret ever assumed (L6 fail-closed).
+//
+// k-035: when the DeviceStore also carries the kernel's revoke-cascade sink
+// (SQLiteStore's linkStore does: SuspendMissionsForDevice), it is wired as
+// the Service's Cascade — a revoked device's mounted missions suspend with a
+// durable handoff. The type assertion keeps cmd/works-api wiring untouched.
 func NewLinkServiceFromEnv(devices link.DeviceStore, secret string) *LinkConfig {
 	cfg := &LinkConfig{}
 	if len(secret) < 32 {
 		return cfg // Service stays nil -> 503 on every route
 	}
 	cfg.Service = link.NewService(devices, link.NewTokenIssuerWithKey([]byte(secret)))
+	if cs, ok := devices.(interface {
+		SuspendMissionsForDevice(ctx context.Context, deviceID string) ([]string, error)
+	}); ok {
+		cfg.Service.Cascade = cs.SuspendMissionsForDevice
+	}
 	return cfg
 }
 
@@ -71,7 +82,17 @@ func (s *Server) linkHandler(w http.ResponseWriter, r *http.Request) {
 	case rest == "/missions" && r.Method == http.MethodGet:
 		s.linkDevice(w, r, s.linkMissions)
 	case rest == "/revoke" && r.Method == http.MethodPost:
-		s.linkDevice(w, r, s.linkRevoke)
+		// The revoke route authenticates WITHOUT the post-revoke refusal:
+		// the token's device may already be durably REVOKED, and the
+		// idempotent replay law (sync.rules/1.0) requires that replay to
+		// reach the handler and answer 200. Signature + expiry are still
+		// verified; the REVOKED check is left to the handler (which is
+		// exactly the revoke itself — ADR-0020 sync law).
+		d, ok := s.linkDeviceAuth(w, r)
+		if !ok {
+			return
+		}
+		s.linkRevoke(w, r, d)
 	default:
 		// Unknown or wrong-method endpoints on the frozen enum 404 (never
 		// 405-with-hints: the surface shape is not discoverable).
@@ -134,20 +155,40 @@ func (s *Server) linkPair(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// linkDevice authenticates the Bearer device token, then runs fn.
+// linkDevice authenticates the Bearer device token — WITH the revoked-state
+// refusal (double enforcement, ADR-0026 §6) — then runs fn.
 func (s *Server) linkDevice(w http.ResponseWriter, r *http.Request, fn func(http.ResponseWriter, *http.Request, *link.Device)) {
+	d, ok := s.linkDeviceAuth(w, r)
+	if !ok {
+		return
+	}
+	if d.State == link.StateRevoked {
+		s.linkError(w, link.ErrRevoked)
+		return
+	}
+	fn(w, r, d)
+}
+
+// linkDeviceAuth verifies the Bearer device token WITHOUT the revoked-state
+// refusal and returns the durable device. Used by the revoke route (k-035):
+// a revoked device must still be able to answer the idempotent revoke
+// replay, so the REVOKED check belongs to the handler, not the gate.
+func (s *Server) linkDeviceAuth(w http.ResponseWriter, r *http.Request) (*link.Device, bool) {
 	h := r.Header.Get("Authorization")
 	const prefix = "Bearer "
 	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
 		writeError(w, http.StatusUnauthorized, "device_token_required", "link surface requires a Bearer device token")
-		return
+		return nil, false
 	}
-	d, err := s.Link.Service.Authenticate(r.Context(), strings.TrimSpace(h[len(prefix):]))
+	// k-035: authenticate WITHOUT the revoked refusal — the replay must
+	// reach the handler. Signature, expiry, and the re-pair digest binding
+	// are still enforced via the service helper.
+	d, err := s.Link.Service.AuthenticateToken(r.Context(), strings.TrimSpace(h[len(prefix):]))
 	if err != nil {
 		s.linkError(w, err)
-		return
+		return nil, false
 	}
-	fn(w, r, d)
+	return d, true
 }
 
 func (s *Server) linkMounts(w http.ResponseWriter, r *http.Request, d *link.Device) {
@@ -192,12 +233,26 @@ func (s *Server) linkRevoke(w http.ResponseWriter, r *http.Request, d *link.Devi
 	if req.DeviceID == "" {
 		req.DeviceID = d.DeviceID
 	}
-	rev, err := s.Link.Service.Revoke(r.Context(), d, req)
+	// k-035: RevokeResult carries the durable device record plus the
+	// cascade outcome. The revoke is authoritative regardless of the
+	// cascade; a cascade failure is surfaced as a 500 with the revoke
+	// already standing (best-effort law — never un-revoke, never 200-lie).
+	res, err := s.Link.Service.Revoke(r.Context(), d, req)
 	if err != nil {
 		s.linkError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"state": rev.State, "device_id": rev.DeviceID})
+	if res.CascadeErr != nil {
+		s.logf("link revoke cascade for %s partially failed: %v", res.Device.DeviceID, res.CascadeErr)
+		writeError(w, http.StatusInternalServerError, "cascade_failed",
+			"device revoked but mission suspension failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"state":           res.Device.State,
+		"device_id":       res.Device.DeviceID,
+		"suspended_works": res.SuspendedWorks,
+	})
 }
 
 // missionRow projects one mission Work onto the link feed. Budget ceiling
