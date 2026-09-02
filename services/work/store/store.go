@@ -36,7 +36,10 @@ import (
 // restarts; SSE consumers resume with sequence > cursor.
 // v10 (k-link-01, ADR-0026/0027): link_devices + link_mounts — the durable
 // WORKS-Link device registry and content-addressed consent mounts.
-const SchemaVersion = 10
+// v11 (k-042, ADR-0023): brain_objects + brain_mounts — the durable Company
+// Brain namespace: append-only revisions, tombstones, ephemeral expiry, and
+// read-view mounts.
+const SchemaVersion = 11
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -362,6 +365,17 @@ func (s *SQLiteStore) migrate() error {
 	// link_mounts for the WORKS-Link surface. Net-new tables, no backfill.
 	if err := s.migrateLink(); err != nil {
 		return fmt.Errorf("migrate link: %w", err)
+	}
+	if err := s.bumpSchemaVersion(10); err != nil {
+		return fmt.Errorf("bump schema version: %w", err)
+	}
+	// Migration v10 -> v11 (k-042, ADR-0023): brain_objects + brain_mounts
+	// for the Company Brain namespace. Net-new tables + indexes, created
+	// idempotently (the PRAGMA introspection style used for column adds is
+	// not needed here). No data backfill: the brain lived in memory before
+	// this slice.
+	if err := s.migrateBrain(); err != nil {
+		return fmt.Errorf("migrate brain: %w", err)
 	}
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
@@ -896,7 +910,7 @@ func mustJSON(v any) string {
 }
 
 // missionJSON serializes the mission contract for the works.mission_json
-// column ("" for legacy CI Works — N-1 readers see NULL/'' and skip).
+// column ("" for legacy CI Works — N-1 readers see NULL/” and skip).
 func missionJSON(w *workgraph.Work) string {
 	if w.Mission == nil {
 		return ""
@@ -1096,6 +1110,7 @@ func parseTime(s string) (time.Time, error) {
 	}
 	return time.Parse(time.RFC3339, s)
 }
+
 // SaveProvenance persists a Provenance row for the given Work. Re-saving
 // for the same Work replaces the previous attestation (the Work's provenance
 // is monotonic per the SLSA v1 spec — the most recent terminal-state build
