@@ -34,7 +34,9 @@ import (
 // v9: work_events — durable per-work event journal (WORKS Conversation V1
 // Task 1). Sequences are globally monotonic (AUTOINCREMENT) and survive
 // restarts; SSE consumers resume with sequence > cursor.
-const SchemaVersion = 9
+// v10 (k-link-01, ADR-0026/0027): link_devices + link_mounts — the durable
+// WORKS-Link device registry and content-addressed consent mounts.
+const SchemaVersion = 10
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -353,6 +355,14 @@ func (s *SQLiteStore) migrate() error {
 	// PRAGMA table_info introspection style used for column adds is not
 	// needed for a net-new table). No data backfill: prior versions
 	// journaled nothing.
+	if err := s.bumpSchemaVersion(9); err != nil {
+		return fmt.Errorf("bump schema version: %w", err)
+	}
+	// Migration v9 -> v10 (k-link-01, ADR-0026/0027): link_devices +
+	// link_mounts for the WORKS-Link surface. Net-new tables, no backfill.
+	if err := s.migrateLink(); err != nil {
+		return fmt.Errorf("migrate link: %w", err)
+	}
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
 	}

@@ -101,6 +101,10 @@ type Server struct {
 	// /v1/ui (RFC-0007). Public=true serves it without a Bearer
 	// token; default (Public=false) keeps it behind requireBearer.
 	WebUI *WebUIConfig
+	// Link, when non-nil with a wired Service, mounts the WORKS-Link
+	// surface (/link/v1, k-link-01 / ADR-0026). A mounted-but-unconfigured
+	// surface answers 503 fail-closed; the routes exist, the laws refuse.
+	Link *LinkConfig
 }
 
 // ensureIssuer returns s.Auth, lazily constructing a default HMACIssuer
@@ -183,6 +187,13 @@ func (s *Server) Routes() http.Handler {
 	// persisted ADR-0010 handoff) and the read-only handoff binding. Same
 	// bridge boundary as /resume; see work_bridge.go.
 	WireCheckpointRoutes(mux, s, bridgeSecretFromEnv())
+	// k-link-01: the WORKS-Link device surface (/link/v1). Mounted whenever
+	// s.Link != nil; an unwired service answers 503 (fail closed). The link
+	// surface authenticates DEVICE tokens, never worker JWTs, so it lives
+	// outside requireBearer by design (see link_handler.go).
+	if s.Link != nil {
+		mux.HandleFunc("/link/v1/", s.linkHandler)
+	}
 	if s.Metrics != nil {
 		// GET /metrics — Prometheus exposition. Internal scrape only; not
 		// behind requireBearer so Prometheus can scrape without an enroll
