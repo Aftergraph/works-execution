@@ -738,6 +738,25 @@ type execResult struct {
 // by legacy callers and tests that don't opt into the sandbox.
 func runCommand(ctx context.Context, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}, workDir string, manifest ...*sandbox.Manifest) execResult {
 	start := time.Now()
+
+	// ADR-0022 (k-057): resolve secret REFs against the process env at
+	// execution time, once here, before the sandbox/legacy branch below,
+	// so both paths (and runDocker's docker path, which calls the same
+	// helper) see resolved values only. On failure the node does NOT
+	// execute: the error names the REF, never a value. With no refs in
+	// env this returns the input map unchanged (byte-identical legacy
+	// behavior).
+	resolvedEnv, resolveErr := resolveItemEnv(ctx, env)
+	if resolveErr != nil {
+		return execResult{
+			Status:      "failed",
+			ExitCode:    -1,
+			CombinedLog: []byte("secret resolution failed: " + resolveErr.Error()),
+			Duration:    time.Since(start),
+		}
+	}
+	env = resolvedEnv
+
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -832,6 +851,19 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 // --network=none, no-new-privileges, memory + CPU + PIDs caps) so a
 // docker run is strictly more isolated than the host path.
 func runDocker(ctx context.Context, image, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}) execResult {
+	// ADR-0022 (k-057): resolve secret REFs before handing env to the
+	// container, same law as the host path. Fail closed: an unresolved
+	// ref fails the node without running docker, naming the REF only.
+	resolvedEnv, resolveErr := resolveItemEnv(ctx, env)
+	if resolveErr != nil {
+		return execResult{
+			Status:      "failed",
+			ExitCode:    -1,
+			CombinedLog: []byte("secret resolution failed: " + resolveErr.Error()),
+		}
+	}
+	env = resolvedEnv
+
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
