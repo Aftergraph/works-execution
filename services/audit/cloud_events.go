@@ -147,6 +147,15 @@ func (e *SQLiteEmitter) Emit(ctx context.Context, ev *CloudEvent) error {
 	if ev == nil {
 		return errors.New("audit: nil event")
 	}
+	// ADR-0024 boundary law check (k-052). Placed immediately after the
+	// existing nil guard and before any field defaults or mutation so
+	// every event that reaches the audit table has passed the law. The
+	// projection is constant (kind=event, signed=false), so this is a
+	// no-op for all current callers -- zero behavior change; it fails
+	// fast only if a future refactor drifts events toward being signed.
+	if err := CheckEvent(ev); err != nil {
+		return err
+	}
 	if ev.ID == "" {
 		return errors.New("audit: event ID required")
 	}

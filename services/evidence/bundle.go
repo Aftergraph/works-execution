@@ -320,6 +320,22 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 		SignedAt:  now,
 	}
 	b.Signatures = []Signature{sig}
+
+	// ADR-0024 boundary law check (k-052). Hook choice: Produce is the
+	// least invasive choke point every constructed bundle passes -- it
+	// is the only place in non-test code where a *Bundle is built (a
+	// repo-wide grep for "&Bundle{" finds exactly this line). Putting
+	// the assertion here instead of inside canonicalize keeps the
+	// generic canonicaliser free of Bundle-specific law logic and runs
+	// the check once per produced bundle on a bundle fully populated
+	// with id and signature. The projection hardcodes a legal evidence
+	// Record today, so this assertion is untriggerable by any current
+	// caller; its teeth are purely against future drift (e.g. making
+	// the projection conditional, or loosening the kernel). Fail fast:
+	// never hand a law-breaking bundle to a caller.
+	if err := checkBundleLaw(b); err != nil {
+		return nil, err
+	}
 	return b, nil
 }
 
