@@ -196,11 +196,16 @@ func TestRunnerABIAdvertiseTable(t *testing.T) {
 			if got["abi"] != "rab/1.0" {
 				t.Errorf("roundtrip abi: got %v", got["abi"])
 			}
-			if got["runner_id"] != rid {
-				t.Errorf("linkage runner_id: got %v, want %s", got["runner_id"], rid)
-			}
-			if _, ok := got["registered_at"]; !ok {
-				t.Error("registered_at missing on GET")
+			meta, ok := got["rab_runtime_meta"].(map[string]any)
+			if !ok {
+				t.Errorf("linkage rab_runtime_meta missing on GET: %v", got)
+			} else {
+				if meta["runner_id"] != rid {
+					t.Errorf("linkage runner_id: got %v, want %s", meta["runner_id"], rid)
+				}
+				if _, ok := meta["registered_at"]; !ok {
+					t.Error("rab_runtime_meta.registered_at missing on GET")
+				}
 			}
 			// caps + control_token_required must round-trip exactly as sent.
 			var sent struct {
@@ -452,13 +457,14 @@ func TestRunnerABIComposesWithProductionRegistry(t *testing.T) {
 		t.Fatalf("identity leg broken: %v", identity)
 	}
 	_, abiRec := rabGet(t, ts, rid)
-	if abiRec["runner_id"] != rid || abiRec["control_token_required"] != true {
+	meta, ok := abiRec["rab_runtime_meta"].(map[string]any)
+	if !ok || meta["runner_id"] != rid || abiRec["control_token_required"] != true {
 		t.Fatalf("RAB leg not stored beside identity: %v", abiRec)
 	}
-	if ts, ok := abiRec["registered_at"].(string); !ok || ts == "" {
-		t.Error("registered_at missing on composed record")
+	if ts, ok := meta["registered_at"].(string); !ok || ts == "" {
+		t.Error("rab_runtime_meta.registered_at missing on composed record")
 	} else if _, err := time.Parse(time.RFC3339, ts); err != nil {
-		t.Errorf("registered_at not RFC3339: %q", ts)
+		t.Errorf("rab_runtime_meta.registered_at not RFC3339: %q", ts)
 	}
 
 	// The heartbeat upsert (worker re-POST) must NOT drop the RAB.
