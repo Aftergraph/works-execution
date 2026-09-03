@@ -1012,7 +1012,76 @@
       "created_at": "2026-09-03T03:35:00Z",
       "updated_at": "2026-09-03T03:35:00Z",
       "status": "done"
+    },
+    {
+      "id": "k-impl-049",
+      "title": "k-051: secret refs resolved at execution time in services/runner (ADR-0022)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; octopus-merge + full-suite green; composition-adversary sweep clean.",
+      "evidence": [
+        "services/runner/secrets.go",
+        "branch v032/secret-runtime @ e7e3504f",
+        "PR #34"
+      ],
+      "notes": "Pure-domain wiring; SecretResolver interface in services/runner, NewEnvSecretResolver adapter over packages/secrets.EnvResolver; nil-resolver byte-for-byte legacy pass-through pinned. cmd/works-worker wiring is a non-trivial follow-up (worker today goes through internal/worker, not runner). GLM-5.3-Flash leaf.",
+      "created_at": "2026-09-03T05:55:00Z",
+      "updated_at": "2026-09-03T05:55:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-050",
+      "title": "k-052: obslaw boundary law wired into evidence attestation + event emission (ADR-0024)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; octopus-merge + full-suite green.",
+      "evidence": [
+        "services/evidence/obslaw.go",
+        "services/audit/obslaw.go",
+        "branch v032/obs-evidence @ b2d0fa1c",
+        "PR #34"
+      ],
+      "notes": "Zero schema edits; AttestBundle is opt-in law-level attestation beside the existing Signatures; CheckEvent fail-fast in Emit untriggerable by construction. cites_hash empty by design (bundle_id 32-hex truncation documented). Qwen3.8-Flash leaf.",
+      "created_at": "2026-09-03T05:55:00Z",
+      "updated_at": "2026-09-03T05:55:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-051",
+      "title": "k-053: rab/1.0 runtime capability advertisement in runner registry (ADR-0012/0014)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; octopus-merge + full-suite green; composition test against real router.",
+      "evidence": [
+        "services/api/runner_abi.go",
+        "branch v032/abi-registry @ ae996bc9",
+        "PR #34"
+      ],
+      "notes": "POST/GET/negotiate endpoints; identity-first order law; idempotent upsert; control-token law visible on wire. Qwen3.8-Flash leaf.",
+      "created_at": "2026-09-03T05:55:00Z",
+      "updated_at": "2026-09-03T05:55:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-052",
+      "title": "k-054: composition-adversary sweep + 2 seam fixes (cloneRAB deep copy; rab_runtime_meta namespace)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; full-suite green; 2 findings remediated (regression tests); 1 finding pinned (auth, separate).",
+      "evidence": [
+        "services/api/adversary_test.go",
+        "branch v032/adversary @ d17b537b",
+        "PR #34"
+      ],
+      "notes": "Fresh-context gate: 3 reproducible seams. A: nested Extra aliased stored RAB (fixed: re-canonicalise via Marshal+Unmarshal). B: MarshalJSON flat-overlay destroyed N-1 collisions (fixed: linkage under rab_runtime_meta). C: zero-auth RAB downgrade primitive (PINNED; k-002 auth surface is separate decision). Mercury-2.5-Preview leaf.",
+      "created_at": "2026-09-03T05:55:00Z",
+      "updated_at": "2026-09-03T05:55:00Z",
+      "status": "done"
     }
   ],
-  "updated_at": "2026-09-03T03:35:00Z"
+  "updated_at": "2026-09-03T05:55:00Z"
 }
