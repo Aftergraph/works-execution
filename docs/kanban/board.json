@@ -1152,7 +1152,123 @@
       "created_at": "2026-09-03T06:45:00Z",
       "updated_at": "2026-09-03T06:45:00Z",
       "status": "done"
+    },
+    {
+      "id": "k-impl-060",
+      "title": "k-060: lease grant owner-bind (worker_id_mismatch)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "POST /v1/leases/grant with body.worker_id != token.worker_id returns 403 worker_id_mismatch before any store touch; dev mode nil-claims pass; interlocked ordering 400\u2192owner\u2192capability\u2192store.",
+      "evidence": [
+        "services/api/claim_owner_authz.go",
+        "TestAdversary34_ClaimGateOrderOwnerFirst",
+        "live smoke_v034.sh:5"
+      ],
+      "created_at": "2026-09-03T08:18:00Z",
+      "updated_at": "2026-09-03T08:18:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-061",
+      "title": "k-061: runner+abi bearer+ownership (closes k-059 residual)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "Anon POST /v1/runners/register \u2192 401; cross-runner abi \u2192 403 not_runner_owner; legacy self-mint preserved; AUTH.md aligned.",
+      "evidence": [
+        "services/api/runner_authz.go",
+        "TestAdversary34_ABISurfaceDenialOrder",
+        "TestAdversary34_RegisterGatePrecedesShape",
+        "live smoke_v034.sh:1,2,3,4"
+      ],
+      "created_at": "2026-09-03T08:18:00Z",
+      "updated_at": "2026-09-03T08:18:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-062",
+      "title": "k-062: HMAC control tokens (k-058 compat, fail-closed)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "WORKS_RAB_CONTROL_TOKEN set \u21d2 X-RAB-Control-Token must be base64url(runner_id).hex(hmac(key,runner_id)) bound to claimer; constant-time; key unset = byte-identical k-058 presence law.",
+      "evidence": [
+        "services/api/rab_control_token.go",
+        "TestAdversary34_NoControlTokenOracle",
+        "TestAdversary34_ControlTokenIsUselessWithoutTheIdentity",
+        "live smoke_v034.sh:6,7,8"
+      ],
+      "created_at": "2026-09-03T08:18:00Z",
+      "updated_at": "2026-09-03T08:18:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-063",
+      "title": "k-063: registry content integrity (audit exit 0)",
+      "lane": "registry",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "docs/standards/registry.json maps every standard to a concrete mapping file; works-standards audit exit 0.",
+      "evidence": [
+        "docs/standards/registry.json (84 honest row links)",
+        "works-standards audit"
+      ],
+      "created_at": "2026-09-03T08:18:00Z",
+      "updated_at": "2026-09-03T08:18:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-064",
+      "title": "k-064: composition-adversary sweep (k-050 doctrine)",
+      "lane": "verification",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "14 pin tests on the stacked tree; 3 in-wave remediated (A/E/F); 3 pinned backlog (B/C/D).",
+      "evidence": [
+        "services/api/adversary_v034_test.go",
+        "PR #36"
+      ],
+      "created_at": "2026-09-03T08:18:00Z",
+      "updated_at": "2026-09-03T08:18:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-065",
+      "title": "k-065: lease verb owner-bind for heartbeat/complete/release/revoke (D)",
+      "lane": "implementation",
+      "column": "backlog",
+      "standard_ids": [],
+      "acceptance": "Same ownership law as k-060 on every lease verb (not just grant); release/revoke cannot be triggered by a foreign token. k-064 finding D.",
+      "evidence": [],
+      "created_at": "2026-09-03T08:18:00Z",
+      "updated_at": "2026-09-03T08:18:00Z",
+      "status": "backlog"
+    },
+    {
+      "id": "k-impl-066",
+      "title": "k-066: enrollment charset law closing legacy-class evasion (B)",
+      "lane": "implementation",
+      "column": "backlog",
+      "standard_ids": [],
+      "acceptance": "Enrollment ids outside the runner-id pattern either get the same owner-bind law as k-060, or are demoted to a no-control legacy class only reachable when control tokens are off. k-064 finding B.",
+      "evidence": [],
+      "created_at": "2026-09-03T08:18:00Z",
+      "updated_at": "2026-09-03T08:18:00Z",
+      "status": "backlog"
+    },
+    {
+      "id": "k-impl-067",
+      "title": "k-067: dev-mode id normalization (C)",
+      "lane": "implementation",
+      "column": "backlog",
+      "standard_ids": [],
+      "acceptance": "Dev mode trims/normalizes worker_id at grant time so lookalike ids (`wrkr_a `) never reach the store. k-064 finding C (dev posture only).",
+      "evidence": [],
+      "created_at": "2026-09-03T08:18:00Z",
+      "updated_at": "2026-09-03T08:18:00Z",
+      "status": "backlog"
     }
   ],
-  "updated_at": "2026-09-03T06:45:00Z"
+  "updated_at": "2026-09-03T08:18:00Z"
 }
