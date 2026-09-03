@@ -26,16 +26,21 @@
 // that loses capabilities re-advertises a smaller RAB; capability state is
 // owned by the runtime, not the operator.
 //
-// Auth: k-059 (closes k-054 finding C). The mutating endpoint POST
-// /abi is mounted behind requireBearer in Routes(): publishing or
-// overwriting a runner's capability advertisement requires a valid
-// enrollment bearer token, so it is no longer an anonymous
-// capability-downgrade primitive. The read endpoints (GET /abi,
-// POST /abi/negotiate) stay unauthenticated, matching the public
-// identity reads on GET /v1/runners/{id}. Bearer proves token
-// validity, not ownership: which token may rewrite WHICH runner is
-// per-runner authz and remains an open per-action authz slice
-// (auth.go: requireBearer is NOT a substitute for per-action authz).
+// Auth: k-061 (closes the k-059 residual; k-059 closed k-054 finding
+// C). The whole /abi surface is mounted behind requireBearer in
+// Routes(): the mutating POST /abi (since k-059), and - as of k-061 -
+// the reads GET /abi and POST /abi/negotiate too, because capability
+// information is operationally sensitive and the read/mutate split is
+// now deliberately uniform on this surface (identity reads on
+// GET /v1/runners/{id} stay public for operator discovery; see
+// docs/AUTH.md). Bearer alone proves token validity, not ownership -
+// so the mutating POST additionally enforces per-runner ownership via
+// gateRunnerOwnership (runner_authz.go): you may advertise only for the
+// runner your token's worker_id names. Anonymous and foreign-token
+// writes are refused BEFORE any store mutation. The reads are not
+// ownership-bound: negotiate is a caller-side computation (the
+// scheduler asks what it may run on runner X). Dev mode
+// (AuthEnabled=false) passes the interlock by design.
 //
 // Wire-visible law: the control-token rule (caps contains "control" =>
 // control_token_required must be true) is enforced at POST with the kernel's
@@ -238,6 +243,15 @@ func rabABIPathID(r *http.Request) string {
 func (s *Server) postRunnerABI(w http.ResponseWriter, r *http.Request) {
 	id := rabABIPathID(r)
 	if !s.rabRunnerGate(w, r, id) {
+		return
+	}
+	// k-061: ownership gate AFTER the 404 integration-order law and
+	// BEFORE the store - closes the k-059 residual (a valid token could
+	// rewrite WHICH runner it is not). Denied writes never touch the
+	// advertisement. See runner_authz.go.
+	if code, reason, ownerOK := s.gateRunnerOwnership(r, id); !ownerOK {
+		s.logf("runner abi denied: id=%s code=%s", id, reason)
+		writeError(w, code, reason, "bearer token does not own runner "+id)
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRABBodyBytes))
