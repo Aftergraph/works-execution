@@ -176,12 +176,13 @@ func (s *Server) Routes() http.Handler {
 	// the integration-order law (RAB requires a registered identity, else
 	// 404). These patterns are more specific than the /v1/runners/ prefix
 	// catch-all above, so ServeMux routes them here and nothing else
-	// changes.
-	mux.HandleFunc("POST /v1/runners/{id}/abi", s.postRunnerABI)                            // publish/overwrite RAB
-	mux.HandleFunc("GET /v1/runners/{id}/abi", s.getRunnerABI)                              // read stored RAB
-	mux.HandleFunc("POST /v1/runners/{id}/abi/negotiate", s.negotiateRunnerABI)             // negotiate caps (fail-closed)
-	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler))) // GET = CloudEvents audit stream
-	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                // GET = DORA metrics
+	// changes. k-059 (closes k-054 finding C): mutating POST /abi requires
+	// bearer; reads stay public like identity reads.
+	mux.Handle("POST /v1/runners/{id}/abi", s.requireBearer(http.HandlerFunc(s.postRunnerABI))) // publish/overwrite RAB (k-059)
+	mux.HandleFunc("GET /v1/runners/{id}/abi", s.getRunnerABI)                                  // read stored RAB
+	mux.HandleFunc("POST /v1/runners/{id}/abi/negotiate", s.negotiateRunnerABI)                 // negotiate caps (fail-closed)
+	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler)))     // GET = CloudEvents audit stream
+	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                    // GET = DORA metrics
 	mux.HandleFunc("/healthz", s.healthz)
 	// M1 (k-impl-018): GitHub webhook receiver. Unauthenticated by
 	// design — HMAC signature is the security boundary. Operators

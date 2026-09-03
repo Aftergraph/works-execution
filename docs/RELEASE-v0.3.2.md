@@ -1,5 +1,7 @@
 # v0.3.2 — integration wave: secrets, obslaw, abi wired into runtime
 
+> **CORRECTION (2026-09-03, post-release):** The k-054 composition-adversary results described in this document (A+B fixed, C pinned) **did not ship in v0.3.2 at all**. PR #34 was squash-merged from the tip of `v032/integration` (7a838ef), which predated both the adversary merge and the remediation commit (d17b537, on `v032/adversary`) — so main received slices k-051/52/53 only: no adversary tests, no cloneRAB deep-copy fix, no rab_runtime_meta namespacing. The suite stayed green because main was self-consistently unfixed. The regression is corrected in v0.3.3 (PR #35), which re-lands all of it: k-054 pins+fixes (with C flipped to regression) plus the enforcement wave k-057/058/059. Lesson: post-merge, verify the exact remediation commits are reachable from main — `git grep` the fix on origin/main, not the PR diffstat.
+
 **Tag:** v0.3.2 → main `e217869` (squash-merged PR #34)
 **Range since v0.3.1:** `0c6e2c2..e217869` (1 PR, 4 slices, 1 composition-adversary gate)
 **Status:** shipped, merged, deployed, runtime-verified
