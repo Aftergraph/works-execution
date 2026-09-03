@@ -114,6 +114,14 @@ type Server struct {
 	// 503 by design. After k-042 lands, the integrator's post-merge
 	// deploy flips the service live.
 	Brain *BrainService
+	// RABControlKey, when non-empty, upgrades the k-058 control-token
+	// advertisement law at lease claim into a server-verified credential
+	// bound to the claiming runner (k-062; see rab_control_token.go).
+	// Production cmd/works-api sets it from WORKS_RAB_CONTROL_TOKEN; the
+	// value is never logged and never sent to clients. Empty (the
+	// default, and every existing test) means verification mode OFF: the
+	// gate stays exactly the k-058 presence-only advertisement law.
+	RABControlKey []byte
 }
 
 // ensureIssuer returns s.Auth, lazily constructing a default HMACIssuer

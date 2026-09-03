@@ -30,6 +30,7 @@ func main() {
 		webhookSecret     = flag.String("webhook-secret", envOr("WORKS_WEBHOOK_SECRET", ""), "GitHub webhook HMAC secret; empty disables /v1/webhook/github (returns 503)")
 		webhookProduction = flag.Bool("webhook-production-access", envBool("WORKS_WEBHOOK_PRODUCTION_ACCESS", false), "mark webhook-derived Works with policy.production_access=true (requires approved evidence at lease-grant; leave false for M1 verify works)")
 		webUIPublic       = flag.Bool("webui-public", envBool("WORKS_WEBUI_PUBLIC", false), "serve /v1/ui execution view without a Bearer token (read-only)")
+		rabControlKey     = flag.String("rab-control-token", envOr("WORKS_RAB_CONTROL_TOKEN", ""), "HMAC key for server-verified RAB control tokens at lease claim (k-062); empty keeps the k-058 presence-only advertisement law")
 	)
 	flag.Parse()
 
@@ -85,6 +86,18 @@ func main() {
 		logger.Printf("webhook receiver enabled (/v1/webhook/github, production_access=%v, works.yml=%v)", *webhookProduction, srv.WebhookConfig.GitHubToken != "")
 	} else {
 		logger.Printf("webhook receiver disabled (no --webhook-secret)")
+	}
+
+	// k-062: rab/1.0 control tokens as server-verified credentials at
+	// lease claim (the boundary k-058 declared, closed when configured).
+	// Empty key = verification mode OFF: the claim gate stays exactly the
+	// k-058 advertisement law (presence only). The key value is never
+	// logged.
+	if *rabControlKey != "" {
+		srv.RABControlKey = []byte(*rabControlKey)
+		logger.Printf("RAB control-token verification enabled (WORKS_RAB_CONTROL_TOKEN set)")
+	} else {
+		logger.Printf("RAB control-token verification disabled (no WORKS_RAB_CONTROL_TOKEN); advertisement law only")
 	}
 
 	// Publisher: prefer GitHub App if both App ID + installation-token
