@@ -153,6 +153,9 @@ import (
 // literal); kept in one place so no test repeats the string.
 const a34AuthPrefix = "Bearer "
 
+// a34EnrollSecret is the enrollment challenge for the HTTP enroll path.
+const a34EnrollSecret = "k066-enrollment-charset-secret"
+
 // a34CtlKey is a fixed control-token key: test-only, never leaves the process.
 const a34CtlKey = "k064-composition-adversary-key-0123456789abcdef"
 
@@ -213,6 +216,10 @@ func a34New(t *testing.T, authOn, keyOn bool) *a34 {
 	}
 	var buf bytes.Buffer
 	srv := &Server{Store: st, AuthEnabled: authOn, Logger: log.New(&buf, "", 0)}
+	// a34EnrollSecret lets the k-066 test drive the REAL enrollment
+	// endpoint (charset law at the mint entry point, not Auth.Mint
+	// directly — direct mint bypasses enrollment by fixture design).
+	srv.EnrollSecret = a34EnrollSecret
 	if keyOn {
 		srv.RABControlKey = []byte(a34CtlKey)
 	}
@@ -429,7 +436,18 @@ func TestAdversary34_ClaimGateOrderOwnerFirst(t *testing.T) {
 	// exact equality against a verified identity, so every variant is 403
 	// (no trim/lower asymmetry to exploit) — pinning the FULL set, not just
 	// the clean mismatch case.
-	for _, weird := range []string{" wrkr_a", "wrkr_a ", "WRKR_A", "Wrkr_a", "wrkr_a\n", "a/../x", "wrkr_b//", "wrkr_a%20"} {
+	// k-067 split the old law into two deterministic classes:
+	// whitespace-padded variants TRIM to the canonical id and then behave
+	// exactly like the canonical claim (here: own identity + control RAB +
+	// no token => capability denial, not identity denial — the spoof is
+	// dead because padded and canonical are ONE identity); every other
+	// variant still mismatches the verified identity exactly. Pinning both
+	// classes, no silent accepts.
+	for _, padded := range []string{" wrkr_a", "wrkr_a ", "wrkr_a\n"} {
+		f.mustAssertDenial("padded:"+padded, f.claim(padded, f.work(), tokA, "", false),
+			http.StatusForbidden, ReasonControlTokenRequired, w)
+	}
+	for _, weird := range []string{"WRKR_A", "Wrkr_a", "a/../x", "wrkr_b//", "wrkr_a%20"} {
 		f.mustAssertDenial("weird:"+weird, f.claim(weird, f.work(), tokA, "", false),
 			http.StatusForbidden, ReasonWorkerIDMismatch, w)
 	}
@@ -445,9 +463,12 @@ func TestAdversary34_ClaimGateOrderOwnerFirst(t *testing.T) {
 //	    never weaker than the v0.3.3 presence-only law: garbage and
 //	    cross-runner tokens flip 201 -> 403 in BOTH auth modes. Dev-mode +
 //	    key-on is therefore a strict tightening, not a hole.
-//	(2) the owner gate depends on auth alone: the padded-claim row is
-//	    403 worker_id_mismatch with auth on and 201 with auth off, in both
-//	    key modes (finding C).
+//	(2) k-067 closed the padded-claim asymmetry: whitespace-padded ids
+//	    trim to canonical BEFORE the owner gate, so the padded row answers
+//	    like the canonical row (201 with a valid control token) in BOTH
+//	    auth modes. Finding C (dev-mode lookalike identity forgery) is
+//	    pinned as a regression in
+//	    TestAdversary34_DevModeLookalikeWorkerIDEscapesGate.
 func TestAdversary34_ClaimGateCombinedMatrix(t *testing.T) {
 	const (
 		pAbsent = iota
@@ -482,9 +503,11 @@ func TestAdversary34_ClaimGateCombinedMatrix(t *testing.T) {
 			}
 			return http.StatusCreated, ""
 		case pPaddedTokA:
-			if authOn {
-				return http.StatusForbidden, ReasonWorkerIDMismatch
-			}
+			// k-067: the padded body trims to wrkr_a — the canonical
+			// claimer — and carries wrkr_a's control token, so the grant is
+			// legal in EVERY posture. The old authOn row (403
+			// worker_id_mismatch) was the asymmetry finding C exploited;
+			// one identity now answers identically in both modes.
 			return http.StatusCreated, ""
 		}
 		t.Fatalf("unknown presentation %d", pres)
@@ -576,30 +599,17 @@ func TestAdversary34_DevModeLookalikeWorkerIDEscapesGate(t *testing.T) {
 		http.StatusForbidden, ReasonControlTokenRequired, exact)
 
 	lookalike := f.work()
+	// k-067 closed: the padded id is trimmed (k-060/k-067 canonicalization in
+	// grantLease) before the gate, so "wrkr_a " resolves to the registered
+	// control runner wrkr_a and hits the k-062 control-token-required gate
+	// instead of sailing through as a second identity.
 	r := f.claim("wrkr_a ", lookalike, "", "", false)
-	if r.code != http.StatusCreated {
-		t.Fatalf("PIN INVALID: the padded lookalike was denied (%d %s) — normalization law now exists; "+
-			"convert this test into a regression pin", r.code, r.text())
-	}
-	l, err := f.st.GetLease(context.Background(), mustLeaseID(t, r))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if l.WorkerID != "wrkr_a " {
-		t.Fatalf("expected the spoofed lookalike to be persisted verbatim, got %q", l.WorkerID)
-	}
-	if l.WorkID != lookalike {
-		t.Fatalf("lease bound to the wrong work: %s", l.WorkID)
-	}
-	// The attempt row carries the same spoofed identity — the durable audit
-	// trail now holds "wrkr_a " and "wrkr_a" as two different workers.
-	wk, err := f.st.GetWork(context.Background(), lookalike)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(wk.Attempts) != 1 || wk.Attempts[0].WorkerID != "wrkr_a " {
-		t.Fatalf("expected one attempt recorded under the lookalike id, got %+v", wk.Attempts)
-	}
+	f.mustAssertDenial("padded-id-normalized", r,
+		http.StatusForbidden, ReasonControlTokenRequired, lookalike)
+	// No lease (and no attempt) is recorded under the spoofed padded form —
+	// the denial short-circuits before any store write (k-060/k-067: the
+	// trim happens prior to the owner check, and a denied claim touches no
+	// state). The real runner wrkr_a is unaffected.
 }
 
 func mustLeaseID(t *testing.T, r a34res) string {
@@ -628,32 +638,34 @@ func mustLeaseID(t *testing.T, r a34res) string {
 // claim gate stops treating "no RAB on file" as a pass for an authenticated
 // identity). Then this test must be rewritten to require the denial.
 func TestAdversary34_EnrollmentCharsetLegacyPass(t *testing.T) {
-	if !validWorkerID("WRKR_A") {
-		t.Fatal("premise changed: enrollment no longer accepts an uppercase worker_id — " +
-			"finding B may be closed, re-derive this test")
-	}
-	if _, err := runner.BuildIdentity("WRKR_A", "default", runner.Capabilities{
-		OS: []string{"linux"}, Arch: []string{"amd64"},
-	}); err == nil {
-		t.Fatal("premise changed: the runner-id pattern now accepts WRKR_A — finding B may be closed")
+	// k-066 closed: enrollment now enforces the SAME charset as the registry
+	// (runner.RunnerIDPattern). An id the registry rejects (WRKR_A, uppercase)
+	// can no longer be enrolled, so the token that k-061's equality gate would
+	// bind is never minted. The k-058 legacy-pass path for unregistrable but
+	// authenticated ids is therefore unreachable by construction.
+	if validWorkerID("WRKR_A") {
+		t.Fatal("PIN INVALID: enrollment still accepts WRKR_A that the registry rejects — charset not aligned")
 	}
 
 	f := a34New(t, true, true) // auth ON, k-062 key ON
+	// The law bites at the MINT entry point: the real enrollment endpoint
+	// refuses the unregistrable id, so no bearer token for it can exist.
+	// (f.mint bypasses enrollment on purpose — every other test uses it for
+	// clean identity fixtures; here we must not.)
+	ereq, _ := json.Marshal(map[string]any{"worker_id": "WRKR_A", "challenge": a34EnrollSecret})
+	eresp := f.do(http.MethodPost, "/v1/workers/enroll", string(ereq), "", "", false)
+	if eresp.code != http.StatusBadRequest || eresp.errCode() != "invalid_worker_id" {
+		t.Fatalf("enrollment of WRKR_A must be refused 400 invalid_worker_id, got %d %s",
+			eresp.code, eresp.text())
+	}
+	// Defense in depth: even a hand-minted token (issuer secret, out-of-band)
+	// cannot register the id — the registry's own Validate refuses it.
 	tok := f.mint("WRKR_A")
-	// k-061: the equality gate PASSES for its own (unregistrable) identity...
 	r := f.registerAs("WRKR_A", tok)
 	if r.code != http.StatusBadRequest || r.errCode() != "validation_failed" {
-		t.Fatalf("expected the registry to refuse an unregistrable id, got %d %s", r.code, r.text())
+		t.Fatalf("registry must still refuse an unregistrable id, got %d %s", r.code, r.text())
 	}
-	// ...and k-058/k-062 then has nothing to bind, so the claim sails through.
-	w := f.work()
-	got := f.claim("WRKR_A", w, tok, "", false)
-	if got.code != http.StatusCreated {
-		t.Fatalf("PIN INVALID: the unregistrable identity was denied (%d %s) — the legacy pass is no longer "+
-			"reachable; convert this into a regression pin", got.code, got.text())
-	}
-	// A control-capable, properly registered runner in the same server is
-	// still denied: the asymmetry is the identity shape, not the posture.
+	// The asymmetry survives: a properly registered control runner is still gated.
 	f.mustAdvertiseControl("wrkr_a")
 	w2 := f.work()
 	f.mustAssertDenial("registered-runner-still-gated", f.claim("wrkr_a", w2, f.mint("wrkr_a"), "", false),
@@ -971,16 +983,20 @@ func TestAdversary34_NonGrantLeaseVerbsUnbound(t *testing.T) {
 
 	attacker := f.mint("wrkr_attacker")
 	r := f.post("/v1/leases/"+leaseID+"/revoke", `{"reason":"adversary"}`, attacker)
-	if r.code != http.StatusOK {
-		t.Fatalf("PIN INVALID: the foreign revoke was refused (%d %s) — the verb is owner-bound now; "+
-			"convert this test into a regression pin requiring 403", r.code, r.text())
+	// k-065 closed: revoke (and all non-grant lease verbs) is now owner-bound
+	// by k-059/065 gateLeaseOwner; a foreign token is denied 403
+	// lease_not_owner, NOT 200. The pin above asserted the OLD permissive
+	// behaviour and flipped to this regression check when the gate landed.
+	if r.code != http.StatusForbidden || r.errCode() != ReasonLeaseNotOwner {
+		t.Fatalf("PIN INVALID: foreign revoke was allowed (%d %s) — finding D is NOT closed", r.code, r.text())
 	}
-	l, err := f.st.GetLease(context.Background(), leaseID)
+	// The victim's lease is unchanged by the denial.
+	l2, err := f.st.GetLease(context.Background(), leaseID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if l.Status != workgraph.LeaseRevoked || l.WorkerID != "wrkr_victim" {
-		t.Fatalf("expected the victim's ACTIVE lease to be REVOKED, got %s/%s", l.WorkerID, l.Status)
+	if l2.Status != workgraph.LeaseActive || l2.WorkerID != "wrkr_victim" {
+		t.Fatalf("lease mutated by the denial: status=%s worker=%s", l2.Status, l2.WorkerID)
 	}
 
 	// Mitigation sweep: the id must be unobtainable on every read surface.
