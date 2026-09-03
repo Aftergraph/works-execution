@@ -45,7 +45,7 @@ package api
 //     guarding byID and abiByRunner consistently; overwrite vs negotiate
 //     is lock-atomic (pointer swap).
 //
-// FINDINGS (original sweep k-054; status as of k-059):
+// FINDINGS (original sweep k-054; status as of k-061):
 //   A. cloneRAB (k-053) shallow-copies Extra: nested maps/slices in an
 //      advertisement alias the stored record in BOTH directions.
 //      FIXED + flipped to regression in the k-054 remediation commit.
@@ -58,9 +58,11 @@ package api
 //      capability-downgrade primitive against ANY known runner id —
 //      contradicting runner_abi.go's own claim that "nothing here is
 //      weaker" than registration. CLOSED by k-059 (bearer auth on the
-//      mutating POST /abi); the pin was flipped to regression, see
-//      TestAdversary_UnauthenticatedRABDowngradeBlocked, which also
-//      pins the residual per-action authz gap on purpose.
+//      mutating POST /abi); the k-059 residual (any valid token could
+//      rewrite ANY runner, and register stayed anonymous) CLOSED by
+//      k-061 (bearer + worker_id == runner_id ownership on the register
+//      and abi-mutate paths). The pin was flipped to regression, see
+//      TestAdversary_RABDowngradeClosedAnonymousAndForeignToken.
 
 import (
 	"bytes"
@@ -136,6 +138,31 @@ func advPostAuthJSON(t *testing.T, url, body, token string) (int, []byte) {
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, b
+}
+
+// advGetAuthRaw is the k-061 sibling of advGetRaw: same GET, plus an
+// Authorization: Bearer *** header. The abi reads moved behind bearer
+// in k-061, so the auth-enabled adversary server needs this variant.
+func advGetAuthRaw(t *testing.T, url, token string) []byte {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: status %d body %s", url, resp.StatusCode, b)
+	}
+	return b
 }
 
 // advGetRaw GETs a public read endpoint and returns the full response
@@ -271,27 +298,35 @@ func TestAdversary_RABFlattenDestroysCollidingAdvertisedField(t *testing.T) {
 	}
 }
 
-// TestAdversary_UnauthenticatedRABDowngradeBlocked is a REGRESSION test
-// for k-054 finding C, CLOSED by k-059.
+// TestAdversary_RABDowngradeClosedAnonymousAndForeignToken is the
+// REGRESSION test for k-054 finding C, FULLY CLOSED across k-059 and
+// k-061.
 //
 // History: found by k-054 (composition-adversary sweep) as
 // TestAdversary_UnauthenticatedRABDowngradeOfForeignRunner: k-053's
 // idempotent upsert composed with k-002's zero-auth runner surface into
 // an unauthenticated capability-DOWNGRADE primitive: any network client
 // could overwrite any runner's RAB, and victims' negotiate then returned
-// an empty grant. Closed by k-059: POST /v1/runners/{id}/abi is mounted
-// behind requireBearer in Routes(). Anonymous downgrade now answers 401
-// "missing_authorization" and the victim's stored RAB is unchanged
-// (byte-for-byte GET equality). Reads (GET /abi, negotiate) stay
-// unauthenticated, matching the public identity reads.
+// an empty grant.
 //
-// RESIDUAL, pinned ON PURPOSE by the second leg below: bearer proves
-// token VALIDITY, not OWNERSHIP. Any valid worker token may still
-// rewrite ANY runner's RAB; per-runner authorization (which token may
-// rewrite which runner) remains an open per-action authz slice, matching
-// auth.go's note that requireBearer is NOT a substitute for per-action
-// authz.
-func TestAdversary_UnauthenticatedRABDowngradeBlocked(t *testing.T) {
+// Half-closed by k-059: POST /abi moved behind requireBearer, so the
+// anonymous downgrade answers 401. The residual - a VALID token may
+// still rewrite ANY runner's RAB, and register was still anonymous -
+// was pinned on purpose by the old leg 2 (t.Fatal'd once per-action
+// authz landed).
+//
+// Fully closed by k-061 (runner_authz.go): POST /v1/runners/register is
+// bearer-gated and identity-bound, POST /abi enforces worker_id ==
+// runner_id ownership, and the whole abi surface is bearer. This test
+// now asserts BOTH halves:
+//   - anonymous register: 401 missing_authorization, registry untouched
+//   - foreign-token register: 403 not_runner_owner, registry untouched
+//   - anonymous abi write: 401; victim state byte-identical
+//   - foreign-token abi write: 403 not_runner_owner; victim state
+//     byte-identical and its control cap survives negotiation
+//   - own-token register (the production worker path, exact match) and
+//     own-token abi write: succeed
+func TestAdversary_RABDowngradeClosedAnonymousAndForeignToken(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "adversary-c.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -300,7 +335,6 @@ func TestAdversary_UnauthenticatedRABDowngradeBlocked(t *testing.T) {
 	srv := &Server{Store: st, AuthEnabled: true}
 	ts := httptest.NewServer(srv.Routes())
 	t.Cleanup(ts.Close)
-	advRegister(t, ts, "wrkr_adv_c")
 
 	mint := func(workerID string) string {
 		t.Helper()
@@ -310,37 +344,102 @@ func TestAdversary_UnauthenticatedRABDowngradeBlocked(t *testing.T) {
 		}
 		return tok
 	}
+	ident := func(id string) string {
+		return `{"runner_id":"` + id + `","trust_class":"standard","lifecycle_state":"active","capabilities":{"labels":[],"os":["linux"],"arch":["amd64"]}}`
+	}
+	registerURL := ts.URL + "/v1/runners/register"
+	abiURL := ts.URL + "/v1/runners/wrkr_adv_c/abi"
+	negURL := abiURL + "/negotiate"
 
-	// Victim legitimately advertises control+observe over the now-authed
-	// mutating route (control law holds: control_token_required=true).
 	victimTok := mint("wrkr_adv_c")
-	code, body := advPostAuthJSON(t, ts.URL+"/v1/runners/wrkr_adv_c/abi",
-		`{"abi":"rab/1.0","caps":["observe","control"],"control_token_required":true}`, victimTok)
-	if code != http.StatusOK {
+	attackerTok := mint("wrkr_adv_c_attacker")
+
+	// Leg 0 (k-061 half 1): registration is no longer an anonymous
+	// identity-minting / foreign-heartbeat-flood primitive.
+	code, body := advPostJSON(t, registerURL, ident("wrkr_adv_c"))
+	if code != http.StatusUnauthorized {
+		t.Fatalf("REGRESSION: anonymous POST /v1/runners/register returned %d (%s), want 401 — k-061 bearer auth on registration is gone", code, body)
+	}
+	if !strings.Contains(string(body), "missing_authorization") {
+		t.Fatalf("REGRESSION: anonymous register 401 must name missing_authorization, got %s", body)
+	}
+	// A valid but UNRELATED token may not register a foreign runner_id
+	// either (identity binding before any mint/store).
+	code, body = advPostAuthJSON(t, registerURL, ident("wrkr_adv_c"), attackerTok)
+	if code != http.StatusForbidden {
+		t.Fatalf("REGRESSION: foreign-token register returned %d (%s), want 403 — k-061 identity binding on registration is gone", code, body)
+	}
+	if !strings.Contains(string(body), "not_runner_owner") {
+		t.Fatalf("REGRESSION: foreign-token register 403 must name not_runner_owner, got %s", body)
+	}
+	// Both refusals left the registry untouched: the victim does not exist.
+	if resp, err := http.Get(ts.URL + "/v1/runners/wrkr_adv_c"); err != nil {
+		t.Fatal(err)
+	} else {
+		if resp.StatusCode != http.StatusNotFound {
+			resp.Body.Close()
+			t.Fatalf("REGRESSION: refused registrations created the runner (GET /v1/runners/wrkr_adv_c = %d)", resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	// Victim legitimately registers and advertises control+observe over
+	// the bearer-gated surface (exact-match path used by production
+	// workers, internal/worker registerRunner: runner_id == worker_id).
+	if code, body = advPostAuthJSON(t, registerURL, ident("wrkr_adv_c"), victimTok); code != http.StatusCreated {
+		t.Fatalf("victim authenticated register: %d %s", code, body)
+	}
+	if code, body = advPostAuthJSON(t, abiURL,
+		`{"abi":"rab/1.0","caps":["observe","control"],"control_token_required":true}`, victimTok); code != http.StatusOK {
 		t.Fatalf("victim authenticated POST /abi: %d %s", code, body)
 	}
-	before := advGetRaw(t, ts.URL+"/v1/runners/wrkr_adv_c/abi")
+	before := advGetAuthRaw(t, abiURL, victimTok)
 
-	// Leg 1 (finding C, closed): attacker with no identity, no secret,
-	// no token — just the victim's id, which GET /v1/runners exposes to
-	// everyone — must now be refused.
-	code, body = advPostJSON(t, ts.URL+"/v1/runners/wrkr_adv_c/abi",
-		`{"abi":"rab/1.0","caps":["screenshot"]}`)
+	// Leg 1 (finding C, k-059): attacker with no identity, no secret, no
+	// token — just the victim's id, which GET /v1/runners exposes to
+	// everyone — is refused, and the victim's advertisement is
+	// byte-identical afterwards.
+	code, body = advPostJSON(t, abiURL, `{"abi":"rab/1.0","caps":["screenshot"]}`)
 	if code != http.StatusUnauthorized {
 		t.Fatalf("REGRESSION: anonymous downgrade POST /abi returned %d (%s), want 401 — k-059 bearer auth on the mutating abi route is gone", code, body)
 	}
 	if !strings.Contains(string(body), "missing_authorization") {
 		t.Fatalf("REGRESSION: 401 must name missing_authorization, got %s", body)
 	}
-	if after := advGetRaw(t, ts.URL+"/v1/runners/wrkr_adv_c/abi"); !bytes.Equal(before, after) {
+	// k-061: the abi READS moved behind bearer too — anonymous
+	// reconnaissance of the advertisement now needs a token.
+	if resp, err := http.Get(abiURL); err != nil {
+		t.Fatal(err)
+	} else {
+		if resp.StatusCode != http.StatusUnauthorized {
+			resp.Body.Close()
+			t.Fatalf("REGRESSION: anonymous GET /abi returned %d, want 401 — k-061 bearer reads are gone", resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	if after := advGetAuthRaw(t, abiURL, victimTok); !bytes.Equal(before, after) {
 		t.Fatalf("REGRESSION: victim RAB changed despite the 401: before=%s after=%s", before, after)
 	}
-	// The refused downgrade must not be effective on the negotiation
-	// leg either: the victim keeps its own control capability.
-	code, body = advPostJSON(t, ts.URL+"/v1/runners/wrkr_adv_c/abi/negotiate",
-		`{"caps":["control"]}`)
+
+	// Leg 2 (k-059 RESIDUAL, closed by k-061): a VALID token for an
+	// UNRELATED worker can no longer rewrite the victim's RAB.
+	code, body = advPostAuthJSON(t, abiURL, `{"abi":"rab/1.0","caps":["screenshot"]}`, attackerTok)
+	if code != http.StatusForbidden {
+		t.Fatalf("REGRESSION: foreign-token authenticated downgrade returned %d (%s), want 403 — k-061 per-runner ownership on POST /abi is gone", code, body)
+	}
+	if !strings.Contains(string(body), "not_runner_owner") {
+		t.Fatalf("REGRESSION: 403 must name not_runner_owner, got %s", body)
+	}
+	if after := advGetAuthRaw(t, abiURL, victimTok); !bytes.Equal(before, after) {
+		t.Fatalf("REGRESSION: victim RAB changed despite the 403: before=%s after=%s", before, after)
+	}
+	// The refused downgrade is not effective on the negotiation leg
+	// either: the victim keeps its own control capability. Negotiation
+	// is a bearer READ (any enrolled caller may ask; k-061), so the
+	// attacker's own token can probe it — it just cannot change it.
+	code, body = advPostAuthJSON(t, negURL, `{"caps":["control"]}`, attackerTok)
 	if code != http.StatusOK {
-		t.Fatalf("negotiate: %d %s", code, body)
+		t.Fatalf("negotiate (bearer read): %d %s", code, body)
 	}
 	var neg struct {
 		Caps []string `json:"caps"`
@@ -355,30 +454,17 @@ func TestAdversary_UnauthenticatedRABDowngradeBlocked(t *testing.T) {
 		}
 	}
 	if !grantedControl {
-		t.Fatalf("REGRESSION: control gone from negotiate after a refused anonymous POST — downgrade still live: %v", neg.Caps)
+		t.Fatalf("REGRESSION: control gone from negotiate after refused downgrades — downgrade still live: %v", neg.Caps)
 	}
 
-	// Leg 2 (RESIDUAL, asserted intentionally): an authenticated request
-	// with a valid token for an UNRELATED worker still rewrites the
-	// victim's RAB. Authentication landed; per-runner authz did not.
-	attackerTok := mint("wrkr_adv_c_attacker")
-	code, body = advPostAuthJSON(t, ts.URL+"/v1/runners/wrkr_adv_c/abi",
-		`{"abi":"rab/1.0","caps":["screenshot"]}`, attackerTok)
+	// Control (proves the gate is ownership-scoped, not blanket-hostile):
+	// the owner may still re-advertise a smaller RAB, and the change is
+	// visible on the bearer read.
+	code, body = advPostAuthJSON(t, abiURL, `{"abi":"rab/1.0","caps":["screenshot"]}`, victimTok)
 	if code != http.StatusOK {
-		t.Fatalf("residual-gap premise broken: foreign-token authenticated downgrade returned %d (%s) — per-action authz may have landed; move this assertion to the authz slice", code, body)
+		t.Fatalf("owner re-advertise own RAB: %d %s", code, body)
 	}
-	code, body = advPostJSON(t, ts.URL+"/v1/runners/wrkr_adv_c/abi/negotiate",
-		`{"caps":["control"]}`)
-	if code != http.StatusOK {
-		t.Fatalf("negotiate after authed downgrade: %d %s", code, body)
+	if bytes.Equal(before, advGetAuthRaw(t, abiURL, victimTok)) {
+		t.Fatal("unexpected: owner's own POST /abi did not change the stored advertisement")
 	}
-	if err := json.Unmarshal(body, &neg); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range neg.Caps {
-		if c == "control" {
-			t.Fatalf("unexpected: control still granted after authenticated downgrade — leg 2 premise broken: %v", neg.Caps)
-		}
-	}
-	t.Logf("RESIDUAL pinned: any valid bearer token may rewrite any runner's RAB (victim negotiate now %v) — per-action authz remains an open slice", neg.Caps)
 }
