@@ -187,6 +187,43 @@ func (s *SQLiteStore) PutBrainObject(ctx context.Context, o *BrainObject) error 
 	return nil
 }
 
+// StampBrainPromotion is the ONE narrow in-place exception to the
+// append-only law: the k-041 immutable-object human stamp (immutable
+// objects have exactly one revision; promotion rides revision 1 without a
+// new revision, so nothing else can ever use this path). Guarded: mutable
+// rows, revision>1 rows, already-authoritative rows, and tombstones are all
+// untouched by the UPDATE. ErrNotFound when the revision-1 row is missing.
+func (s *SQLiteStore) StampBrainPromotion(ctx context.Context, path, humanStamp string) error {
+	if humanStamp == "" {
+		return errors.New("brain store: promotion stamp requires human_stamp")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE brain_objects
+		    SET authoritative = 1, promotion = 'human_stamped', human_stamp = ?, updated_at = ?
+		  WHERE path = ? AND revision = 1
+		    AND class = 'immutable'
+		    AND authoritative = 0
+		    AND tombstone = 0`,
+		humanStamp, fmtBrainTime(time.Now().UTC()), path)
+	if err != nil {
+		return fmt.Errorf("brain store: stamp promotion %s: %w", path, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("brain store: stamp rows: %w", err)
+	}
+	if n == 0 {
+		// Distinguish missing from refused (both fail closed, different code).
+		var probe int
+		if qErr := s.db.QueryRowContext(ctx,
+			`SELECT 1 FROM brain_objects WHERE path = ? AND revision = 1`, path).Scan(&probe); qErr != nil {
+			return ErrNotFound
+		}
+		return fmt.Errorf("brain store: %s r1 not stampable (not immutable, already authoritative, or tombstoned)", path)
+	}
+	return nil
+}
+
 // GetBrainObject reads one revision; revision 0 means the latest. A missing
 // path (or a missing revision on an existing path) returns ErrNotFound.
 // Rows that cannot hydrate (corrupt timestamps) fail closed.

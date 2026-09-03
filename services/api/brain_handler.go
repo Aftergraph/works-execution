@@ -49,7 +49,7 @@ import (
 // Class enum for brain objects. The set is closed at this layer; the
 // domain package (k-041) will own the same enum and may add members.
 const (
-	BrainClassMutable   = "mutable"
+	BrainClassMutable   = "mutable_with_revision"
 	BrainClassImmutable = "immutable"
 	BrainClassEphemeral = "ephemeral"
 )
@@ -65,12 +65,17 @@ const (
 // fields (created_at, etc.) are deliberately omitted — the NOW/console
 // projection is a later slice (per the spec).
 type BrainObject struct {
-	Path          string     `json:"path"`
-	Revision      int        `json:"revision"`
-	ContentHash   string     `json:"content_hash"`
+	Path        string `json:"path"`
+	Revision    int    `json:"revision"`
+	ContentHash string `json:"content_hash"`
+	// ContentJSON carries the canonical content internally (the promote
+	// route copies it forward onto the new revision). It never serializes:
+	// the wire contract returns the HASH, not the content (content-addressed).
+	ContentJSON   string     `json:"-"`
 	Class         string     `json:"class"`
 	Authoritative bool       `json:"authoritative"`
 	Promotion     string     `json:"promotion"`
+	EvidenceRef   string     `json:"evidence_ref,omitempty"`
 	HumanStamp    string     `json:"human_stamp,omitempty"`
 	Tombstone     bool       `json:"tombstone,omitempty"`
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
@@ -78,12 +83,14 @@ type BrainObject struct {
 
 // BrainPut is the input shape the store's PutBrainObject consumes. The
 // handler fills every field; the store is responsible for atomicity and
-// revision-number allocation when AppendRevision is 0.
+// revision-number allocation when Revision is 0.
 type BrainPut struct {
 	Path           string
 	Revision       int // explicit revision (promote-on-immutable path); 0 = append
 	AppendRevision int // alias used by the fake; kept distinct for clarity
 	Class          string
+	ContentJSON    string // canonical bytes the handler hashed (persisted)
+	EvidenceRef    string // provenance; mandatory on every row (brain.ns/1.0)
 	Authoritative  bool
 	Promotion      string
 	HumanStamp     string
@@ -166,7 +173,7 @@ func NewBrainServiceFromStore(store any, works WorkGetter) *BrainService {
 			works = wg
 		}
 	}
-	if bb, ok := store.(BrainBackend); ok {
+	if bb := asBrainBackend(store); bb != nil {
 		svc.Backend = bb
 	} else {
 		svc.Disabled = true
@@ -434,6 +441,8 @@ func (s *Server) brainCreateObject(w http.ResponseWriter, r *http.Request) {
 	put := &BrainPut{
 		Path:          body.Path,
 		Class:         body.Class,
+		ContentJSON:   string(canon),
+		EvidenceRef:   body.EvidenceRef,
 		Authoritative: false,
 		Promotion:     BrainPromotionNone,
 		ContentHash:   hash,
@@ -534,6 +543,7 @@ func (s *Server) brainPromoteObject(w http.ResponseWriter, r *http.Request) {
 	put := &BrainPut{
 		Path:          body.Path,
 		Class:         obj.Class,
+		ContentJSON:   obj.ContentJSON,
 		Authoritative: true,
 		Promotion:     BrainPromotionHumanStamped,
 		HumanStamp:    body.HumanID,
@@ -591,6 +601,7 @@ func (s *Server) brainTombstoneObject(w http.ResponseWriter, r *http.Request) {
 	put := &BrainPut{
 		Path:          body.Path,
 		Class:         objClassForTombstone(s, r.Context(), body.Path),
+		EvidenceRef:   body.EvidenceRef,
 		Authoritative: false, // tombstone always forces authoritative:false
 		Promotion:     BrainPromotionNone,
 		Tombstone:     true,

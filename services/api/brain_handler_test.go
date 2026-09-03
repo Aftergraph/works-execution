@@ -780,7 +780,7 @@ func TestBrain_Promote_AlreadyAuthoritative_409(t *testing.T) {
 	fake.putWork("wrk_x")
 	ts := newBrainTestServer(t, fake)
 	doReq(t, "POST", ts.URL+"/v1/brain/objects", map[string]any{
-		"path": validPath(), "class": "mutable", "content": map[string]any{"v": 1}, "evidence_ref": "wrk_x",
+		"path": validPath(), "class": "mutable_with_revision", "content": map[string]any{"v": 1}, "evidence_ref": "wrk_x",
 	})
 	doReq(t, "POST", ts.URL+"/v1/brain/objects/promote", map[string]any{
 		"path": validPath(), "human_id": "alice", "note": "first stamp",
@@ -801,7 +801,7 @@ func TestBrain_Promote_HappyPath_200(t *testing.T) {
 	fake.putWork("wrk_x")
 	ts := newBrainTestServer(t, fake)
 	doReq(t, "POST", ts.URL+"/v1/brain/objects", map[string]any{
-		"path": validPath(), "class": "mutable", "content": map[string]any{"v": 1}, "evidence_ref": "wrk_x",
+		"path": validPath(), "class": "mutable_with_revision", "content": map[string]any{"v": 1}, "evidence_ref": "wrk_x",
 	})
 	resp, body := doReq(t, "POST", ts.URL+"/v1/brain/objects/promote", map[string]any{
 		"path": validPath(), "human_id": "alice", "note": "looks good",
@@ -851,7 +851,7 @@ func TestBrain_Tombstone_HappyPath_200(t *testing.T) {
 	fake.putWork("wrk_x")
 	ts := newBrainTestServer(t, fake)
 	doReq(t, "POST", ts.URL+"/v1/brain/objects", map[string]any{
-		"path": validPath(), "class": "mutable", "content": map[string]any{"v": 1}, "evidence_ref": "wrk_x",
+		"path": validPath(), "class": "mutable_with_revision", "content": map[string]any{"v": 1}, "evidence_ref": "wrk_x",
 	})
 	resp, body := doReq(t, "POST", ts.URL+"/v1/brain/objects/tombstone", map[string]any{
 		"path": validPath(), "evidence_ref": "wrk_x",
@@ -875,7 +875,7 @@ func TestBrain_Tombstone_AppendsRevision(t *testing.T) {
 	fake.putWork("wrk_x")
 	ts := newBrainTestServer(t, fake)
 	doReq(t, "POST", ts.URL+"/v1/brain/objects", map[string]any{
-		"path": validPath(), "class": "mutable", "content": map[string]any{"v": 1}, "evidence_ref": "wrk_x",
+		"path": validPath(), "class": "mutable_with_revision", "content": map[string]any{"v": 1}, "evidence_ref": "wrk_x",
 	})
 	resp, _ := doReq(t, "POST", ts.URL+"/v1/brain/objects/tombstone", map[string]any{
 		"path": validPath(), "evidence_ref": "wrk_x",
