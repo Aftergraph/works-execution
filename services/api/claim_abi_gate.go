@@ -12,15 +12,24 @@
 //	denied 403 "control_token_required" BEFORE any lease state
 //	transition.
 //
-//	OUT OF SCOPE -- LOUDLY: this gate performs NO TOKEN VALUE
-//	VERIFICATION. It never talks to an issuing authority, never checks
-//	signatures, expiry, or audience, and never binds the presented token
-//	to the claiming identity. The law enforced here is the ADVERTISEMENT
-//	law: a control-capable runtime must PRESENT a non-empty
-//	X-RAB-Control-Token header at claim time. Any non-empty value passes.
-//	Token-identity binding and per-action authz are a separate future
-//	slice (see the NOTE in auth.go: requireBearer "is NOT a substitute
-//	for per-action authz").
+//	OUT OF SCOPE -- LOUDLY (as shipped by k-058): this gate performs NO
+//	TOKEN VALUE VERIFICATION. It never talks to an issuing authority,
+//	never checks signatures, expiry, or audience, and never binds the
+//	presented token to the claiming identity. The law enforced here is
+//	the ADVERTISEMENT law: a control-capable runtime must PRESENT a
+//	non-empty X-RAB-Control-Token header at claim time. Any non-empty
+//	value passes. Token-identity binding and per-action authz are a
+//	separate future slice (see the NOTE in auth.go: requireBearer "is
+//	NOT a substitute for per-action authz").
+//
+//	k-062 UPDATE (this is the boundary k-058 declared, now closed when
+//	configured): when Server.RABControlKey is non-empty (set from
+//	WORKS_RAB_CONTROL_TOKEN by cmd/works-api), the presented value must
+//	VERIFY as an HMAC credential bound to the claiming runnerID -- see
+//	rab_control_token.go. When the key is empty/unset, verification mode
+//	is OFF and the paragraph above is STILL the whole law, byte for
+//	byte: unconfigured deployments keep the advertisement-only behavior
+//	with zero change; only configured ones demand a real credential.
 //
 // RUNNER-IDENTITY INTERLOCK (exact semantics shipped):
 //
@@ -98,13 +107,27 @@ func (s *Server) gateClaimByRAB(ctx context.Context, runnerID string, r *http.Re
 		return 0, "", true
 	}
 
-	// *** THE ADVERTISEMENT LAW, NOT A CREDENTIAL CHECK ***
-	// Non-empty presentation is all this slice enforces. There is NO
-	// token value verification here (no issuing authority, no
-	// signature, no expiry, no identity binding): any non-empty value
-	// from any runner passes -- including a token that "belongs to" a
-	// second runner. Identity binding is the future per-action-authz
-	// slice, pinned as current behavior by the k-058 tests.
+	// *** THE ADVERTISEMENT LAW, UPGRADED TO A CREDENTIAL CHECK WHEN
+	// CONFIGURED (k-062) ***
+	// With Server.RABControlKey set, the presented value must VERIFY as
+	// an HMAC credential bound to THIS runnerID (rab_control_token.go):
+	// a garbage value or a valid token minted for another runner is
+	// denied 403 "control_token_invalid" -- still before any lease state
+	// transition, same ordering law as k-058. With the key unset, this
+	// block is skipped and the k-058 presence-only behavior below runs
+	// unchanged: any non-empty value from any runner passes, including a
+	// token that "belongs to" a second runner (pinned by the k-058
+	// tests, which must keep passing UNEDITED).
+	if len(s.RABControlKey) > 0 {
+		if !s.VerifyControlToken(r, runnerID) {
+			if r.Header.Get(rabControlTokenHeader) == "" {
+				// Missing/empty presentation keeps the k-058 code.
+				return http.StatusForbidden, ReasonControlTokenRequired, false
+			}
+			return http.StatusForbidden, ReasonControlTokenInvalid, false
+		}
+		return 0, "", true
+	}
 	if r.Header.Get(rabControlTokenHeader) == "" {
 		return http.StatusForbidden, ReasonControlTokenRequired, false
 	}

@@ -92,6 +92,25 @@ func (s *Server) grantLease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_field", "work_id, node_id, worker_id are required")
 		return
 	}
+	// k-060: per-action authz -- the body's worker_id must equal the
+	// authenticated token's worker_id (closes the slice-4 TODO in
+	// auth.go: requireBearer authenticates, this authorizes the
+	// action). Denied claims return 403 "worker_id_mismatch" and the
+	// return below guarantees ZERO store touches.
+	//
+	// ORDERING LAW: owner check sits after the missing_field guard (an
+	// empty worker_id is a malformed request, 400, not an
+	// authorization question) and BEFORE gateClaimByRAB (k-058): the
+	// claimer's identity must be real before we ask what their runtime
+	// is allowed to do. Dev mode (AuthEnabled=false => ClaimsFrom nil)
+	// passes unchanged -- the pinned interlock; see
+	// claim_owner_authz.go for the full law.
+	if code, reason, ownerOK := s.gateClaimOwner(r, body.WorkerID); !ownerOK {
+		claims := ClaimsFrom(r.Context())
+		s.logf("owner gate denied: claimed=%s token=%s code=%s", body.WorkerID, claims.WorkerID, reason)
+		writeError(w, code, reason, "token worker_id "+claims.WorkerID+" may not claim leases as worker_id "+body.WorkerID)
+		return
+	}
 	// k-058: rab/1.0 advertisement law at claim time (claim = lease grant;
 	// workers self-claim via POST /v1/leases/grant). Denied claims return
 	// 403 BEFORE any lease state transition. The runner-identity interlock

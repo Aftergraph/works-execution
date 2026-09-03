@@ -178,6 +178,21 @@ func (s *Server) registerRunner(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// k-061 identity binding: an authenticated caller may register or
+	// heartbeat-refresh ONLY the runner its token is bound to
+	// (worker_id == runner_id). Checked BEFORE any mint or store so a
+	// denied request provably leaves the registry untouched. Callers may
+	// still omit runner_id: the server mints one and does NOT auto-bind
+	// it to the minting token (legacy registration mode - documented in
+	// docs/AUTH.md). Dev mode (no claims) passes; see runner_authz.go.
+	if in.RunnerID != "" {
+		if code, reason, ownerOK := s.gateRunnerOwnership(r, in.RunnerID); !ownerOK {
+			s.logf("runner register denied: id=%s code=%s", in.RunnerID, reason)
+			writeError(w, code, reason, "bearer token does not own runner "+in.RunnerID)
+			return
+		}
+	}
+
 	// Caller may omit runner_id; mint one.
 	if in.RunnerID == "" {
 		in.RunnerID = runner.MintRunnerID()

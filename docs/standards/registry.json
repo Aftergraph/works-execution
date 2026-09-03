@@ -6,7 +6,7 @@
   "venture": "works-execution",
   "venture_module": "github.com/JonasAbde/works-execution",
   "generated_by": "manual",
-  "generated_at": "2026-08-31",
+  "generated_at": "2026-09-03",
   "domains": [
     "ai",
     "security",
@@ -85,7 +85,7 @@
       "implementation": "Deferred \u2014 works-execution V1 has no ML components.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": [
@@ -103,7 +103,7 @@
       "implementation": "Deferred with iso-iec-23053-2022.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": [
@@ -120,7 +120,7 @@
       "implementation": "Deferred with iso-iec-23053-2022.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": [
@@ -137,7 +137,7 @@
       "implementation": "Deferred.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": []
@@ -152,7 +152,7 @@
       "implementation": "Deferred.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": []
@@ -167,7 +167,7 @@
       "implementation": "Deferred.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": []
@@ -182,7 +182,7 @@
       "implementation": "Deferred.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": []
@@ -197,7 +197,7 @@
       "implementation": "Deferred.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": []
@@ -227,7 +227,7 @@
       "implementation": "Deferred \u2014 no generative AI components.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": []
@@ -242,7 +242,7 @@
       "implementation": "Deferred \u2014 no LLM calls in V1 path.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": [
@@ -274,7 +274,7 @@
       "implementation": "Pending legal review. works-execution's worker is non-LLM autonomous software \u2014 likely out of scope or 'limited risk', but classification requires counsel.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ai.md",
       "status": "BLOCKED",
       "owner": "founder",
       "exceptions": [
@@ -759,7 +759,7 @@
       "implementation": "Slice 3: docker worker sandbox conforms to OCI runtime spec.",
       "enforcement_point": "tests/conformance/oci_test.go.",
       "test": "tests/conformance/oci_test.go",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/ci.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -774,7 +774,7 @@
       "implementation": "Bundled with oci-runtime-spec.",
       "enforcement_point": "tests/conformance/.",
       "test": "tests/conformance/oci_test.go",
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ci.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -789,7 +789,7 @@
       "implementation": "Future: image registry support.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ci.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -804,7 +804,7 @@
       "implementation": "Future: RE-API server for remote build cache.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/ci.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -834,7 +834,7 @@
       "implementation": "Slice 3: OIDC token exchange for worker enrollment (#114 Zero-Secret).",
       "enforcement_point": "services/api/auth.go.",
       "test": "tests/auth/.",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -849,7 +849,7 @@
       "implementation": "Slice 3: workers carry SPIFFE IDs (#121 Runner Identity).",
       "enforcement_point": "Worker enrollment.",
       "test": "tests/identity/spiffe_test.go",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -864,7 +864,7 @@
       "implementation": "Slice 4+: SPIRE agent for production enrollment.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -879,7 +879,7 @@
       "implementation": "Slice 3: OTel SDK with W3C trace context propagation.",
       "enforcement_point": "services/observability/.",
       "test": "tests/observability/.",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/observability.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -894,7 +894,7 @@
       "implementation": "Slice 3 targets SLSA L3 for releases.",
       "enforcement_point": "ci/local-runner/slsa.sh.",
       "test": "tests/supply_chain/slsa_test.go",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/supply-chain.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -909,7 +909,7 @@
       "implementation": "Slice 3: emit in-toto attestations per work.",
       "enforcement_point": "services/attestation/.",
       "test": "tests/supply_chain/intoto_test.go",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/supply-chain.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -924,7 +924,7 @@
       "implementation": "Bundled with in-toto-v1.0.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/supply-chain.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -939,7 +939,7 @@
       "implementation": "Slice 3: emit SPDX SBOM per release.",
       "enforcement_point": "ci/local-runner/sbom.sh.",
       "test": "tests/supply_chain/spdx_test.go",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/supply-chain.md",
       "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
@@ -954,7 +954,7 @@
       "implementation": "Bundled with spdx-3.0.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/supply-chain.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -969,7 +969,7 @@
       "implementation": "Slice 3: emit CycloneDX SBOM alongside SPDX.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/supply-chain.md",
       "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
@@ -984,7 +984,7 @@
       "implementation": "Slice 3: sign attestation bundles with cosign.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/supply-chain.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -999,7 +999,7 @@
       "implementation": "Slice 4+: TUF-style metadata for worker binary distribution.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/supply-chain.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1014,7 +1014,7 @@
       "implementation": "Bundled with slsa-1.2.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/supply-chain.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1029,7 +1029,7 @@
       "implementation": "Slice 3+: emit DORA metrics for design-partner deployments.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/performance.md",
       "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
@@ -1044,7 +1044,7 @@
       "implementation": "Slice 3: use semantic conventions for HTTP, DB, runtime spans.",
       "enforcement_point": "services/observability/.",
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/observability.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1059,7 +1059,7 @@
       "implementation": "Slice 3: /metrics endpoint exposes OpenMetrics format.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/observability.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1074,7 +1074,7 @@
       "implementation": "Compatible with OpenMetrics endpoint.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/observability.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1089,7 +1089,7 @@
       "implementation": "Superseded by OpenTelemetry; covered there.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/observability.md",
       "status": "NOT_APPLICABLE",
       "owner": "founder",
       "exceptions": [
@@ -1106,7 +1106,7 @@
       "implementation": "Slice 4+: feature flags for staged rollouts.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/observability.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1172,7 +1172,7 @@
       "implementation": "Slice 5+: experimental wasm worker.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform-build.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1187,7 +1187,7 @@
       "implementation": "Bundled with wasm-component-model.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform-build.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1202,7 +1202,7 @@
       "implementation": "Slice 6+: K8s operator for works-execution.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform-build.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1217,7 +1217,7 @@
       "implementation": "Slice 3: audit events emitted as CloudEvents.",
       "enforcement_point": "services/observability/audit.go.",
       "test": "tests/audit/.",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/platform-build.md",
       "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
@@ -1232,7 +1232,7 @@
       "implementation": "Future: import workflows from CNCF Serverless Workflow DSL.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform-build.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1247,7 +1247,7 @@
       "implementation": "Slice 3: build with -trimpath, fixed SOURCE_DATE_EPOCH.",
       "enforcement_point": "ci/local-runner/reproducible.sh.",
       "test": "tests/build/reproducible_test.go",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/platform-build.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1262,7 +1262,7 @@
       "implementation": "Slice 5+: experimental Nix worker.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform-build.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1277,7 +1277,7 @@
       "implementation": "Slice 3: hermetic execution standard (#111) takes inspiration.",
       "enforcement_point": "tests/hermetic/.",
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform-build.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1307,7 +1307,7 @@
       "implementation": "Bundled with bazel-remote-execution-api.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform-build.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1322,7 +1322,7 @@
       "implementation": "Slice 3: content-addressed cache (#127 Portable Cache).",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform-build.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1337,7 +1337,7 @@
       "implementation": "Slice 3: OAuth2/OIDC for user auth.",
       "enforcement_point": "services/api/auth.go.",
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1352,7 +1352,7 @@
       "implementation": "Bundle with oauth-2.0.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1384,7 +1384,7 @@
       "implementation": "Slice 3: workers carry spiffe://works-execution/ns/<tenant>/sa/<worker>.",
       "enforcement_point": "tests/identity/.",
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1399,7 +1399,7 @@
       "implementation": "Slice 4+.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1414,7 +1414,7 @@
       "implementation": "Slice 3: OIDC ID tokens are JWTs.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1429,7 +1429,7 @@
       "implementation": "Slice 4+: SPIRE uses X.509 SVIDs.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1444,7 +1444,7 @@
       "implementation": "Slice 3: roles per organization (admin, developer, runner).",
       "enforcement_point": "tests/identity/rbac_test.go.",
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1459,7 +1459,7 @@
       "implementation": "Future: trust_class + region + cost_center attributes.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1474,7 +1474,7 @@
       "implementation": "Future: org/team/repo graph.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1489,7 +1489,7 @@
       "implementation": "Bundled with nist-sp-800-207.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/identity.md",
       "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
@@ -1504,7 +1504,7 @@
       "implementation": "Slice 4+: Rego policies for production deploy, fork policy, etc.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/policy.md",
       "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
@@ -1519,7 +1519,7 @@
       "implementation": "Bundled with opa.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/policy.md",
       "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
@@ -1534,7 +1534,7 @@
       "implementation": "Bundled with opa (deferred).",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/policy.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1549,7 +1549,7 @@
       "implementation": "Future alternative.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/policy.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1564,7 +1564,7 @@
       "implementation": "Future: OSCAL catalogs for compliance posture.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/policy.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1579,7 +1579,7 @@
       "implementation": "Slice 3: innovation lifecycle in docs/standards/innovation/.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/innovation.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1594,7 +1594,7 @@
       "implementation": "Bundled with iso-56000.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/innovation.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1609,7 +1609,7 @@
       "implementation": "Bundled.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/innovation.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1624,7 +1624,7 @@
       "implementation": "Bundled.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/innovation.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1639,7 +1639,7 @@
       "implementation": "Bundled.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/innovation.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1654,7 +1654,7 @@
       "implementation": "Bundled.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/innovation.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1669,7 +1669,7 @@
       "implementation": "Bundled.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/innovation.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1684,7 +1684,7 @@
       "implementation": "Bundled.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/innovation.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1699,7 +1699,7 @@
       "implementation": "Slice 3: capability manifest #110 carries os/arch; scheduler selects capable worker; workers in Go run anywhere.",
       "enforcement_point": "internal/scheduler/capability.go.",
       "test": "tests/capability/portability_test.go",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1729,7 +1729,7 @@
       "implementation": "Slice 3: default-deny subprocess sandbox; admission rejects undeclared capabilities. Slice 5: internal/sandbox/docker.go (OCI Docker backend with --read-only, --cap-drop=ALL, --network=none, no-new-privileges, memory+CPU+PIDs caps). E2E proof: e2e/e2e_docker_test.go passes in 2.3s with alpine:3.20.",
       "enforcement_point": "internal/sandbox/hermetic.go.",
       "test": "tests/hermetic/.",
-      "evidence": "implemented",
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
@@ -1744,7 +1744,7 @@
       "implementation": "Slice 3: fingerprint = sha256(source + action + inputs + env); cache key includes fingerprint; equivalent results explained via fingerprint.",
       "enforcement_point": "internal/fingerprint/.",
       "test": "tests/fingerprint/.",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1774,7 +1774,7 @@
       "implementation": "Slice 3: worker enrollment uses OIDC token exchange (or dev-mode SPIFFE-like signed enrollment token); API rejects static API keys.",
       "enforcement_point": "services/api/auth.go.",
       "test": "tests/auth/zero_secret_test.go",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
@@ -1804,7 +1804,7 @@
       "implementation": "Slice 3: scheduler scoring per scheduler_design.md with explainability record per assignment.",
       "enforcement_point": "internal/scheduler/.",
       "test": "tests/scheduler/.",
-      "evidence": "PLANNED",
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
@@ -1834,7 +1834,7 @@
       "implementation": "Slice 5+: optional LLM-backed failure analysis. Authority controlled by capability manifest.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1849,7 +1849,7 @@
       "implementation": "Slice 3+ in concert with evidence bundles and attestations. Slice 5: cmd/works-pilot/main.go (time-to-first-successful-work measurement, <5min V1 target; live result: 1.6s vs 5min target).",
       "enforcement_point": "ci/local-runner/continuous-verify.sh.",
       "test": null,
-      "evidence": "implemented",
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
@@ -1864,7 +1864,7 @@
       "implementation": "Slice 3+: GitHub Actions runner compatibility first.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1909,7 +1909,7 @@
       "implementation": "Bundled with platform-workflow-provenance.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
@@ -1939,7 +1939,7 @@
       "implementation": "Slice 3+: admission hook in services/api/admission.go.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
@@ -1954,7 +1954,7 @@
       "implementation": "Slice 3: Docker worker sandbox (per #109). Slice 5: internal/sandbox/docker.go (OCI Docker backend with --read-only, --cap-drop=ALL, --network=none, no-new-privileges, memory+CPU+PIDs caps). E2E proof: e2e/e2e_docker_test.go passes in 2.3s with alpine:3.20.",
       "enforcement_point": "internal/sandbox/.",
       "test": "tests/sandbox/.",
-      "evidence": "implemented",
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "IMPLEMENTED",
       "owner": "founder",
       "exceptions": []
@@ -1969,7 +1969,7 @@
       "implementation": "Slice 3: content-addressed cache (#116), portable across L1/L2/L3.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1984,7 +1984,7 @@
       "implementation": "Bundled with platform-universal-compat.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "PLANNED",
       "owner": "founder",
       "exceptions": []
@@ -1999,7 +1999,7 @@
       "implementation": "Slice 3: bounded retry policy per failure class; remediation actions declared in capability manifest.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
@@ -2014,7 +2014,7 @@
       "implementation": "Slice 3: docs/standards/innovation/lifecycle.md.",
       "enforcement_point": null,
       "test": null,
-      "evidence": null,
+      "evidence": "docs/standards/mappings/platform.md",
       "status": "PARTIAL",
       "owner": "founder",
       "exceptions": []
@@ -2044,5 +2044,5 @@
       "innovation": 8
     }
   },
-  "updated_at": "2026-08-31T03:04:00Z"
+  "updated_at": "2026-09-03T04:51:16Z"
 }
