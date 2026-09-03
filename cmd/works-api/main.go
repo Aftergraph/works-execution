@@ -164,6 +164,13 @@ func main() {
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelShutdown()
 		_ = httpSrv.Shutdown(shutdownCtx)
+		// k-068: drain in-flight publisher goroutines after the HTTP
+		// server has stopped accepting new state transitions. Bounded
+		// by the same shutdown window so a stuck GitHub call cannot
+		// hang process exit.
+		drainCtx, cancelDrain := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelDrain()
+		srv.WaitPublisher(drainCtx)
 	}()
 
 	// Conversation V1: platform bridge secret for the governed /resume

@@ -76,17 +76,19 @@ func TestPublisherHook_OnTerminalWork(t *testing.T) {
 	}
 
 	// NoopPublisher records calls; give the goroutine a moment.
+	rec := pub.Snapshot()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(pub.Recorded) > 0 {
+		if len(rec) > 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
+		rec = pub.Snapshot()
 	}
-	if len(pub.Recorded) != 1 {
-		t.Fatalf("Recorded = %d, want exactly 1 (only SUCCEEDED should publish)", len(pub.Recorded))
+	if len(rec) != 1 {
+		t.Fatalf("Recorded = %d, want exactly 1 (only SUCCEEDED should publish)", len(rec))
 	}
-	got := pub.Recorded[0]
+	got := rec[0]
 	if got.Repository != "JonasAbde/works-execution" {
 		t.Errorf("repo = %q, want JonasAbde/works-execution", got.Repository)
 	}
@@ -126,8 +128,8 @@ func TestPublisherHook_SkipsNonTerminal(t *testing.T) {
 			},
 		})
 	}
-	if len(pub.Recorded) != 0 {
-		t.Errorf("publish fired for non-terminal work: %d calls", len(pub.Recorded))
+	if len(pub.Snapshot()) != 0 {
+		t.Errorf("publish fired for non-terminal work: %d calls", len(pub.Snapshot()))
 	}
 }
 
@@ -156,15 +158,17 @@ func TestPublisherHook_SkipsMissingProvenance(t *testing.T) {
 		Source: workgraph.Source{Repository: "x/y", SHA: "abcdef0123456789abcdef0123456789abcdef01"},
 	})
 	// maybePublishOnTerminal fires a goroutine; give it a beat.
+	rec := pub.Snapshot()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(pub.Recorded) == 1 {
+		rec = pub.Snapshot()
+		if len(rec) == 1 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if len(pub.Recorded) != 1 {
-		t.Errorf("Recorded = %d, want 1 (only fully-provenanced terminal work)", len(pub.Recorded))
+	if len(rec) != 1 {
+		t.Errorf("Recorded = %d, want 1 (only fully-provenanced terminal work)", len(rec))
 	}
 }
 
