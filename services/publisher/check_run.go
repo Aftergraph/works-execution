@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -68,13 +69,13 @@ func (c *CheckRunPublisher) Kind() string { return "check-run" }
 
 // checkRunBody is the GitHub Check Runs API request body.
 type checkRunBody struct {
-	Name         string `json:"name"`
-	HeadSHA      string `json:"head_sha"`
-	Status       string `json:"status,omitempty"`         // queued/in_progress/completed
-	Conclusion   string `json:"conclusion,omitempty"`      // success/failure/...
-	DetailsURL   string `json:"details_url,omitempty"`
-	ExternalID   string `json:"external_id,omitempty"`     // idempotency key (unique per run)
-	OutputTitle  string `json:"output,omitempty"`          // we use the same struct for both; see below
+	Name        string `json:"name"`
+	HeadSHA     string `json:"head_sha"`
+	Status      string `json:"status,omitempty"`     // queued/in_progress/completed
+	Conclusion  string `json:"conclusion,omitempty"` // success/failure/...
+	DetailsURL  string `json:"details_url,omitempty"`
+	ExternalID  string `json:"external_id,omitempty"` // idempotency key (unique per run)
+	OutputTitle string `json:"output,omitempty"`      // we use the same struct for both; see below
 }
 
 // Publish implements Publisher.
@@ -153,9 +154,14 @@ func (c *CheckRunPublisher) client() *http.Client {
 // NoopPublisher is a Publisher that records calls but never makes
 // a network request. Used by tests and by deployments that
 // explicitly disable GitHub publication.
+//
+// Recorded is guarded by mu because publish hooks fire concurrently
+// (k-068 fire-and-forget goroutines) and -race builds flag the
+// unsynchronized append.
 type NoopPublisher struct {
-	Recorded [] Result
-	KindStr   string
+	mu       sync.Mutex
+	Recorded []Result
+	KindStr  string
 }
 
 // NewNoopPublisher returns a NoopPublisher with the given Kind label.
@@ -171,6 +177,17 @@ func (n *NoopPublisher) Publish(_ context.Context, r Result) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
+	n.mu.Lock()
 	n.Recorded = append(n.Recorded, r)
+	n.mu.Unlock()
 	return nil
+}
+
+// Snapshot returns a copy of the recorded results (race-safe read).
+func (n *NoopPublisher) Snapshot() []Result {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	out := make([]Result, len(n.Recorded))
+	copy(out, n.Recorded)
+	return out
 }

@@ -15,6 +15,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/JonasAbde/works-execution/internal/manifest"
@@ -122,6 +124,14 @@ type Server struct {
 	// default, and every existing test) means verification mode OFF: the
 	// gate stays exactly the k-058 presence-only advertisement law.
 	RABControlKey []byte
+	// publisherWG tracks in-flight publish goroutines fired by
+	// maybePublishOnTerminal (k-068). Zero value = unbounded
+	// fire-and-forget, identical to pre-k-068 behavior for any Server
+	// that never calls WaitPublisher.
+	publisherWG sync.WaitGroup
+	// publisherShutdown, when true, makes the hook refuse to start NEW
+	// publish goroutines (fail-closed drain). Set by WaitPublisher.
+	publisherShutdown atomic.Bool
 }
 
 // ensureIssuer returns s.Auth, lazily constructing a default HMACIssuer

@@ -51,9 +51,9 @@ func (s *Server) maybePublishOnTerminal(w *workgraph.Work) {
 		return
 	}
 	res := publisher.Result{
-		Repository: w.Source.Repository,
-		SHA:        w.Source.SHA,
-		Conclusion: conc,
+		Repository:  w.Source.Repository,
+		SHA:         w.Source.SHA,
+		Conclusion:  conc,
 		Description: "works-execution/" + w.ID,
 		DetailsURL:  s.publisherDetailsURL(w),
 	}
@@ -62,11 +62,28 @@ func (s *Server) maybePublishOnTerminal(w *workgraph.Work) {
 			res.Output = m
 		}
 	}
+	// k-068 lifecycle: check the shutdown gate BEFORE Add() so we
+	// cannot race a concurrent WaitPublisher (Add-after-Wait is the
+	// classic WaitGroup misuse). Fail-closed: once the server is
+	// draining, a terminal transition loses its GitHub status update
+	// rather than stacking goroutines past process exit.
+	if s.publisherShutdownGuard() {
+		if s.Logger != nil {
+			s.Logger.Printf("publisher: skipping publish work=%s repo=%s: server draining",
+				w.ID, res.Repository)
+		}
+		return
+	}
+	s.publisherWG.Add(1)
 	go func() {
+		defer s.publisherWG.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := s.Publisher.Publish(ctx, res); err != nil && s.Logger != nil {
-			s.Logger.Printf("publisher: publish failed work=%s repo=%s sha=%s err=%v",
+		// Snapshot the logger at goroutine start: the Server may be
+		// torn down while we are in flight.
+		logger := s.Logger
+		if err := s.Publisher.Publish(ctx, res); err != nil && logger != nil {
+			logger.Printf("publisher: publish failed work=%s repo=%s sha=%s err=%v",
 				w.ID, res.Repository, res.SHA, err)
 		}
 	}()
