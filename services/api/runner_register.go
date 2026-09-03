@@ -31,9 +31,13 @@ var ErrRunnerNotFound = errors.New("runner not found")
 // keeps it in-memory guarded by a mutex; persistence lives behind a future
 // store interface (slice 4+).
 type runnerRegistry struct {
-	mu      sync.RWMutex
-	byID    map[string]*runner.Identity
+	mu       sync.RWMutex
+	byID     map[string]*runner.Identity
 	bySpiffe map[string]string // spiffe_id -> runner_id for dedup
+	// abiByRunner holds validated rab/1.0 capability advertisements keyed
+	// by runner id (k-053, ADR-0012/0014). Lazily initialized by putABI;
+	// guarded by the same mu as the identity maps. See runner_abi.go.
+	abiByRunner map[string]*RuntimeABI
 }
 
 func newRunnerRegistry() *runnerRegistry {
