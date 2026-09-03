@@ -1237,38 +1237,54 @@
       "id": "k-impl-065",
       "title": "k-065: lease verb owner-bind for heartbeat/complete/release/revoke (D)",
       "lane": "implementation",
-      "column": "backlog",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "Same ownership law as k-060 on every lease verb (not just grant); release/revoke cannot be triggered by a foreign token. k-064 finding D.",
-      "evidence": [],
+      "evidence": [
+        "services/api/lease_owner_authz.go",
+        "PR #37",
+        "live smoke_v035.sh:5,7,8"
+      ],
       "created_at": "2026-09-03T08:18:00Z",
-      "updated_at": "2026-09-03T08:18:00Z",
-      "status": "backlog"
+      "updated_at": "2026-09-03T10:35:00Z",
+      "status": "done",
+      "note": "k-065: gateLeaseOwner on heartbeat/complete/release/revoke (403 lease_not_owner, 404-before-403). Pin TestAdversary34_NonGrantLeaseVerbsUnbound flipped to regression. Live smoke_v035:5,7,8 gr\u00f8n."
     },
     {
       "id": "k-impl-066",
       "title": "k-066: enrollment charset law closing legacy-class evasion (B)",
       "lane": "implementation",
-      "column": "backlog",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "Enrollment ids outside the runner-id pattern either get the same owner-bind law as k-060, or are demoted to a no-control legacy class only reachable when control tokens are off. k-064 finding B.",
-      "evidence": [],
+      "evidence": [
+        "services/api/enroll.go",
+        "services/runner/registry.go",
+        "PR #37",
+        "live smoke_v035.sh:1"
+      ],
       "created_at": "2026-09-03T08:18:00Z",
-      "updated_at": "2026-09-03T08:18:00Z",
-      "status": "backlog"
+      "updated_at": "2026-09-03T10:35:00Z",
+      "status": "done",
+      "note": "k-066: enrollment charset == registry charset (runner.RunnerIDPattern). Pin TestAdversary34_EnrollmentCharsetLegacyPass rewritten to drive REAL /v1/workers/enroll. Live smoke_v035:1 gr\u00f8n."
     },
     {
       "id": "k-impl-067",
       "title": "k-067: dev-mode id normalization (C)",
       "lane": "implementation",
-      "column": "backlog",
+      "column": "done",
       "standard_ids": [],
       "acceptance": "Dev mode trims/normalizes worker_id at grant time so lookalike ids (`wrkr_a `) never reach the store. k-064 finding C (dev posture only).",
-      "evidence": [],
+      "evidence": [
+        "services/api/leases.go",
+        "PR #37",
+        "live smoke_v035.sh:4"
+      ],
       "created_at": "2026-09-03T08:18:00Z",
-      "updated_at": "2026-09-03T08:18:00Z",
-      "status": "backlog"
+      "updated_at": "2026-09-03T10:35:00Z",
+      "status": "done",
+      "note": "k-067: grantLease trims body.WorkerID before any gate or write. Pin TestAdversary34_DevModeLookalikeWorkerIDEscapesGate + matrix pPaddedTokA flipped to regression (both postures answer identically now). Live smoke_v035:4 gr\u00f8n."
     }
   ],
-  "updated_at": "2026-09-03T08:18:00Z"
+  "updated_at": "2026-09-03T10:35:00Z"
 }
