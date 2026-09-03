@@ -74,10 +74,16 @@ type RuntimeABI struct {
 }
 
 // MarshalJSON renders the flattened rab/1.0 document plus linkage.
+//
+// k-054 finding: the previous implementation overlaid runner_id and
+// registered_at on the flattened RAB map, which silently DESTROYED any
+// user-supplied N-1 top-level field whose name happened to collide
+// (e.g. a legal rab/1.0 document advertising a "registered_at" field
+// for its own N-1 use). Linkage fields are now namespaced under a
+// private "rab_runtime_meta" object so the advertised document is
+// preserved bit-for-bit and the registry's bookkeeping is still
+// discoverable.
 func (rec RuntimeABI) MarshalJSON() ([]byte, error) {
-	// Note the address: abi.RAB's own MarshalJSON has a pointer receiver,
-	// so marshalling a value here would silently drop the Extra fields
-	// (N-1 tolerance) instead of flattening them.
 	rab := rec.RAB
 	rabJSON, err := json.Marshal(&rab)
 	if err != nil {
@@ -87,24 +93,28 @@ func (rec RuntimeABI) MarshalJSON() ([]byte, error) {
 	if err := json.Unmarshal(rabJSON, &m); err != nil {
 		return nil, err
 	}
-	idJSON, err := json.Marshal(rec.RunnerID)
+	m["rab_runtime_meta"], err = json.Marshal(struct {
+		RunnerID     string    `json:"runner_id"`
+		RegisteredAt time.Time `json:"registered_at"`
+	}{rec.RunnerID, rec.RegisteredAt})
 	if err != nil {
 		return nil, err
 	}
-	atJSON, err := json.Marshal(rec.RegisteredAt)
-	if err != nil {
-		return nil, err
-	}
-	m["runner_id"] = idJSON
-	m["registered_at"] = atJSON
 	return json.Marshal(m)
 }
 
 // cloneRAB returns an independent copy of a RAB: caps slice, the
 // control-token pointer, and the Extra map are all freshly allocated so a
 // caller mutating a record handed out by getABI/getRuntimeABI/listABI can
-// never corrupt the stored advertisement (the registry copy-out discipline
-// of get(), deep enough for RAB's reference fields).
+// never corrupt the stored advertisement.
+//
+// k-054 finding: the original shallow copy of Extra aliased any nested
+// map/slice value (the N-1 unknown-field JSON shape can be arbitrarily
+// nested per packages/abi), so mutating a record's nested structure
+// silently rewrote the stored advertisement in both directions. Extra is
+// now re-canonicalised through the kernel: abi.Marshal the source and
+// abi.Unmarshal into a fresh map[string]any, so the copy is a complete
+// deep clone of every JSON value the kernel accepts.
 func cloneRAB(r abi.RAB) abi.RAB {
 	out := r
 	if r.Caps != nil {
@@ -115,9 +125,19 @@ func cloneRAB(r abi.RAB) abi.RAB {
 		out.ControlTokenRequired = &ctr
 	}
 	if r.Extra != nil {
-		out.Extra = make(map[string]any, len(r.Extra))
-		for k, v := range r.Extra {
-			out.Extra[k] = v
+		src, err := json.Marshal(r.Extra)
+		if err != nil {
+			// marshal of a validated, kernel-shaped map cannot fail
+			// in practice; fall back to an empty map to preserve the
+			// invariant rather than crash the read path.
+			out.Extra = map[string]any{}
+		} else {
+			cp := map[string]any{}
+			if err := json.Unmarshal(src, &cp); err != nil {
+				out.Extra = map[string]any{}
+			} else {
+				out.Extra = cp
+			}
 		}
 	}
 	return out

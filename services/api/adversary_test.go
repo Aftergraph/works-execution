@@ -111,27 +111,19 @@ func advPostJSON(t *testing.T, url, body string) (int, []byte) {
 	return resp.StatusCode, b
 }
 
-// TestAdversary_RABCopyOutPromiseBrokenBySharedNestedExtra pins finding A.
+// TestAdversary_RABCopyOutPromiseBrokenBySharedNestedExtra is a
+// REGRESSION test (k-054 finding A, now fixed: cloneRAB re-canonicalises
+// Extra through the kernel's JSON shape via Marshal+Unmarshal, yielding
+// a complete deep clone of every nested JSON value the kernel accepts).
+// Per the file's documented copy-out law, a caller mutating a record
+// handed out by getABI/getRuntimeABI/listABI — or mutating the input RAB
+// after putABI — must NEVER reach the stored advertisement.
 //
-// Scenario: services/runner_abi.go cloneRAB documents that "a caller
-// mutating a record handed out by getABI/getRuntimeABI/listABI can
-// NEVER corrupt the stored advertisement" and claims to be "deep enough
-// for RAB's reference fields". It copies the Caps slice, the
-// ControlTokenRequired pointer — and rebuilds Extra as a NEW map — but
-// copies its VALUES verbatim (out.Extra[k] = v). rab/1.0 N-1 tolerance
-// (kernel: Extra is map[string]any from json.Unmarshal, so ANY nested
-// object/array is a shared reference). The k-053 unit gate only ever
-// mutated top-level fields (Caps[0]) — a slice the author did deep-copy
-// — and stored Extra values only as scalars in the e2e wire tests. The
-// seam between the kernel's arbitrary-JSON Extra shape and the api's
-// copy-out discipline was tested by neither side.
-//
-// Expected (per the docstring law): mutation through ANY handed-out
-// record, or through the caller's original input RAB, leaves the stored
-// advertisement byte-identical.
-// Observed (pinned): both directions corrupt the stored record —
-// a reader (or the advertiser reusing its object) can rewrite what every
-// future GET and the (future) dispatcher negotiate against.
+// Prior pinned behaviour (k-054 commit 8f7448b before remediation):
+//   A1. caller's post-advertisement mutation of in.Extra leaked into the
+//       stored RAB (nested map value aliased).
+//   A2. reader mutation of a handed-out record's nested Extra value
+//       corrupted the advertisement served to every future consumer.
 func TestAdversary_RABCopyOutPromiseBrokenBySharedNestedExtra(t *testing.T) {
 	reg := newRunnerRegistry()
 	reg.put(&runner.Identity{RunnerID: "wrkr_adv_a"})
@@ -150,36 +142,31 @@ func TestAdversary_RABCopyOutPromiseBrokenBySharedNestedExtra(t *testing.T) {
 		t.Fatalf("putABI: %v", err)
 	}
 
-	// Direction 1 (advertiser-side aliasing): the caller keeps its own
-	// RAB object and mutates a nested Extra value after advertising.
+	// A1 regression: caller mutating the original input after putABI
+	// must NOT reach the stored record.
 	in.Extra["spec"].(map[string]any)["tier"] = "ADMIN-SELF"
 	got, ok := reg.getABI("wrkr_adv_a")
 	if !ok {
 		t.Fatal("getABI miss")
 	}
 	if v := got.Extra["spec"].(map[string]any)["tier"]; v == "ADMIN-SELF" {
-		// Observed corruption — pinned finding stands.
-		t.Logf("PIN A1 observed: caller's post-advertisement mutation leaked into the stored RAB (tier=%v)", v)
-	} else {
-		t.Fatalf("PIN INVALID (A1): stored record isolated from caller input (tier=%v) — deep copy was added; flip this into a regression assertion", v)
+		t.Fatalf("REGRESSION (A1): caller's post-advertisement mutation leaked into the stored RAB (tier=%v)", v)
 	}
 
-	// Direction 2 (reader-side aliasing): mutate a nested Extra value
-	// through a record handed out by getRuntimeABI.
+	// A2 regression: reader mutating a handed-out record's nested Extra
+	// must NOT reach the stored record.
 	rec, ok := reg.getRuntimeABI("wrkr_adv_a")
 	if !ok {
 		t.Fatal("getRuntimeABI miss")
 	}
 	rec.RAB.Extra["spec"].(map[string]any)["tier"] = "READER-POISON"
-	// The list snapshot must agree with an independent read — and both
-	// must be the ORIGINAL advertisement if the copy-out law held.
 	rec2, _ := reg.getRuntimeABI("wrkr_adv_a")
 	all := reg.listABI()
-	if v := rec2.RAB.Extra["spec"].(map[string]any)["tier"]; v != "READER-POISON" ||
-		v != all[0].RAB.Extra["spec"].(map[string]any)["tier"] {
-		t.Fatalf("PIN INVALID (A2): nested mutation through a handed-out record no longer reaches the store (rec2=%v, list=%v) — fix landed; flip to regression", v, all[0].RAB.Extra["spec"])
+	gotTier := rec2.RAB.Extra["spec"].(map[string]any)["tier"]
+	listTier := all[0].RAB.Extra["spec"].(map[string]any)["tier"]
+	if gotTier == "READER-POISON" || listTier == "READER-POISON" {
+		t.Fatalf("REGRESSION (A2): reader mutation of nested Extra poisoned the stored advertisement (rec2=%v list=%v)", gotTier, listTier)
 	}
-	t.Logf("PIN A2 observed: reader mutation of nested Extra corrupts the advertisement served to every future consumer")
 
 	// Control (proves the test is about EXTRA nesting, not general
 	// breakage): the deep-copied fields ARE isolated — mutating a
@@ -190,26 +177,16 @@ func TestAdversary_RABCopyOutPromiseBrokenBySharedNestedExtra(t *testing.T) {
 	}
 }
 
-// TestAdversary_RABFlattenDestroysCollidingAdvertisedField pins finding B.
+// TestAdversary_RABFlattenDestroysCollidingAdvertisedField is a REGRESSION
+// test (k-054 finding B, now fixed: RuntimeABI.MarshalJSON namespaces
+// linkage under "rab_runtime_meta" instead of overlaying on the flattened
+// RAB map). The advertised document must round-trip bit-for-bit through
+// the GET response even when an N-1 field collides with a server linkage
+// name.
 //
-// Scenario: a runtime advertises a rab/1.0 document that uses N-1
-// tolerance for a field named "registered_at" (perfectly legal: the
-// kernel's Extra map accepts any unknown top-level field, and
-// abi.RAB.MarshalJSON round-trips it — "unknown top-level fields
-// round-trip" is the frozen kernel law, proto.charter/1.0 ADR-0021).
-// The k-053 GET/POST response flattens the record by OVERLAYING the
-// server linkage keys runner_id/registered_at on top of the marshalled
-// RAB map (RuntimeABI.MarshalJSON: m["runner_id"]=...; m["registered_at"]
-// = ...). The kernel and the endpoint were each correct in isolation;
-// the composition silently drops advertised contract data with no error.
-//
-// Expected: either POST rejects the colliding field (fail-closed), or
-// the GET response carries the advertised value — the document must
-// round-trip.
-// Observed (pinned): POST accepts (200), GET returns server time, and
-// the client's advertised value is gone everywhere — while a
-// non-colliding extra field (x_meta) survives, proving the store kept
-// the Extra and only the flatten-on-wire step destroys it.
+// Prior pinned behaviour (k-054 commit 8f7448b before remediation):
+// POST 200, GET returned server-stamp "registered_at" and the client's
+// advertised value was silently destroyed.
 func TestAdversary_RABFlattenDestroysCollidingAdvertisedField(t *testing.T) {
 	ts := advServer(t)
 	advRegister(t, ts, "wrkr_adv_b")
@@ -235,15 +212,19 @@ func TestAdversary_RABFlattenDestroysCollidingAdvertisedField(t *testing.T) {
 	if _, ok := rec["x_meta"]; !ok {
 		t.Fatalf("unexpected: x_meta extra lost too — wire shape changed: %v", rec)
 	}
-	// Pin the collision-loss: the advertised value must be absent.
-	got, _ := rec["registered_at"].(string)
-	if got == clientStamp {
-		t.Fatalf("PIN INVALID: advertised registered_at round-trips (%v) — the flatten collision was fixed; flip to regression", got)
+	// Regression: the advertised field round-trips. The server stamps
+	// "registered_at" under the namespaced "rab_runtime_meta" key.
+	got, ok := rec["registered_at"].(string)
+	if !ok || got != clientStamp {
+		t.Fatalf("REGRESSION: advertised registered_at did not round-trip; got=%v want=%q full=%v", rec["registered_at"], clientStamp, rec)
 	}
-	if !strings.Contains(got, "T") {
-		t.Fatalf("unexpected registered_at shape %q — different bug than pinned", got)
+	meta, ok := rec["rab_runtime_meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("REGRESSION: rab_runtime_meta linkage missing on GET: %v", rec)
 	}
-	t.Logf("PIN B observed: advertised %q silently replaced by server stamp %q; N-1 round-trip law broken at the api flatten seam", clientStamp, got)
+	if _, ok := meta["registered_at"].(string); !ok {
+		t.Fatalf("REGRESSION: rab_runtime_meta.registered_at not a server-stamped time string: %v", meta)
+	}
 }
 
 // TestAdversary_UnauthenticatedRABDowngradeOfForeignRunner pins finding C.
