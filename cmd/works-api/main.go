@@ -23,13 +23,13 @@ import (
 
 func main() {
 	var (
-		addr         = flag.String("addr", envOr("WORKS_ADDR", "127.0.0.1:8080"), "listen address")
-		dbPath       = flag.String("db", envOr("WORKS_DB", "/tmp/works.db"), "SQLite db path")
-		enrollSecret = flag.String("enroll-secret", envOr("WORKS_ENROLL_SECRET", ""), "shared challenge for POST /v1/workers/enroll; empty disables enrollment (fail-closed)")
-		policyPath   = flag.String("policy", envOr("WORKS_POLICY_BUNDLE", "policies/lease_grant.rego"), "OPA Rego policy bundle path; empty disables policy enforcement (legacy)")
-		webhookSecret = flag.String("webhook-secret", envOr("WORKS_WEBHOOK_SECRET", ""), "GitHub webhook HMAC secret; empty disables /v1/webhook/github (returns 503)")
+		addr              = flag.String("addr", envOr("WORKS_ADDR", "127.0.0.1:8080"), "listen address")
+		dbPath            = flag.String("db", envOr("WORKS_DB", "/tmp/works.db"), "SQLite db path")
+		enrollSecret      = flag.String("enroll-secret", envOr("WORKS_ENROLL_SECRET", ""), "shared challenge for POST /v1/workers/enroll; empty disables enrollment (fail-closed)")
+		policyPath        = flag.String("policy", envOr("WORKS_POLICY_BUNDLE", "policies/lease_grant.rego"), "OPA Rego policy bundle path; empty disables policy enforcement (legacy)")
+		webhookSecret     = flag.String("webhook-secret", envOr("WORKS_WEBHOOK_SECRET", ""), "GitHub webhook HMAC secret; empty disables /v1/webhook/github (returns 503)")
 		webhookProduction = flag.Bool("webhook-production-access", envBool("WORKS_WEBHOOK_PRODUCTION_ACCESS", false), "mark webhook-derived Works with policy.production_access=true (requires approved evidence at lease-grant; leave false for M1 verify works)")
-		webUIPublic = flag.Bool("webui-public", envBool("WORKS_WEBUI_PUBLIC", false), "serve /v1/ui execution view without a Bearer token (read-only)")
+		webUIPublic       = flag.Bool("webui-public", envBool("WORKS_WEBUI_PUBLIC", false), "serve /v1/ui execution view without a Bearer token (read-only)")
 	)
 	flag.Parse()
 
@@ -114,6 +114,17 @@ func main() {
 		logger.Printf("WORKS-Link enabled (/link/v1, pairing secret configured)")
 	} else {
 		logger.Printf("WORKS-Link mounted but unavailable (no WORKS_LINK_PAIRING_SECRET)")
+	}
+	// k-043: /v1/brain knowledge surface. Mounted unconditionally; the
+	// service is non-nil in both the wired and the fail-closed cases —
+	// the handler returns 503 brain_unavailable on every route until
+	// *store.SQLiteStore satisfies the k-042 BrainBackend interface.
+	// After the k-042 branch merges, the same wiring flips live.
+	srv.Brain = api.NewBrainServiceFromStore(st, st)
+	if !srv.Brain.Disabled {
+		logger.Printf("Brain surface enabled (/v1/brain/)")
+	} else {
+		logger.Printf("Brain surface mounted but unavailable")
 	}
 	httpSrv := &http.Server{
 		Addr:              *addr,
