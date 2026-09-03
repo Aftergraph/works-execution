@@ -1081,7 +1081,78 @@
       "created_at": "2026-09-03T05:55:00Z",
       "updated_at": "2026-09-03T05:55:00Z",
       "status": "done"
+    },
+    {
+      "id": "k-impl-053",
+      "title": "k-057: secret refs resolved on production worker exec path (internal/worker)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "PR #35 evidence; stacked gates + live prod smoke.",
+      "evidence": [
+        "internal/worker/secrets.go",
+        "branch v033/worker-secrets @ 5b67942",
+        "PR #35",
+        "v0.3.3"
+      ],
+      "notes": "ADR-0022 finally enforced where work runs; zero-ref items byte-identical legacy (pinned); sentinel leak-sweep.",
+      "created_at": "2026-09-03T06:45:00Z",
+      "updated_at": "2026-09-03T06:45:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-054",
+      "title": "k-058: rab/1.0 control-token law gates lease claims",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "PR #35; 403-before-transition asserted; live smoke 403/201 matrix green.",
+      "evidence": [
+        "services/api/claim_abi_gate.go",
+        "branch v033/claim-gate @ 38f0ce9",
+        "PR #35",
+        "v0.3.3"
+      ],
+      "notes": "worker_id==runner_id interlock (BYOC convention); no RAB => legacy pass; token VALUE verification out of scope, documented.",
+      "created_at": "2026-09-03T06:45:00Z",
+      "updated_at": "2026-09-03T06:45:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-055",
+      "title": "k-059: bearer auth on POST /abi; k-054 finding C closed",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "PR #35; pin flipped to TestAdversary_UnauthenticatedRABDowngradeBlocked; live 401 verified.",
+      "evidence": [
+        "services/api/api.go",
+        "branch v033/abi-auth @ 245398a",
+        "PR #35",
+        "v0.3.3"
+      ],
+      "notes": "Residual per-action authz (which token rewrites WHICH runner) pinned as open slice.",
+      "created_at": "2026-09-03T06:45:00Z",
+      "updated_at": "2026-09-03T06:45:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-fix-001",
+      "title": "k-054 re-land: cloneRAB deep-copy + rab_runtime_meta (v0.3.2 merge-precedence regression)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "PR #34 merged pre-adversary integration tip; fixes+tests re-landed via #35; verified by git grep on origin/main.",
+      "evidence": [
+        "docs/RELEASE-v0.3.2.md correction",
+        "PR #35",
+        "v0.3.3"
+      ],
+      "notes": "Lesson: verify remediation commits reachable from main after squash-merge (grep the fix, not the diffstat).",
+      "created_at": "2026-09-03T06:45:00Z",
+      "updated_at": "2026-09-03T06:45:00Z",
+      "status": "done"
     }
   ],
-  "updated_at": "2026-09-03T05:55:00Z"
+  "updated_at": "2026-09-03T06:45:00Z"
 }
