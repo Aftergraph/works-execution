@@ -14,29 +14,30 @@ and the contracts under `contracts/schemas/`.
 
 ## Background
 
-- **Enable posture.** The brain surface is **opt-in via
-  `WORKS_BRAIN_ENABLED=true`** in `/etc/works/works.env`. Without
-  it, every `/v1/brain/*` route answers
-  `503 brain_surface_disabled` — fail-closed and loud by design,
-  same shape as the link surface. There is no `WORKS_BRAIN_*SECRET`
-  to set: auth is bearer-token, the same worker enrollment tokens
-  the kernel already mints at `POST /v1/workers/enroll`.
+- **Enable posture.** The brain surface has **no env opt-in**: it
+  auto-enables once the binary's store satisfies the `BrainBackend`
+  interface (wired in `cmd/works-api/main.go` via type assertion,
+  `api.NewBrainServiceFromStore(st, st)`). Until k-042 (schema v11)
+  is in the running binary, every `/v1/brain/*` route answers
+  `503 brain_unavailable` — fail-closed and loud by design, same
+  shape as the link surface. There is no secret to set: auth is
+  bearer-token, the same worker enrollment tokens the kernel already
+  mints at `POST /v1/workers/enroll`.
 - **The store and the API land together.** The brain routes only
   become reachable once k-041 (kernel laws), k-042 (schema v11),
   and k-043 (REST surface) are all merged and the binary is
-  restarted. If you set `WORKS_BRAIN_ENABLED=true` on a binary
-  that has only some of the three, the routes still answer 503
-  with the specific reason — the boot log tells you which.
+  restarted. A binary that predates k-042 fails the store type
+  assertion, so routes answer 503 `brain_unavailable` — the boot log
+  tells you which prerequisite is missing.
 - **The boot log line is the truth.** After a successful restart
-  with all three slices live and the env var set:
+  with all three slices live:
   ```
-  Brain surface enabled
+  Brain surface enabled (/v1/brain/)
   ```
   This is the line you grep for. The mirror failure line
-  (`Brain surface mounted but unavailable (...)`) means the
-  surface is mounted but a prerequisite is not provisioned —
-  fix the prerequisite, do not turn the env var off under
-  pressure.
+  (`Brain surface mounted but unavailable`) means the k-043 routes
+  are mounted but the running binary's store cannot satisfy the
+  `BrainBackend` assertion — rebuild + restart, never a rollback.
 - **Auth model (v1).** Bearer enrollment tokens, the same JWTs
   workers get from `POST /v1/workers/enroll`. The same `WORKER_TOKEN`
   you use for `GET /v1/works` works for `GET /v1/brain/objects`
@@ -57,7 +58,7 @@ and the contracts under `contracts/schemas/`.
 
 The brain surface needs (a) the v0.3 binary on disk, (b) a
 restarted works-api so the v10 → v11 migration has run, (c)
-`WORKS_BRAIN_ENABLED=true` in `/etc/works/works.env`, (d) a worker
+the k-042 store methods in the running binary, (d) a worker
 enrollment secret in `WORKS_ENROLL_SECRET` (so you can mint a
 bearer token to call the routes with). Items (a) and (b) are the
 integrator's job; the runbook only checks them.
@@ -74,13 +75,17 @@ sqlite3 /var/lib/works/works.db 'select max(version) from schema_version'
 ```
 
 If you see `10`, the binary on disk is still v0.2. Build v0.3,
-restart, then re-check. Do not flip `WORKS_BRAIN_ENABLED` until
+restart, then re-check. Do not smoke-test /v1/brain until
 this returns `11`.
 
-## 2. Enable: WORKS_BRAIN_ENABLED=true
+## 2. Enable: rebuild + restart (no env flag exists)
+
+The surface has no opt-in: `cmd/works-api/main.go` wires
+`api.NewBrainServiceFromStore(st, st)` unconditionally, and the type
+assertion to `BrainBackend` is the interlock. Landing all three
+slices and restarting IS the enable:
 
 ```bash
-sudo sh -c 'echo "WORKS_BRAIN_ENABLED=true" >> /etc/works/works.env'
 sudo systemctl restart works-api works-worker
 ```
 
@@ -101,7 +106,7 @@ sudo journalctl -u works-api -n 20 --no-pager | grep "Brain surface"
 
 If the line says `Brain surface mounted but unavailable`, the
 surface is mounted but a prerequisite is missing — check
-`WORKS_BRAIN_ENABLED` is set, that the v0.3 binary is actually
+the store assertion passed, that the v0.3 binary is actually
 running, and that schema v11 is recorded. Do not "fix" by turning
 the env var off; that hides the misconfiguration.
 
@@ -260,7 +265,7 @@ curl -s -X POST http://127.0.0.1:18191/v1/brain/mounts/revoke \
 | 409 | `ephemeral_cannot_authoritate` | promote attempted on an `ephemeral` object (the central law's structural guard) |
 | 413 | `payload_too_large` | body exceeded 64 KiB |
 | 422 | `evidence_ref_not_found` | `evidence_ref` does not match an existing `wrk_<32hex>` work id |
-| 503 | `brain_surface_disabled` | the surface is mounted but `WORKS_BRAIN_ENABLED` is not set, or a prerequisite slice is missing |
+| 503 | `brain_unavailable` | the surface is mounted but the running binary's store lacks the k-042 methods (rebuild + restart) |
 | 503 | `brain_surface_unwired` | the surface env var is set but the underlying store is not at schema v11 (re-check step 1) |
 
 ## 6. Rollback: the kill-switch
@@ -289,7 +294,7 @@ switch is the operational tool.
 
 | Route | Mounted | Notes |
 |---|---|---|
-| `POST /v1/brain/objects` | yes (gated on `WORKS_BRAIN_ENABLED`) | append-only; `evidence_ref` required |
+| `POST /v1/brain/objects` | yes (auto-gated by the store assertion) | append-only; `evidence_ref` required |
 | `GET  /v1/brain/objects?path=...` | yes | latest non-tombstone revision at exact path |
 | `GET  /v1/brain/objects?prefix=...` | yes | list latest non-tombstone revisions under an org-rooted prefix |
 | `POST /v1/brain/objects/promote` | yes | appends a new `human_stamped` revision; rejected on `ephemeral` |

@@ -97,9 +97,10 @@ applied. Full release notes:
   `tests/contracts/contracts_test.go`. Ephemeral-class objects can
   never be promoted; tombstones are append-revisions, not deletes.
 - **`/v1/brain` surface** (k-043, ADR-0023): bearer-auth, 64 KiB
-  bodies, fail-closed 503 when unwired. Opt-in via
-  `WORKS_BRAIN_ENABLED=true`; the boot log line is
-  `Brain surface enabled`. Setup + smoke:
+  bodies, fail-closed 503 `brain_unavailable` until the k-042
+  store lands in the running binary (type-assertion interlock, no
+  env flag). The boot log line is `Brain surface enabled
+  (/v1/brain/)`. Setup + smoke:
   [docs/runbooks/brain-mounts.md](docs/runbooks/brain-mounts.md).
 
   | Endpoint | Method | Auth | Purpose |

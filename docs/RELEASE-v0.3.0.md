@@ -125,24 +125,23 @@ in this wave** — v1 mounts are bearer-auth with read scopes only.
 See *Known deferred limits* below.
 
 **Fail-closed 503-unwired design.** When the brain surface is not
-fully wired — the binary is v0.3 but the v0.2 link-pairing secret
-boundary or the enrollment secret boundary has not been
-provisioned — every `/v1/brain/*` route answers
-`503 brain_surface_disabled`. This is the same posture as the link
-surface and is **loud by design**: an operator pulling on a brain
-route before the wave is fully landed sees a 503 with the exact
-disable reason, never a 200 with an empty list. The boot log line is
-`Brain surface enabled` when live (mirrors the link-surface log
-line). This is what the runbook greps for.
+fully wired — the running binary predates k-042, so the concrete
+store does not yet satisfy the `BrainBackend` interface — every
+`/v1/brain/*` route answers `503 brain_unavailable`. There is no
+env opt-in and no secret: the wiring is a type assertion in
+`cmd/works-api/main.go`. This is **loud by design**: an operator
+pulling on a brain route before the wave is fully landed sees a 503
+with the exact reason, never a 200 with an empty list. The boot log
+line is `Brain surface enabled (/v1/brain/)` when live (mirrors the
+link-surface log line). This is what the runbook greps for.
 
 **The brain surface goes live when store + API land together.**
-k-041, k-042, and k-043 are three pieces of the same lock. The
-flag `WORKS_BRAIN_ENABLED` defaults to off; flipping it on without
-all three merges would expose routes against a store that does not
-have the brain tables, or a store that does have the tables but
-cannot serve the routes. The wave is gated on all three merges
-landing; the integrator sets the env var and restarts as one
-action.
+k-041, k-042, and k-043 are three pieces of the same lock: the
+routes mount whenever the API side (k-043) is in the binary, but
+they only *serve* once the store side (k-042) is too — the type
+assertion is the interlock. The integrator's deploy (rebuild +
+restart after all three merges) flips the surface live as one
+atomic action.
 
 ### k-044 — release.rings law (k-impl, `v03/release-rings`)
 
@@ -229,18 +228,17 @@ the next wave can silently slip them in.
 - **No breaking wire changes for existing routes.** `/link/v1/*`,
   `/v1/works/*`, `/v1/workers/*` are unchanged. The only new wire
   is the `/v1/brain/*` prefix above; it answers 503 until
-  `WORKS_BRAIN_ENABLED=true` is set.
+  the binary lacks the k-042 store methods.
 - **Schema migration v10 → v11, automatic and idempotent on
   restart.** Verified baseline (2026-09-03, on this host): the
   live `works.db` reports `max(version) = 10`. After the v0.3
   binary has restarted at least once, the same query returns
   `11`. The migration is `CREATE TABLE IF NOT EXISTS` only — no
   backfill, no destructive ALTER, safe to run repeatedly.
-- **`WORKS_BRAIN_ENABLED` is the new opt-in.** Default off; set
-  to `true` in `/etc/works/works.env` only **after** k-041,
-  k-042, and k-043 have all been merged and verified. Setting it
-  before all three is in is a misconfiguration and the routes
-  will answer 503. The runbook
+- **No new env flag.** The brain surface needs no opt-in and no
+  secret; k-041+k-042+k-043 in the running binary is the enable
+  condition (store type-assertion interlock). Until then routes
+  answer 503 `brain_unavailable`. The runbook
   ([docs/runbooks/brain-mounts.md](runbooks/brain-mounts.md))
   walks the smoke loop.
 - **`WORKS_BRAIN_KILL_SWITCH` ships populated.** The brain
@@ -287,7 +285,7 @@ All v0.2 invariants carry over. The one new invariant v0.3 adds:
 - Full suite `go test ./... -count=1` — all packages ok
 - Live store schema version (after restart): `11`
 - `journalctl -u works-api -n 20 --no-pager | grep "Brain surface"`
-  → `Brain surface enabled` when `WORKS_BRAIN_ENABLED=true`
+  → `Brain surface enabled (/v1/brain/)` once the store asserts
 
 ## ADR boundary (honest note)
 
