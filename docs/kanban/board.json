@@ -565,7 +565,7 @@
       "lane": "implementation",
       "column": "done",
       "standard_ids": [],
-      "acceptance": "cmd/works-bench + services/bench for {Actions, WORKS subprocess, WORKS Docker} × {cold, warm, recovery} runs same work, writes docs/benchmarks/m1-*.md with queue_time, exec_time, wall_time, cpu_time, cache_hit_ratio, est_cost_usd, comparison table.",
+      "acceptance": "cmd/works-bench + services/bench for {Actions, WORKS subprocess, WORKS Docker} \u00d7 {cold, warm, recovery} runs same work, writes docs/benchmarks/m1-*.md with queue_time, exec_time, wall_time, cpu_time, cache_hit_ratio, est_cost_usd, comparison table.",
       "evidence": [
         "cmd/works-bench/main.go",
         "services/bench/bench.go",
@@ -710,7 +710,7 @@
         "services/api/webui.go",
         "cmd/works-api/main.go"
       ],
-      "notes": "Days 31-60 minimal web execution view — the last uncovered item. 200 on all pages locally + via works.rendetalje.dk. Public=true in prod (read-only); set WORKS_WEBUI_PUBLIC=false + token for private.",
+      "notes": "Days 31-60 minimal web execution view \u2014 the last uncovered item. 200 on all pages locally + via works.rendetalje.dk. Public=true in prod (read-only); set WORKS_WEBUI_PUBLIC=false + token for private.",
       "created_at": "2026-08-31T21:00:00Z",
       "updated_at": "2026-08-31T21:00:00Z",
       "status": "done"
@@ -744,7 +744,7 @@
         "services/api/runner_heartbeat_test.go",
         "services/api/ready_cache_test.go"
       ],
-      "notes": "PR #7 (merged f1925c4). Root cause: registerRunner mutated the copy from get() without put() back — heartbeat never refreshed, runner went stale after 30s, ready handler fell back to legacy path, pool routing (RFC-0004) AND cache fingerprinting (RFC-0005) silently disabled in prod. Observed: heartbeat frozen 20:55:56Z for hours, all CI evidence 'cache: disabled'. After fix: heartbeat 1s old, vet cache:hit 0ms.",
+      "notes": "PR #7 (merged f1925c4). Root cause: registerRunner mutated the copy from get() without put() back \u2014 heartbeat never refreshed, runner went stale after 30s, ready handler fell back to legacy path, pool routing (RFC-0004) AND cache fingerprinting (RFC-0005) silently disabled in prod. Observed: heartbeat frozen 20:55:56Z for hours, all CI evidence 'cache: disabled'. After fix: heartbeat 1s old, vet cache:hit 0ms.",
       "created_at": "2026-09-01T00:20:00Z",
       "updated_at": "2026-09-01T00:20:00Z",
       "status": "done"
@@ -765,7 +765,7 @@
         "services/work/store/link_store_test.go",
         "merged PR #20 @ 4f9bc69 (exact-head CI success + post-merge main CI success)"
       ],
-      "notes": "ADR-0026/0027; schema v10 (link_devices, link_mounts). PULSE side exists since k-pulse-01 (packages/providers/pulse_provider.go) — this is the server half it speaks to. Budget 'consumed' deliberately not projected (kernel-in-metering, memory-only).",
+      "notes": "ADR-0026/0027; schema v10 (link_devices, link_mounts). PULSE side exists since k-pulse-01 (packages/providers/pulse_provider.go) \u2014 this is the server half it speaks to. Budget 'consumed' deliberately not projected (kernel-in-metering, memory-only).",
       "created_at": "2026-09-02T19:40:00Z",
       "updated_at": "2026-09-02T19:45:00Z",
       "status": "done"
@@ -876,7 +876,7 @@
     },
     {
       "id": "k-impl-041",
-      "title": "k-042: durable brain store — schema v11 brain_objects+brain_mounts",
+      "title": "k-042: durable brain store \u2014 schema v11 brain_objects+brain_mounts",
       "lane": "implementation",
       "column": "done",
       "standard_ids": [],
@@ -942,7 +942,77 @@
       "created_at": "2026-09-03T02:05:00Z",
       "updated_at": "2026-09-03T02:05:00Z",
       "status": "done"
+    },
+    {
+      "id": "k-impl-045",
+      "title": "k-046: secret.ref/1.0 kernel law (packages/secrets, ADR-0022) \u2014 value-never-serializes",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; octopus-merge + full-suite green.",
+      "evidence": [
+        "packages/secrets/secrets.go",
+        "packages/secrets/secrets_test.go",
+        "branch v03/secret-ref @ 10473776",
+        "PR #33"
+      ],
+      "notes": "Pure-domain; disjoint from brain wave. Minimax-m3 leaf.",
+      "created_at": "2026-09-03T03:35:00Z",
+      "updated_at": "2026-09-03T03:35:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-046",
+      "title": "k-047: observability-vs-evidence boundary law (packages/obslaw, ADR-0024)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; octopus-merge + full-suite green.",
+      "evidence": [
+        "packages/obslaw/{doc,record,verifier}.go",
+        "branch v03/obs-boundary @ 24f5c2ce",
+        "PR #33"
+      ],
+      "notes": "Pure-domain; HMAC-SHA256 over canonical JSON; tamper+value-copy audit. Minimax-m3 leaf.",
+      "created_at": "2026-09-03T03:35:00Z",
+      "updated_at": "2026-09-03T03:35:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-047",
+      "title": "k-048: rab/1.0 runtime capability advertisement (packages/abi, ADR-0012/0014)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; octopus-merge + full-suite green.",
+      "evidence": [
+        "packages/abi/abi.go",
+        "branch v03/rab-abi @ 4501b90",
+        "PR #33"
+      ],
+      "notes": "Pure-domain; control-token law the schema cannot express gets Go teeth. Nemotron-ultra leaf.",
+      "created_at": "2026-09-03T03:35:00Z",
+      "updated_at": "2026-09-03T03:35:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-048",
+      "title": "k-049: standards coverage-audit tool (works-standards audit subcommand)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; full-suite green; real-repo audit runs without panic.",
+      "evidence": [
+        "internal/standards/audit.go",
+        "cmd/works-standards/main.go",
+        "branch v03/standards-audit @ 7aa3159",
+        "PR #33"
+      ],
+      "notes": "Tooling slice; surfaces 10 orphan-mapping High findings (exit 1 by design). Ling-flash leaf.",
+      "created_at": "2026-09-03T03:35:00Z",
+      "updated_at": "2026-09-03T03:35:00Z",
+      "status": "done"
     }
   ],
-  "updated_at": "2026-09-01T00:20:00Z"
+  "updated_at": "2026-09-03T03:35:00Z"
 }
