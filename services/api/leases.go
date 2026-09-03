@@ -92,6 +92,18 @@ func (s *Server) grantLease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_field", "work_id, node_id, worker_id are required")
 		return
 	}
+	// k-058: rab/1.0 advertisement law at claim time (claim = lease grant;
+	// workers self-claim via POST /v1/leases/grant). Denied claims return
+	// 403 BEFORE any lease state transition. The runner-identity interlock
+	// is the claiming worker's worker_id resolved against the runner
+	// registry (the worker_id == runner_id convention already load-bearing
+	// for BYOC pool enforcement below); no RAB on file => legacy pass.
+	// See claim_abi_gate.go for the full law.
+	if code, reason, gateOK := s.gateClaimByRAB(r.Context(), body.WorkerID, r); !gateOK {
+		s.logf("claim gate denied: worker=%s code=%s", body.WorkerID, reason)
+		writeError(w, code, reason, "advertised RAB requires "+rabControlTokenHeader+" at claim")
+		return
+	}
 	ttl := time.Duration(body.TTLSeconds) * time.Second
 
 	// Load the work once; both the pool check and the policy check
