@@ -126,6 +126,14 @@ type Options struct {
 	PlanOverride []Step
 	// BuildInfo is the runtime fingerprint to attach to Result.
 	BuildInfo BuildInfo
+	// SecretResolver optionally resolves "secret://..." REFs appearing as
+	// Step.Env values at execution time (ADR-0022). Nil (the default) keeps
+	// the legacy behavior: such a string passes through into the child env
+	// literally.
+	SecretResolver SecretResolver
+	// SecretScope is the lookup scope passed to SecretResolver. Empty means
+	// the resolver's own default scope.
+	SecretScope string
 }
 
 // Run executes the plan for the given stack inside workdir. Returns
@@ -151,7 +159,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		GoVersion: detectGoVersion(ctx, opts.Workdir),
 	}
 	for _, step := range plan {
-		sr := runStep(ctx, opts.Workdir, step)
+		sr := runStep(ctx, opts.Workdir, step, opts.SecretResolver, opts.SecretScope)
 		res.Steps = append(res.Steps, sr)
 		if sr.ExitCode != 0 {
 			res.Failed = true
@@ -167,14 +175,37 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 // runStep runs a single step and returns its result. Stdout and
 // stderr are captured in full (we have no log streaming in M1;
 // the worker writes them to the artifact dir under the work id).
-func runStep(ctx context.Context, workdir string, step Step) StepResult {
+//
+// resolver/scope implement ADR-0022 execution-time REF resolution: when a
+// resolver is configured, Step.Env values shaped like "secret://..." refs
+// are resolved just before exec and the values placed only into the child's
+// env. A nil resolver leaves step.Env untouched (legacy pass-through).
+func runStep(ctx context.Context, workdir string, step Step, resolver SecretResolver, scope string) StepResult {
 	start := time.Now().UTC()
 	sctx, cancel := context.WithTimeout(ctx, step.Timeout)
 	defer cancel()
 
+	stepEnv := step.Env
+	if resolver != nil {
+		resolved, err := resolver.ResolveEnv(sctx, scope, step.Env)
+		if err != nil {
+			// Resolution failed: the step fails without exec'ing, reported
+			// exactly like the non-ExitError path below (exit -1, message in
+			// stderr). The message names the REF - never a value.
+			end := time.Now().UTC()
+			return StepResult{
+				Name:       step.Name,
+				ExitCode:   -1,
+				Stderr:     truncate(err.Error(), 64*1024),
+				DurationMs: end.Sub(start).Milliseconds(),
+			}
+		}
+		stepEnv = resolved
+	}
+
 	cmd := exec.CommandContext(sctx, step.Cmd, step.Args...)
 	cmd.Dir = workdir
-	cmd.Env = mergeEnv(os.Environ(), step.Env)
+	cmd.Env = mergeEnv(os.Environ(), stepEnv)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
