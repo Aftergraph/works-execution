@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/JonasAbde/works-execution/internal/worker"
+	"github.com/JonasAbde/works-execution/services/runner"
 )
 
 // enrollmentReq is the body of POST /v1/workers/enroll.
@@ -83,7 +84,7 @@ func (s *Server) enrollHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validWorkerID(req.WorkerID) {
 		writeError(w, http.StatusBadRequest, "invalid_worker_id",
-			"worker_id must match ^[A-Za-z0-9_.-]{1,128}$")
+			"worker_id must match "+runner.RunnerIDPatternSource+" (the registry pattern; k-066)")
 		return
 	}
 	if !enrollEqual(req.Challenge, s.EnrollSecret) {
@@ -120,28 +121,15 @@ func (s *Server) enrollHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // validWorkerID enforces a conservative character set. We don't want
-// worker IDs to be passable as path segments, header values, or log
-// keys with arbitrary control characters. The constraint is:
-//
-//	[A-Za-z0-9_.-]{1,128}
-//
-// This matches the IDs the worker generates itself (wrkr_<hex>) and
-// the IDs operators may pass via flag/env.
+// to widen the enrollment charset beyond the registry pattern: k-064
+// finding B proved that accepting an id the registry cannot ever hold
+// leaves it in k-058's legacy-pass class forever. So enrollment now
+// requires the SAME pattern services/runner registry.go
+// (runnerIDPattern) accepts — ^wrkr_[a-z0-9_-]{1,64}$ — and a
+// TestAdversary34_EnrollmentCharsetLegacyPass pin flips to a denial
+// if this invariant drifts.
 func validWorkerID(id string) bool {
-	if len(id) == 0 || len(id) > 128 {
-		return false
-	}
-	for _, r := range id {
-		switch {
-		case r >= 'a' && r <= 'z':
-		case r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-		case r == '_' || r == '.' || r == '-':
-		default:
-			return false
-		}
-	}
-	return true
+	return runner.RunnerIDPattern.MatchString(id)
 }
 
 // enrollEqual is a constant-time challenge comparison to prevent timing

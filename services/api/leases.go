@@ -61,6 +61,17 @@ func (s *Server) leaseItemHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", r.Method)
 		return
 	}
+	// k-065: owner-bind the state-mutating lease verbs. Every action on an
+	// existing lease (heartbeat/complete/release/revoke) must be issued by
+	// the token bound to the lease's worker_id — bearer-only auth here was
+	// finding D's gap. Grant is covered separately by k-060's gate in
+	// grantLease; this is the non-creation path only. 404-before-403 (no
+	// oracle); denial never mutates state. Dev mode (nil claims) passes.
+	if code, reason, ownerOK := s.gateLeaseOwner(r, leaseID); !ownerOK {
+		s.logf("lease %s denied: code=%s reason=%s", action, reason, leaseID)
+		writeError(w, code, reason, reason)
+		return
+	}
 	switch action {
 	case "heartbeat":
 		s.heartbeatLease(w, r, leaseID)
@@ -90,6 +101,19 @@ func (s *Server) grantLease(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.WorkID == "" || body.NodeID == "" || body.WorkerID == "" {
 		writeError(w, http.StatusBadRequest, "missing_field", "work_id, node_id, worker_id are required")
+		return
+	}
+	// k-067: canonicalize the caller-supplied worker_id before any gating or
+	// persistence. A trailing/padding space (`"wrkr_a "`) is the k-064 finding
+	// C exploit: in dev mode (nil claims) the lookup-by-id is exact-match so
+	// the padded id lands in no-RAB legacy-pass and is then stored verbatim on
+	// the lease + attempt, forging a second worker identity. Trimming here
+	// makes the persisted identity equal the registry key for the real runner.
+	// This is a normalization LAW, not a charset law (k-066), so it does not
+	// relax validWorkerID; a non-space-padded bad id still fails elsewhere.
+	body.WorkerID = strings.TrimSpace(body.WorkerID)
+	if body.WorkerID == "" {
+		writeError(w, http.StatusBadRequest, "invalid_worker_id", "worker_id must not be whitespace-only")
 		return
 	}
 	// k-060: per-action authz -- the body's worker_id must equal the
@@ -266,8 +290,8 @@ func (s *Server) heartbeatLease(w http.ResponseWriter, r *http.Request, leaseID 
 
 // completeLeaseBody is POST /v1/leases/{id}/complete.
 type completeLeaseBody struct {
-	ExitCode int                `json:"exit_code"`
-	Artifact *workgraph.Artifact `json:"artifact,omitempty"`
+	ExitCode int                  `json:"exit_code"`
+	Artifact *workgraph.Artifact  `json:"artifact,omitempty"`
 	Evidence []workgraph.Evidence `json:"evidence,omitempty"`
 }
 

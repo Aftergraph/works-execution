@@ -44,13 +44,13 @@ const (
 // fields we actually advertise are typed; unknown fields are preserved by
 // BuildIdentity callers via the Labels map.
 type Capabilities struct {
-	OS          []string `json:"os"`
-	Arch        []string `json:"arch"`
-	CPUMilli    int      `json:"cpu_milli,omitempty"`
-	MemoryMiB   int      `json:"memory_mib,omitempty"`
-	GPU         int      `json:"gpu,omitempty"`
-	Toolchains  []string `json:"toolchains,omitempty"`
-	Labels      []string `json:"labels,omitempty"`
+	OS         []string `json:"os"`
+	Arch       []string `json:"arch"`
+	CPUMilli   int      `json:"cpu_milli,omitempty"`
+	MemoryMiB  int      `json:"memory_mib,omitempty"`
+	GPU        int      `json:"gpu,omitempty"`
+	Toolchains []string `json:"toolchains,omitempty"`
+	Labels     []string `json:"labels,omitempty"`
 }
 
 // Identity is the in-memory shape of a Runner Identity Record. JSON tags
@@ -71,7 +71,15 @@ const trustDomain = "works-execution"
 // Patterns copied verbatim from runner-identity.schema.json. Any change here
 // must also be reflected in the schema (and vice versa).
 var (
-	runnerIDPattern = regexp.MustCompile(`^wrkr_[a-z0-9_-]{1,64}$`)
+	// RunnerIDPattern is the character+length contract for every runner id
+	// the registry accepts. Exported so the API enrollment layer can enforce
+	// the SAME charset on /v1/workers/enroll — closing the k-064 finding B
+	// gap where a verified identity could hold a shape the registry rejects,
+	// stranding it in k-058's legacy-pass class.
+	RunnerIDPatternSource = `^wrkr_[a-z0-9_-]{1,64}$`
+	RunnerIDPattern       = regexp.MustCompile(RunnerIDPatternSource)
+
+	runnerIDPattern = RunnerIDPattern
 	spiffePattern   = regexp.MustCompile(`^spiffe://[a-z][a-z0-9.-]*/ns/[a-z0-9-]+/sa/[a-z0-9_-]+$`)
 )
 
