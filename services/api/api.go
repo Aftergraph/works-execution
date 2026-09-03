@@ -169,8 +169,17 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/v1/workers/", s.requireBearer(http.HandlerFunc(s.workersAuthHandler)))
 	mux.Handle("/v1/leases", s.requireBearer(http.HandlerFunc(s.leasesPathHandler)))
 	mux.Handle("/v1/leases/", s.requireBearer(http.HandlerFunc(s.leaseItemHandler)))
-	mux.HandleFunc("/v1/runners/register", s.registerRunner)                                // POST runner identity
-	mux.HandleFunc("/v1/runners/", s.runnerPathHandler)                                     // GET /v1/runners/{id}
+	mux.HandleFunc("/v1/runners/register", s.registerRunner) // POST runner identity
+	mux.HandleFunc("/v1/runners/", s.runnerPathHandler)      // GET /v1/runners/{id}
+	// k-053 (ADR-0012/0014): rab/1.0 runtime capability advertisement.
+	// Additive wildcard routes on the runner surface; the handlers enforce
+	// the integration-order law (RAB requires a registered identity, else
+	// 404). These patterns are more specific than the /v1/runners/ prefix
+	// catch-all above, so ServeMux routes them here and nothing else
+	// changes.
+	mux.HandleFunc("POST /v1/runners/{id}/abi", s.postRunnerABI)                            // publish/overwrite RAB
+	mux.HandleFunc("GET /v1/runners/{id}/abi", s.getRunnerABI)                              // read stored RAB
+	mux.HandleFunc("POST /v1/runners/{id}/abi/negotiate", s.negotiateRunnerABI)             // negotiate caps (fail-closed)
 	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler))) // GET = CloudEvents audit stream
 	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                // GET = DORA metrics
 	mux.HandleFunc("/healthz", s.healthz)
