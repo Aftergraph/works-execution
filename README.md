@@ -74,6 +74,58 @@ Full release notes: [docs/RELEASE-v0.2.0.md](docs/RELEASE-v0.2.0.md).
   link surface — mounting a route that must refuse everything is how a hole
   gets opened later.
 
+## Kernel & contracts (v0.3) — Company Brain
+
+v0.2 froze the kernel's external behavior behind hash-attested contracts.
+v0.3 teaches the kernel the *Company Brain*: five collections under
+`/org/<id>/{missions,decisions,capabilities,evidence,notes}` where
+knowledge is **mounted, not prompted**. An agent cites a decision by
+asking the kernel for a mount of that path — the kernel returns a
+read view, scoped to the caller, with the authority law already
+applied. Full release notes:
+[docs/RELEASE-v0.3.0.md](docs/RELEASE-v0.3.0.md).
+
+- **Freeze law (unchanged):** `contracts/manifest.json` is still the
+  freeze attestation. v0.3 adds the *operational* law
+  (`release.rings/1.0`) that the brain surface is the first to roll
+  out under — one-step-only, 48h beta soak, kill-switch required
+  off-internal, RevertLog, stable needs freeze evidence.
+- **`brain.ns/1.0` central law:** `authoritative == true` ⇒
+  `promotion == "human_stamped"`. Three-enforced — schema
+  (`allOf/if/then`), store (re-validated on insert), and
+  `TestAdversarialAgentKnowledgeCannotBecomeAuthoritative` in
+  `tests/contracts/contracts_test.go`. Ephemeral-class objects can
+  never be promoted; tombstones are append-revisions, not deletes.
+- **`/v1/brain` surface** (k-043, ADR-0023): bearer-auth, 64 KiB
+  bodies, fail-closed 503 `brain_unavailable` until the k-042
+  store lands in the running binary (type-assertion interlock, no
+  env flag). The boot log line is `Brain surface enabled
+  (/v1/brain/)`. Setup + smoke:
+  [docs/runbooks/brain-mounts.md](docs/runbooks/brain-mounts.md).
+
+  | Endpoint | Method | Auth | Purpose |
+  |---|---|---|---|
+  | `/v1/brain/objects` | POST | Bearer (write) | append a new revision (writes require a real `wrk_<32hex>` evidence_ref) |
+  | `/v1/brain/objects` | GET | Bearer (read) | `?path=<exact>` or `?prefix=<dir>`; latest non-tombstone revision(s) |
+  | `/v1/brain/objects/promote` | POST | Bearer (write) | append a `human_stamped` revision; rejected on `ephemeral` |
+  | `/v1/brain/objects/tombstone` | POST | Bearer (write) | append a tombstone revision; default reads hide the object |
+  | `/v1/brain/mounts` | POST | Bearer | create a read view of an org-rooted path (org-boundary checked) |
+  | `/v1/brain/mounts` | GET | Bearer | `?subject=self` (default) lists the caller's active mounts |
+  | `/v1/brain/mounts/revoke` | POST | Bearer | idempotent self-revoke |
+
+  **Schema v11, idempotent on restart.** Measured baseline on this
+  host (2026-09-03): `max(version)` = `10`. After the v0.3 binary
+  restarts at least once: `11`. Verify with
+  `sqlite3 /var/lib/works/works.db 'select max(version) from schema_version'`.
+
+  **Honest deferred limits (not in v0.3):** policy-token
+  scope-subset enforcement on mounts (ADR-0023 §6) — v1 mounts are
+  bearer-auth with read scopes only; PULSE edge-mounts over
+  `/link/v1` (a later slice); no search/index (ADR-0023 §5
+  rejected search-as-source); content is not deduplicated across
+  paths; the `works brain` CLI verb ships in a sibling slice, not
+  in this wave. The runbook documents each one.
+
 ## Deviations from the pack
 
 - **ADR-0005:** V1 uses SQLite instead of PostgreSQL for state. Migration path documented.
