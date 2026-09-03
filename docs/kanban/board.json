@@ -856,6 +856,92 @@
       "created_at": "2026-09-02T20:15:00Z",
       "updated_at": "2026-09-02T20:15:00Z",
       "status": "done"
+    },
+    {
+      "id": "k-impl-040",
+      "title": "k-041: brain.ns/1.0 kernel laws (packages/brain)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; exact-head CI + post-merge main gates green.",
+      "evidence": [
+        "packages/brain/brain.go",
+        "packages/brain/brain_test.go",
+        "PR #29 (merged 857bc5d)"
+      ],
+      "notes": "v0.3.0 Company Brain wave (5-worker parallel dispatch, disjoint ownership; integrator corrected docs env-flag claim against merged code).",
+      "created_at": "2026-09-03T02:05:00Z",
+      "updated_at": "2026-09-03T02:05:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-041",
+      "title": "k-042: durable brain store — schema v11 brain_objects+brain_mounts",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; exact-head CI + post-merge main gates green.",
+      "evidence": [
+        "services/work/store/brain_store.go",
+        "services/work/store/brain_store_test.go",
+        "PR #29"
+      ],
+      "notes": "v0.3.0 Company Brain wave (5-worker parallel dispatch, disjoint ownership; integrator corrected docs env-flag claim against merged code).",
+      "created_at": "2026-09-03T02:05:00Z",
+      "updated_at": "2026-09-03T02:05:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-042",
+      "title": "k-043: /v1/brain REST surface with store-assertion interlock",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; exact-head CI + post-merge main gates green.",
+      "evidence": [
+        "services/api/brain_handler.go",
+        "services/api/brain_handler_test.go",
+        "PR #29"
+      ],
+      "notes": "v0.3.0 Company Brain wave (5-worker parallel dispatch, disjoint ownership; integrator corrected docs env-flag claim against merged code).",
+      "created_at": "2026-09-03T02:05:00Z",
+      "updated_at": "2026-09-03T02:05:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-043",
+      "title": "k-044: release.rings/1.0 promotion law (packages/release)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; exact-head CI + post-merge main gates green.",
+      "evidence": [
+        "packages/release/release.go",
+        "packages/release/release_test.go",
+        "PR #29"
+      ],
+      "notes": "v0.3.0 Company Brain wave (5-worker parallel dispatch, disjoint ownership; integrator corrected docs env-flag claim against merged code).",
+      "created_at": "2026-09-03T02:05:00Z",
+      "updated_at": "2026-09-03T02:05:00Z",
+      "status": "done"
+    },
+    {
+      "id": "k-impl-044",
+      "title": "k-045: v0.3.0 brain release notes + runbook (with wiring-accuracy correction)",
+      "lane": "implementation",
+      "column": "done",
+      "standard_ids": [],
+      "acceptance": "See PR evidence; exact-head CI + post-merge main gates green.",
+      "evidence": [
+        "docs/RELEASE-v0.3.0.md",
+        "docs/runbooks/brain-mounts.md",
+        "README.md",
+        "PR #30 (merged a8e05ad)"
+      ],
+      "notes": "v0.3.0 Company Brain wave (5-worker parallel dispatch, disjoint ownership; integrator corrected docs env-flag claim against merged code).",
+      "created_at": "2026-09-03T02:05:00Z",
+      "updated_at": "2026-09-03T02:05:00Z",
+      "status": "done"
     }
   ],
   "updated_at": "2026-09-01T00:20:00Z"
