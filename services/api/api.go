@@ -105,6 +105,15 @@ type Server struct {
 	// surface (/link/v1, k-link-01 / ADR-0026). A mounted-but-unconfigured
 	// surface answers 503 fail-closed; the routes exist, the laws refuse.
 	Link *LinkConfig
+	// Brain, when non-nil, mounts the /v1/brain surface (k-043). A
+	// mounted-but-unconfigured service (Backend or Works nil) answers
+	// 503 brain_unavailable on every route — the fail-closed law. The
+	// concrete store is wired by cmd/works-api/main.go via
+	// NewBrainServiceFromStore; while the k-042 sibling branch is
+	// unmerged, the BrainBackend assertion fails and the surface stays
+	// 503 by design. After k-042 lands, the integrator's post-merge
+	// deploy flips the service live.
+	Brain *BrainService
 }
 
 // ensureIssuer returns s.Auth, lazily constructing a default HMACIssuer
@@ -151,17 +160,17 @@ type ProvenanceConfig struct {
 func (s *Server) Routes() http.Handler {
 	s.ensureIssuer()
 	mux := http.NewServeMux()
-	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))           // POST = create, GET = list
-	mux.HandleFunc("/v1/works/", s.workPathHandler)       // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
-	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler) // unauthenticated; issues tokens
+	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler))) // POST = create, GET = list
+	mux.HandleFunc("/v1/works/", s.workPathHandler)                            // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
+	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)                      // unauthenticated; issues tokens
 	// /v1/workers/ and /v1/leases/ are mounted through auth middleware.
 	// We can't wrap an http.Handler with a HandleFunc, so we register the
 	// mux's path under a small dispatcher that runs requireBearer first.
 	mux.Handle("/v1/workers/", s.requireBearer(http.HandlerFunc(s.workersAuthHandler)))
 	mux.Handle("/v1/leases", s.requireBearer(http.HandlerFunc(s.leasesPathHandler)))
 	mux.Handle("/v1/leases/", s.requireBearer(http.HandlerFunc(s.leaseItemHandler)))
-	mux.HandleFunc("/v1/runners/register", s.registerRunner) // POST runner identity
-	mux.HandleFunc("/v1/runners/", s.runnerPathHandler)      // GET /v1/runners/{id}
+	mux.HandleFunc("/v1/runners/register", s.registerRunner)                                // POST runner identity
+	mux.HandleFunc("/v1/runners/", s.runnerPathHandler)                                     // GET /v1/runners/{id}
 	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler))) // GET = CloudEvents audit stream
 	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                // GET = DORA metrics
 	mux.HandleFunc("/healthz", s.healthz)
@@ -193,6 +202,14 @@ func (s *Server) Routes() http.Handler {
 	// outside requireBearer by design (see link_handler.go).
 	if s.Link != nil {
 		mux.HandleFunc("/link/v1/", s.linkHandler)
+	}
+	// k-043: the /v1/brain knowledge surface. Mounted whenever s.Brain
+	// is non-nil; the handler itself enforces the 503 fail-closed law
+	// (Disabled==true) and the 404-not-mounted law (s.Brain==nil — the
+	// mux returns 404 automatically in that case). The entire subtree
+	// sits behind requireBearer, matching the worker surface.
+	if s.Brain != nil {
+		mux.Handle("/v1/brain/", s.requireBearer(http.HandlerFunc(s.brainRouter)))
 	}
 	if s.Metrics != nil {
 		// GET /metrics — Prometheus exposition. Internal scrape only; not
