@@ -26,10 +26,16 @@
 // that loses capabilities re-advertises a smaller RAB; capability state is
 // owned by the runtime, not the operator.
 //
-// Auth: the runner registration surface (POST /v1/runners/register,
-// GET /v1/runners/{id}) is mounted unauthenticated in Routes(); these
-// endpoints follow that existing convention unchanged. Nothing here is
-// weaker: registration itself remains the gate that mints the runner id.
+// Auth: k-059 (closes k-054 finding C). The mutating endpoint POST
+// /abi is mounted behind requireBearer in Routes(): publishing or
+// overwriting a runner's capability advertisement requires a valid
+// enrollment bearer token, so it is no longer an anonymous
+// capability-downgrade primitive. The read endpoints (GET /abi,
+// POST /abi/negotiate) stay unauthenticated, matching the public
+// identity reads on GET /v1/runners/{id}. Bearer proves token
+// validity, not ownership: which token may rewrite WHICH runner is
+// per-runner authz and remains an open per-action authz slice
+// (auth.go: requireBearer is NOT a substitute for per-action authz).
 //
 // Wire-visible law: the control-token rule (caps contains "control" =>
 // control_token_required must be true) is enforced at POST with the kernel's
