@@ -1,14 +1,20 @@
-# works-execution
+# works-execution (WORKS)
 
 > Autonomous Software Execution Infrastructure — verified software state as the output.
 
-**Brand:** works-execution (working title; `WORKS` in the source pack).
-**Status:** Slice 1 of V1 — Go monorepo + durable `Work` primitive + local worker + minimal API + CLI.
-**Track:** Normal (this slice introduces code). First PR will declare Track: Fast for docs-only, Normal here.
+**Brand:** WORKS (working repo name; full trademark review pending, ADR-0006).
+**Status:** v0.3.5 on main (`9d4f92c..HEAD` line: v0.3.5 wave closed the k-064 composition-adversary ledger; v0.3 added the Company Brain; v0.2 froze the kernel behind hash-attested contracts).
+
+> WORKS is the durable execution plane of the working ABDE Platform
+> architecture — missions, WorkGraph/DAG, scheduler, workers, leases,
+> retry/recovery, sandboxing, execution evidence, and quittance / verified
+> settlement — while remaining independently versioned and contract-governed.
+> ABDE is not the normative source of WORKS contracts; the frozen contract
+> manifests and ADRs are.
 
 ## What this repo is
 
-A standalone venture (not an AVC subsystem). The durable `Work` object is the source of execution truth; workers are disposable; the control plane owns state. See `docs/works-venture-starter-pack/` for the full operating plan.
+A standalone venture. The durable `Work` object is the source of execution truth; workers are disposable; the control plane owns state. See `docs/works-venture-starter-pack/` for the full operating plan.
 
 ## Quick start
 
@@ -74,7 +80,14 @@ Full release notes: [docs/RELEASE-v0.2.0.md](docs/RELEASE-v0.2.0.md).
   link surface — mounting a route that must refuse everything is how a hole
   gets opened later.
 
-## Kernel & contracts (v0.3) — Company Brain
+## Kernel & contracts (v0.3.5) — current wave
+
+v0.3.5 (RELEASE-v0.3.5.md) closed the k-064 composition-adversary ledger
+(k-065 owner-bound non-grant lease verbs with 404-before-403, k-066 one
+charset law across enroll/registry, k-067 dev-mode lookalike worker-id
+fix) and restored the dropped `adversary_v034_test.go` pins. Live
+verification on :18191 (k-065..k-067 findings closed) is recorded in the
+kanban trail; v0.3.5 notes mark deploy status explicitly.
 
 v0.2 froze the kernel's external behavior behind hash-attested contracts.
 v0.3 teaches the kernel the *Company Brain*: five collections under
