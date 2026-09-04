@@ -133,4 +133,8 @@ applied. Full release notes:
 
 ## License
 
-TBD (see `12_LEGAL_CHECKLIST/OPEN_SOURCE_STRATEGY.md` in the source pack).
+TBD (see `docs/LEGAL_CHECKLIST/OPEN_SOURCE_STRATEGY.md` in the source pack).
+
+---
+
+**Brand status:** Aftergraph / ABDE Intelligence are PROVISIONAL — NOT TRADEMARK CLEARED. No irreversible branding until clearance.
