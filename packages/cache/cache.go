@@ -80,9 +80,13 @@ func (k Key) Fingerprint() (string, error) {
 
 // KeyFromNode builds the fingerprint key for one (work, node) pair.
 // Scope uplevels to the caller: worker-local keys include the worker
-// id, organization keys do not.
+// id, organization keys do not. When the node declares CacheSpec
+// KeyInputs, only the named fields participate in the fingerprint —
+// e.g. key_inputs: [run, repository] makes push-CI cache hits
+// possible across different SHAs (the default includes SHA, which
+// makes every push a fresh key by construction).
 func KeyFromNode(work *workgraph.Work, node *workgraph.Node, scope string) Key {
-	return Key{
+	k := Key{
 		Run:        node.Run,
 		Repository: work.Source.Repository,
 		Ref:        work.Source.Ref,
@@ -92,6 +96,35 @@ func KeyFromNode(work *workgraph.Work, node *workgraph.Node, scope string) Key {
 		Arch:       work.Requirements.Arch,
 		Scope:      scope,
 	}
+	if node.CacheSpec == nil || len(node.CacheSpec.KeyInputs) == 0 {
+		return k
+	}
+	allowed := map[string]bool{}
+	for _, f := range node.CacheSpec.KeyInputs {
+		allowed[f] = true
+	}
+	if !allowed["run"] {
+		k.Run = ""
+	}
+	if !allowed["repository"] {
+		k.Repository = ""
+	}
+	if !allowed["ref"] {
+		k.Ref = ""
+	}
+	if !allowed["sha"] {
+		k.SHA = ""
+	}
+	if !allowed["env"] {
+		k.Env = nil
+	}
+	if !allowed["os"] {
+		k.OS = ""
+	}
+	if !allowed["arch"] {
+		k.Arch = ""
+	}
+	return k
 }
 
 // Entry is a stored cache hit: what happened last time identical
