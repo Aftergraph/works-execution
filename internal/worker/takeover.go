@@ -76,19 +76,21 @@ func (h *TakeoverHandler) HandleTakeover(ctx context.Context, req TakeoverReques
 		Reason:  "",
 	}
 
-	// HC8 Requirement 3: Check permissions subset-only (no authority escalation)
-	originalPerms := h.originalPermissions[req.WorkerID]
-	if !isPermissionsSubset(req.Permissions, originalPerms) {
-		result.Reason = "permissions escalation detected"
-		return result
-	}
-
-	// HC8 Requirement 1: Re-validate lease via AIE revalidate hook
+	// HC8 Requirement 1: Re-validate lease via AIE revalidate hook — FIRST, because
+	// the hook is the primary authority check; escalation prevention (subset check)
+	// runs after so a fail-closed revalidation is always exercised.
 	if h.revalidateHook != nil {
 		if err := h.revalidateHook(ctx, req.OriginalLeaseID, req.NewWorkerID); err != nil {
 			result.Reason = fmt.Sprintf("AIE revalidation failed: %v", err)
 			return result
 		}
+	}
+
+	// HC8 Requirement 3: Check permissions subset-only (no authority escalation)
+	originalPerms := h.originalPermissions[req.WorkerID]
+	if !isPermissionsSubset(req.Permissions, originalPerms) {
+		result.Reason = "permissions escalation detected"
+		return result
 	}
 
 	// Create evidence entry for audit trail

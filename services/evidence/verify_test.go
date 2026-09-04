@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JonasAbde/works-execution/packages/workgraph"
 )
 
 // TestVerifyBundle_HMACValidation tests the HMAC-SHA256 signature check.

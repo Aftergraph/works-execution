@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JonasAbde/works-execution/packages/workgraph"
 )
 
 func TestTakeoverHandler_PermissionsSubset(t *testing.T) {
