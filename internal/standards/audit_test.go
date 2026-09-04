@@ -3,6 +3,7 @@ package standards_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -300,9 +301,20 @@ func TestAudit_RealRepoNoPanic(t *testing.T) {
 	// Integration-ish check: point at the real repo and assert no panic
 	// and a non-nil findings slice. Do NOT assert counts — they change
 	// as content lands.
+	//
+	// Root the path in the repo itself (via this test file's location)
+	// instead of a hard-coded worktree path: the previous "/tmp/wt-s049"
+	// made the suite environment-dependent — it passed only on machines
+	// where that old worktree still existed and failed everywhere else
+	// (nil findings) once the directory was cleaned up.
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("cannot resolve test file location")
+	}
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
 	findings, err := standards.Audit(
 		standards.Docs{SchemaVersion: "1.0.0"},
-		"/tmp/wt-s049",
+		repoRoot,
 		time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC),
 	)
 	if err != nil {

@@ -54,6 +54,12 @@ type nodeDoc struct {
 	Cache    bool              `yaml:"cache"`
 	TimeoutS int               `yaml:"timeout_s"`
 	Env      map[string]string `yaml:"env"`
+	// CacheKeyInputs restricts which fields participate in the
+	// RFC-0005 cache fingerprint (requires cache: true). Default
+	// (empty) = all fields including the push SHA, i.e. every
+	// push is a fresh key. Use e.g. [run, repository] to let
+	// byte-identical pipelines hit the cache across pushes.
+	CacheKeyInputs []string `yaml:"cache_key_inputs"`
 }
 
 // Parse converts a works.yml document into a Work template. The
@@ -80,7 +86,7 @@ func Parse(raw []byte) (*workgraph.Work, error) {
 
 	nodes := map[string]workgraph.Node{}
 	for nName, n := range c.Nodes {
-		nodes[nName] = workgraph.Node{
+		node := workgraph.Node{
 			ID:       nName,
 			Run:      n.Run,
 			Needs:    n.Needs,
@@ -88,6 +94,14 @@ func Parse(raw []byte) (*workgraph.Work, error) {
 			Env:      n.Env,
 			TimeoutS: n.TimeoutS,
 		}
+		if n.Cache && len(n.CacheKeyInputs) > 0 {
+			node.CacheSpec = &workgraph.CacheSpec{
+				Enabled:   true,
+				KeyInputs: n.CacheKeyInputs,
+				Scope:     "organization",
+			}
+		}
+		nodes[nName] = node
 	}
 
 	w := &workgraph.Work{

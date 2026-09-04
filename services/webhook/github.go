@@ -79,7 +79,13 @@ func (d Delivery) ShouldCreateWork() bool {
 	case EventPush:
 		// Don't create a work for branch deletions (ref becomes
 		// refs/heads/<deleted>). Push to a real branch = work.
-		return strings.HasPrefix(d.Ref, "refs/heads/") && d.SHA != ""
+		// Branch deletions deliver After=0000...0000; the != ""
+		// check alone lets the null SHA through (GitHub sends it
+		// as a literal 40-zero string, not empty), which produced
+		// FAILED works + publisher 422 noise.
+		return strings.HasPrefix(d.Ref, "refs/heads/") &&
+			d.SHA != "" &&
+			d.SHA != "0000000000000000000000000000000000000000"
 	case EventPR:
 		// Only opened, synchronize (new commits), or reopened.
 		switch d.PRAction {
