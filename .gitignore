@@ -9,3 +9,10 @@ bin/
 .env
 .env.local
 .env.*.local
+
+# W0.3 local e2e artifacts (do not commit)
+works-api.exe
+works-worker.exe
+e2e-works*.db*
+e2e-artifacts/
+w03-worker.log
