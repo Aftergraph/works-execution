@@ -1,0 +1,17 @@
+name: Brand Assets
+on:
+  pull_request:
+    paths: [".github/assets/**","README.md","BRAND.md","brand-assets.json","scripts/verify_brand_assets.py",".github/workflows/brand-assets.yml"]
+  push:
+    branches: [main]
+    paths: [".github/assets/**","README.md","BRAND.md","brand-assets.json","scripts/verify_brand_assets.py"]
+permissions:
+  contents: read
+jobs:
+  verify-brand-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python scripts/verify_brand_assets.py

@@ -1,3 +1,11 @@
+<!-- aftergraph-brand-os:v1.0.0 -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/github/hero.webp">
+    <img src=".github/assets/github/hero.png" alt="WORKS — Durable execution plane for autonomous work" width="100%">
+  </picture>
+</p>
+
 # works-execution (WORKS)
 
 > Autonomous Software Execution Infrastructure — verified software state as the output.
