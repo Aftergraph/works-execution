@@ -114,6 +114,8 @@ func (h *TakeoverHandler) HandleTakeover(ctx context.Context, req TakeoverReques
 			"permissions":     req.Permissions,
 		},
 	}
+	// G2: integrity-hash foedes med evidence
+	result.EvidenceEntry.Seal()
 
 	// Takeover succeeded; caller should create new lease
 	result.Success = true

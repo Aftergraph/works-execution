@@ -376,6 +376,8 @@ func (s *SQLiteStore) classifyFailedAttempts(ctx context.Context, w *workgraph.W
 			Environment: "self-healing",
 			Details:     details,
 		}
+		// G2: integrity-hash foedes med evidence
+		ev.Seal()
 		if _, err := s.AppendEvidence(ctx, w.ID, ev); err != nil {
 			s.logFmt("classify: append evidence: %v", err)
 		}

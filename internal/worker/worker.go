@@ -677,6 +677,10 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 		Environment: fmt.Sprintf("worker=%s", w.ID),
 		Details:     evidenceDetails,
 	}}
+	// G2: integrity-hash foedes med evidence (tamper-detektion fra birth)
+	for i := range evidence {
+		evidence[i].Seal()
+	}
 	if err := w.Client.CompleteLease(ctx, leaseID, res.ExitCode, artifact, evidence); err != nil {
 		w.logf("complete lease: %v", err)
 		// Fall back to release so the attempt isn't stuck running.

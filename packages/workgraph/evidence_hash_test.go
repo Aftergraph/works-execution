@@ -99,3 +99,28 @@ func TestEvidenceSealComputesAndStoresHash(t *testing.T) {
 		t.Fatal("tampered evidence must produce a different recomputed hash")
 	}
 }
+
+// G2 — Seal-protokollen som oprettelsespunkterne skal folge: hver evidence
+// fra platformens tre creation-paths (worker/classifier/takeover) foddes med
+// integrity-hash. Seal-protokol-verifikation pa helper-niveau.
+func TestSealProtocolAllCreationPoints(t *testing.T) {
+	paths := []Evidence{
+		{ID: "evd_w1", NodeID: "n1", Type: "build", Result: "pass", Signer: "wrkr_1"},
+		{ID: "evd_l1", NodeID: "n2", AttemptID: "a1", Type: "policy", Result: "fail", Signer: "classifier"},
+		{ID: "evd_t1", NodeID: "n3", AttemptID: "a2", Type: "takeover_event", Result: "pass", Signer: "wrkr_2"},
+	}
+	for i := range paths {
+		ev := paths[i]
+		ev.Seal()
+		if ev.Hash == "" {
+			t.Fatalf("path %d: Seal must set Hash", i)
+		}
+		valid, unsealed := ev.HashValid()
+		if unsealed {
+			t.Fatalf("path %d: sealed evidence must not be unsealed", i)
+		}
+		if !valid {
+			t.Fatalf("path %d: sealed evidence hash must be valid", i)
+		}
+	}
+}
