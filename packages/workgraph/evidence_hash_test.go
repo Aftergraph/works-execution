@@ -74,7 +74,7 @@ func TestEvidenceHashIgnoresDetails(t *testing.T) {
 	a := sampleEvidence()
 	b := sampleEvidence()
 	b.Details = map[string]any{"cache": "enabled", "extra": 42}
-	if a.Hash() != b.Hash() {
+	if a.Hash != b.Hash {
 		t.Fatal("hash must NOT change when only Details change")
 	}
 }
