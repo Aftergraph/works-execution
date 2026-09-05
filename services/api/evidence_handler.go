@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"errors"
 	"net/http"
@@ -74,8 +75,21 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("ETag", `"`+bundle.BundleID+`"`)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"bundle":            bundle,
-		"evidence_verdicts": verdicts,
-	})
+
+	// G5: non-breaking — bundle-felterne forbliver på TOP-niveau (eksisterende
+	// klient-kontrakt), evidence_verdicts tilføjes som ekstra felt.
+	merged, err2 := json.Marshal(bundle)
+	if err2 != nil {
+		s.logf("evidence marshal: %v", err2)
+		writeError(w, http.StatusInternalServerError, "evidence_failed", err2.Error())
+		return
+	}
+	var out map[string]any
+	if err := json.Unmarshal(merged, &out); err != nil {
+		s.logf("evidence unmarshal: %v", err)
+		writeError(w, http.StatusInternalServerError, "evidence_failed", err.Error())
+		return
+	}
+	out["evidence_verdicts"] = verdicts
+	writeJSON(w, http.StatusOK, out)
 }
