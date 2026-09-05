@@ -29,8 +29,8 @@ func sampleEvidence() workgraph.Evidence {
 
 func TestEvidenceHashDeterministic(t *testing.T) {
 	e := sampleEvidence()
-	h1 := e.Hash()
-	h2 := e.Hash()
+	h1 := e.Hash
+	h2 := e.Hash
 	if h1 == "" {
 		t.Fatal("hash must not be empty")
 	}
@@ -43,7 +43,7 @@ func TestEvidenceHashDeterministic(t *testing.T) {
 }
 
 func TestEvidenceHashChangesOnFieldChange(t *testing.T) {
-	base := sampleEvidence().Hash()
+	base := sampleEvidence().Hash
 
 	cases := []struct {
 		name string
@@ -62,7 +62,7 @@ func TestEvidenceHashChangesOnFieldChange(t *testing.T) {
 	for _, tc := range cases {
 		e := sampleEvidence()
 		tc.mut(&e)
-		if e.Hash() == base {
+		if e.Hash == base {
 			t.Errorf("%s: hash must change when %s changes", tc.name, tc.name)
 		}
 	}
