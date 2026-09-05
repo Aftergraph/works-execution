@@ -23,3 +23,13 @@
 Tamper-detektion hidtil kun ved hash-verifikation efter Seal(); en
 evidence kunne fødes uden hash (tom indtil Seal). G2 lukker hullet:
 hver evidence fødes med integrity-hash — tamper-detektion fra birth.
+
+## [G3 — hash-verify-badge i webui]
+
+### feat: evidence viser ID + verify-verdict
+
+- evidenceView: ID + Verify (workgraph.VerifyEvidence — kilde til sandhed).
+- Template: [hash ok] grøn / [TAMPERED] rød fette / [unsealed] grå per item
+  + evidence-ID vist.
+- Fail/tamper ALDRIG skjult (F2-loven på WORKS-siden).
+- CI GRØN.
