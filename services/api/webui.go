@@ -357,7 +357,9 @@ const uiWorkBodyTmpl = `
   <div class="mono muted" style="margin-top:6px; white-space:pre-wrap;">{{.Run}}</div>
   {{if .LogTail}}<pre aria-label="log output">{{.LogTail}}</pre>{{end}}
   {{range .Evidence}}
-    <div class="mono muted" style="margin-top:6px">evidence: {{.Type}} = {{.Result}}{{if .Err}} — <span style="color:var(--fail)">{{.Err}}</span>{{end}}</div>
+    <div class="mono muted" style="margin-top:6px">evidence: {{.Type}} = {{.Result}}{{if .Err}} — <span style="color:var(--fail)">{{.Err}}</span>{{end}}
+      {{if eq .Verify "ok"}}<span style="color:var(--ok,#4ade80)">[hash ok]</span>{{else if eq .Verify "tampered"}}<span style="color:var(--fail);font-weight:600">[TAMPERED]</span>{{else}}<span style="color:var(--muted,#888)">[unsealed]</span>{{end}}
+      <span>{{.ID}}</span></div>
   {{end}}
 </div>
 {{else}}
@@ -515,6 +517,10 @@ type evidenceView struct {
 	Type   string
 	Result string
 	Err    string
+	// G3: integrity-visning — ID + hash-verificeringsverdict (ok / tampered /
+	// unsealed). VerifyEvidence er workgraph-pakkens kilde til sandhed.
+	ID     string
+	Verify string
 }
 
 // uiWork renders one work: nodes with state + log tail, attempts.
@@ -568,7 +574,7 @@ func (s *Server) workViews(wk *workgraph.Work) ([]nodeView, []workgraph.Attempt)
 	}
 	evids := map[string][]evidenceView{}
 	for _, e := range wk.Evidence {
-		ev := evidenceView{Type: e.Type, Result: e.Result}
+		ev := evidenceView{Type: e.Type, Result: e.Result, ID: e.ID, Verify: workgraph.VerifyEvidence(e)}
 		if e.Details != nil {
 			if s2, ok := e.Details["error"].(string); ok && s2 != "" {
 				ev.Err = s2
