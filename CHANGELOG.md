@@ -33,3 +33,15 @@ hver evidence fødes med integrity-hash — tamper-detektion fra birth.
   + evidence-ID vist.
 - Fail/tamper ALDRIG skjult (F2-loven på WORKS-siden).
 - CI GRØN.
+
+## [G5 — evidence-verdicts i bundle-svar]
+
+### feat: per-evidence integrity-verdict (non-breaking)
+
+- workEvidenceHandler: henter work evidence, kalder workgraph.VerifyEvidence
+  per item, svarer med additivt 'evidence_verdicts' felt.
+- Bundle-felterne forbliver på TOP-niveau (kontrakt-bevaret; første forsøg
+  brød klient-kontrakten og fanget af eksisterende evidence-bundle-test —
+  CI som sikkerhedsnet virkede).
+- Fail/tampered/unsealed ALDRIG skjult.
+- CI GRØN.
