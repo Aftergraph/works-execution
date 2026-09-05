@@ -104,7 +104,7 @@ func TestEvidenceSealComputesAndStoresHash(t *testing.T) {
 // fra platformens tre creation-paths (worker/classifier/takeover) foddes med
 // integrity-hash. Seal-protokol-verifikation pa helper-niveau.
 func TestSealProtocolAllCreationPoints(t *testing.T) {
-	paths := []Evidence{
+	paths := []workgraph.Evidence{
 		{ID: "evd_w1", NodeID: "n1", Type: "build", Result: "pass", Signer: "wrkr_1"},
 		{ID: "evd_l1", NodeID: "n2", AttemptID: "a1", Type: "policy", Result: "fail", Signer: "classifier"},
 		{ID: "evd_t1", NodeID: "n3", AttemptID: "a2", Type: "takeover_event", Result: "pass", Signer: "wrkr_2"},
