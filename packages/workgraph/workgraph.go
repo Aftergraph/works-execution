@@ -288,6 +288,9 @@ type Evidence struct {
 	Signer      string         `json:"signer,omitempty"`
 	Environment string         `json:"environment,omitempty"`
 	Details     map[string]any `json:"details,omitempty"`
+	// G1: integrity-hash (SHA-256 over identitet+udfald, Details ekskluderet).
+	// Saettes af Seal(); tom = unsealed (legacy). Verificeres af TG consumers.
+	Hash        string         `json:"hash,omitempty"`
 }
 
 // LeaseStatus is the lifecycle state of a Lease.
