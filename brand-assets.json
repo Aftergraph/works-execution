@@ -1,0 +1,39 @@
+{
+  "schema": "aftergraph.brand-assets/1.0",
+  "repo": "Aftergraph/works-execution",
+  "brand": "WORKS",
+  "role": "execution-plane",
+  "status": "provisional-not-trademark-cleared",
+  "accent": "#4C8BD8",
+  "required": [
+    ".github/assets/brand/icon.svg",
+    ".github/assets/brand/icon.png",
+    ".github/assets/brand/logo.svg",
+    ".github/assets/brand/logo-dark.svg",
+    ".github/assets/brand/logo-light.svg",
+    ".github/assets/github/social-preview.png",
+    ".github/assets/github/hero.webp",
+    ".github/assets/github/primary-visual.webp",
+    ".github/assets/architecture/system-context.svg",
+    ".github/assets/architecture/architecture.svg"
+  ],
+  "architectureFamily": [
+    ".github/assets/architecture/system-context.svg",
+    ".github/assets/architecture/architecture.svg",
+    ".github/assets/architecture/components.svg",
+    ".github/assets/architecture/data-flow.svg",
+    ".github/assets/architecture/execution-flow.svg",
+    ".github/assets/architecture/trust-boundaries.svg",
+    ".github/assets/architecture/deployment.svg",
+    ".github/assets/architecture/sequence.svg",
+    ".github/assets/architecture/agents.svg",
+    ".github/assets/architecture/state-machine.svg",
+    ".github/assets/architecture/evidence-chain.svg",
+    ".github/assets/architecture/repo-dependencies.svg",
+    ".github/assets/architecture/workflow.svg",
+    ".github/assets/architecture/dev-workflow.svg",
+    ".github/assets/architecture/release-process.svg"
+  ],
+  "screenshotEvidencePolicy": "real-runtime-only",
+  "sourceOfTruth": "Aftergraph/.github/brand/GITHUB-VISUAL-ASSET-STANDARD-v1.0.md"
+}
