@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"errors"
 	"net/http"
 	"strings"
@@ -61,6 +62,20 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// G5: per-evidence integrity-verdict (workgraph.VerifyEvidence — G1 kilde
+	// til sandhed). Non-breaking: feltet er additivt på bundle-svaret.
+	// Tampered/unsealed ALDRIG skjult (F2-loven).
+	wk, werr := s.Store.GetWork(r.Context(), workID)
+	verdicts := map[string]string{}
+	if werr == nil && wk != nil {
+		for _, ev := range wk.Evidence {
+			verdicts[ev.ID] = workgraph.VerifyEvidence(ev)
+		}
+	}
+
 	w.Header().Set("ETag", `"`+bundle.BundleID+`"`)
-	writeJSON(w, http.StatusOK, bundle)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"bundle":            bundle,
+		"evidence_verdicts": verdicts,
+	})
 }
