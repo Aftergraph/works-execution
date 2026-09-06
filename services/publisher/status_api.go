@@ -121,6 +121,28 @@ func (s *StatusAPIPublisher) Publish(ctx context.Context, r Result) error {
 		url, resp.StatusCode, truncate(string(respBody), 512))
 }
 
+// PublishLifecycle translates the richer WORKS lifecycle into the GitHub
+// Statuses API without losing WorkID/attempt semantics in the description.
+// queued/running become pending; cancelled becomes failure because GitHub's
+// Statuses API has no cancelled state. The original lifecycle remains in the
+// human-readable description and is available to Check Run callers.
+func (s *StatusAPIPublisher) PublishLifecycle(ctx context.Context, event StatusEvent) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	conclusion := GitHubStatusState(event.State)
+	if conclusion == "" {
+		return fmt.Errorf("publisher: no GitHub mapping for lifecycle state %q", event.State)
+	}
+	return s.Publish(ctx, Result{
+		Repository:  event.Repository,
+		SHA:         event.SHA,
+		Conclusion:  conclusion,
+		Description: fmt.Sprintf("works-execution/%s attempt=%d state=%s", event.WorkID, event.Attempt, event.State),
+		DetailsURL:  event.DetailsURL,
+	})
+}
+
 func (s *StatusAPIPublisher) client() *http.Client {
 	if s.HTTPClient != nil {
 		return s.HTTPClient
