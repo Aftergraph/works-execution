@@ -1,17 +1,25 @@
-# Screenshot evidence contract — WORKS
+# Evidence contract — works-execution (WORKS)
 
-`product-main.webp` is a technical product visual rendered from the repository architecture. It is **not** a UI screenshot.
+WORKS is a durable execution plane: Go services + worker + API. There is no
+web UI to capture, so the UI-screenshot contract does not apply. Honest
+evidence instead:
 
-Actual UI screenshots may only be committed when reproduced from a running build.
+## Real terminal / execution evidence (2026-09-06)
 
-Capture contract:
-- `01-overview.webp` — 1920×1080
-- `02-primary-workflow.webp` — 1920×1080
-- `03-detail-view.webp` — 1920×1080
-- `04-live-state.webp` — 1920×1080
-- `05-evidence.webp` — 1920×1080
-- `06-mobile.webp` — native/mobile
-- `07-dark-mode.webp` — 1920×1080
-- `08-command-interface.webp` — 1920×1080
+- `go test -tags=e2e ./e2e/...` — PASS (0.67s)
+  - `TestE2E_WorkSucceeds`: submitted real Work `wrk_08acbd6b47c8542183d264bb8487a8ff`,
+    worker ran `hello` + `verify` steps, terminal state `SUCCEEDED`, 2 attempts,
+    2 artifacts, logs streamed.
+- `go test ./...` — 28/28 packages PASS (flaky `TestRunnerAuthz_RegisterMatrix`
+  passed in isolation; failure only under parallel load, unrelated to branding).
+- Exact HEAD tested: `820bb659cda894707182195d06ac62de58f78bee`.
 
-Generated or edited mock UI must never be presented as evidence of implemented behavior.
+Full transcript: `v2-audit/evidence/WORKS-E2E-EVIDENCE.md` (agent workspace).
+
+`product-main.webp` (a technical product visual rendered from repository
+architecture, **not** a UI screenshot) was removed — no UI surface exists to
+replace it with captures, and the visual was redundant with the real
+architecture SVGs.
+
+Generated or edited mock UI must never be presented as evidence of
+implemented behavior.
