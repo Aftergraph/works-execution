@@ -19,6 +19,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -85,11 +86,11 @@ func runPipeline(args []string) {
 		fail("config: %v", err)
 	}
 
-	// Stamp the commit we're verifying (best-effort; works locally
-	// and on the VDS where git is available).
-	if out, err := exec.Command("git", "rev-parse", "HEAD").Output(); err == nil {
-		w.Source.SHA = strings.TrimSpace(string(out))
+	source, err := deriveGitSource(".")
+	if err != nil {
+		fail("source identity: %v", err)
 	}
+	w.Source = source
 	w.CorrelationID = workgraph.NewID("cor")
 
 	// Submit via the same auth path as the works CLI.
@@ -102,12 +103,12 @@ func runPipeline(args []string) {
 		State string `json:"state"`
 	}
 	if _, err := auth.postJSON("/v1/works", map[string]any{
-		"queue":         true,
-		"source":        w.Source,
-		"objective":     w.Objective,
-		"requirements":  w.Requirements,
-		"policy":        w.Policy,
-		"graph":         w.Graph,
+		"queue":          true,
+		"source":         w.Source,
+		"objective":      w.Objective,
+		"requirements":   w.Requirements,
+		"policy":         w.Policy,
+		"graph":          w.Graph,
 		"correlation_id": w.CorrelationID,
 	}, &created); err != nil {
 		fail("submit: %v", err)
@@ -115,6 +116,49 @@ func runPipeline(args []string) {
 	fmt.Printf("works-ci: submitted %s (pool=%q sha=%.8s)\n", created.ID, w.Requirements.Pool, w.Source.SHA)
 
 	waitTerminal(auth, created.ID, *timeoutS)
+}
+
+func deriveGitSource(dir string) (workgraph.Source, error) {
+	shaOut, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return workgraph.Source{}, fmt.Errorf("resolve HEAD: %w", err)
+	}
+	sha := strings.TrimSpace(string(shaOut))
+	if len(sha) != 40 {
+		return workgraph.Source{}, fmt.Errorf("HEAD is not an exact 40-character SHA")
+	}
+	remoteOut, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return workgraph.Source{}, fmt.Errorf("resolve origin remote: %w", err)
+	}
+	repository, cloneURL, err := normalizeGitHubRemote(strings.TrimSpace(string(remoteOut)))
+	if err != nil {
+		return workgraph.Source{}, err
+	}
+	return workgraph.Source{
+		Type:       "cli",
+		Repository: repository,
+		Revision:   sha,
+		SHA:        sha,
+		HTMLURL:    "https://github.com/" + repository,
+		CloneURL:   cloneURL,
+	}, nil
+}
+
+func normalizeGitHubRemote(remote string) (string, string, error) {
+	if strings.HasPrefix(remote, "git@github.com:") {
+		remote = "https://github.com/" + strings.TrimPrefix(remote, "git@github.com:")
+	}
+	u, err := url.Parse(remote)
+	if err != nil || u.Scheme == "" || u.Hostname() != "github.com" {
+		return "", "", fmt.Errorf("origin must be a GitHub HTTPS or SSH remote")
+	}
+	parts := strings.Split(strings.Trim(strings.TrimSuffix(u.Path, ".git"), "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("origin must identify exactly owner/repository")
+	}
+	repository := parts[0] + "/" + parts[1]
+	return repository, "https://github.com/" + repository + ".git", nil
 }
 
 // watchCmd re-attaches to an existing work.
