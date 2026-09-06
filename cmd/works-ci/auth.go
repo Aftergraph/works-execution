@@ -23,12 +23,12 @@ type apiAuth struct {
 }
 
 // newAuthFor enrolls with the shared secret and returns an authed
-// client. worker_id must match ^[A-Za-z0-9_.-]{1,128}$.
+// client. worker_id must match ^wrkr_[a-z0-9_-]{1,64}$.
 func newAuthFor(api, enrollSecret string) (*apiAuth, error) {
 	suffix := make([]byte, 6)
 	_, _ = rand.Read(suffix)
 	body := map[string]any{
-		"worker_id":   "works-ci-" + hex.EncodeToString(suffix),
+		"worker_id":   "wrkr_works_ci_" + hex.EncodeToString(suffix),
 		"challenge":   enrollSecret,
 		"scope":       "worker",
 		"ttl_seconds": 3600,
