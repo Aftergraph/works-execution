@@ -1,0 +1,22 @@
+name-template: "$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+categories:
+  - title: "Breaking changes"
+    labels: ["breaking"]
+  - title: "New features"
+    labels: ["feature", "enhancement"]
+  - title: "Bug fixes"
+    labels: ["fix", "bug"]
+  - title: "Research and evidence"
+    labels: ["research", "evidence", "benchmark"]
+  - title: "Maintenance"
+    labels: ["chore", "dependencies", "ci"]
+change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
+template: |
+  ## Changes
+
+  $CHANGES
+
+  ## Evidence boundary
+
+  See the linked PRs. Deterministic, live, and independent evidence classes are labelled per-PR — a release title never upgrades them.
