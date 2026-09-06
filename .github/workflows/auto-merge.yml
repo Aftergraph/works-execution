@@ -1,0 +1,11 @@
+name: Auto-merge Dependabot
+on:
+  pull_request_target:
+    types: [opened, labeled, synchronize]
+permissions:
+  pull-requests: write
+jobs:
+  auto-merge:
+    uses: Aftergraph/.github/.github/workflows/auto-merge-dependabot.yml@main
+    secrets:
+      automerge_pat: ${{ secrets.AUTOMERGE_PAT }}
