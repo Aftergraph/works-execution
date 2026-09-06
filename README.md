@@ -39,6 +39,25 @@ make e2e
 ./bin/works status <work_id>        # poll until SUCCEEDED
 ```
 
+## System visuals
+
+Real architecture diagrams (repo-specific, source in `.github/assets/architecture/`):
+
+<p align="center">
+  <img src=".github/assets/architecture/system-context.svg" alt="WORKS in the Aftergraph ecosystem context — mission, WorkGraph, schedule, lease" width="90%">
+  <br><em>System context</em>
+</p>
+
+<p align="center">
+  <img src=".github/assets/architecture/architecture.svg" alt="WORKS system architecture — control plane, worker, state" width="90%">
+  <br><em>Architecture</em>
+</p>
+
+<p align="center">
+  <img src=".github/assets/architecture/workflow.svg" alt="WORKS primary workflow — mission to WorkGraph to schedule to lease" width="90%">
+  <br><em>Primary workflow</em>
+</p>
+
 ## Repository layout
 
 ```
