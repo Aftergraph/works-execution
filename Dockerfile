@@ -1,6 +1,6 @@
 # WORKS — deployable container (durable execution control plane)
 # Go 1.25 builder + distroless runtime.
-FROM golang:1.25-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /build
 COPY go.mod go.sum ./
