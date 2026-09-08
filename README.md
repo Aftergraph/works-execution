@@ -176,7 +176,7 @@ applied. Full release notes:
 
 ## License
 
-TBD (see `docs/LEGAL_CHECKLIST/OPEN_SOURCE_STRATEGY.md` in the source pack).
+Apache-2.0. The repository `LICENSE` file is the authoritative license text.
 
 ---
 
