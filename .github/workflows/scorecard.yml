@@ -5,12 +5,13 @@ on:
     - cron: "30 2 * * 1"
   push:
     branches: [main]
-permissions: read-all
+permissions: {}
 jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       security-events: write
       id-token: write
     steps:
