@@ -3,10 +3,12 @@ on:
   pull_request_target:
     types: [opened, labeled, synchronize]
 permissions:
-  pull-requests: write
+  contents: read
 jobs:
   auto-merge:
     if: github.event.pull_request.user.login == 'dependabot[bot]' && contains(github.event.pull_request.labels.*.name, 'auto-merge')
     uses: Aftergraph/.github/.github/workflows/auto-merge-dependabot.yml@56d70aace61364978e23cd75c9925a54aa706e18 # main
+    permissions:
+      pull-requests: write
     secrets:
       automerge_pat: ${{ secrets.AUTOMERGE_PAT }}
