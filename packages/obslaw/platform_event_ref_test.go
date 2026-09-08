@@ -57,6 +57,37 @@ func TestProjectPlatformEventRef(t *testing.T) {
 	}
 }
 
+func TestWorkEventDecodesFrozenEventsV1WireKeys(t *testing.T) {
+	wire := []byte(`{"source":"works-org","seq":7,"type":"work.state","subject":"work:00","payload_ref":"artifact:work-state-7","ts":"2026-09-08T12:00:00Z","version":"1.0"}`)
+	var event WorkEvent
+	if err := json.Unmarshal(wire, &event); err != nil {
+		t.Fatalf("decode events/1.0: %v", err)
+	}
+	if event.PayloadRef != "artifact:work-state-7" {
+		t.Fatalf("payload_ref decoded as %q", event.PayloadRef)
+	}
+	if event.Timestamp != "2026-09-08T12:00:00Z" {
+		t.Fatalf("ts decoded as %q", event.Timestamp)
+	}
+	if _, err := ProjectPlatformEventRef(event, testCorrelation()); err != nil {
+		t.Fatalf("decoded frozen events/1.0 envelope must project: %v", err)
+	}
+}
+
+func TestNativeEventDigestIsUnambiguousAcrossFieldBoundaries(t *testing.T) {
+	left := testWorkEvent()
+	left.Type = "a\x00b"
+	left.Subject = "c"
+
+	right := testWorkEvent()
+	right.Type = "a"
+	right.Subject = "b\x00c"
+
+	if nativeEventDigest(left) == nativeEventDigest(right) {
+		t.Fatal("distinct native events must not collide because of field delimiters")
+	}
+}
+
 func TestPlatformEventRefDeterministic(t *testing.T) {
 	first, err := ProjectPlatformEventRef(testWorkEvent(), testCorrelation())
 	if err != nil {
