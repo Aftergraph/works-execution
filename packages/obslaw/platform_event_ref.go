@@ -25,15 +25,15 @@ type WorkEvent struct {
 // PlatformCorrelation is the correlation/1.0-compatible subset required by
 // platform-event-ref/0.1. Possessing this structure never grants authority.
 type PlatformCorrelation struct {
-	ExecutionContextID string `json:"execution_context_id,omitempty"`
-	TenantID           string `json:"tenant_id"`
-	PrincipalID        string `json:"principal_id,omitempty"`
-	MissionID          string `json:"mission_id"`
-	AuthorityLeaseID   string `json:"authority_lease_id,omitempty"`
-	WorkID             string `json:"work_id,omitempty"`
+	ExecutionContextID  string `json:"execution_context_id,omitempty"`
+	TenantID            string `json:"tenant_id"`
+	PrincipalID         string `json:"principal_id,omitempty"`
+	MissionID           string `json:"mission_id"`
+	AuthorityLeaseID    string `json:"authority_lease_id,omitempty"`
+	WorkID              string `json:"work_id,omitempty"`
 	AdmissionDecisionID string `json:"admission_decision_id,omitempty"`
-	TraceID            string `json:"trace_id"`
-	ActionID           string `json:"action_id"`
+	TraceID             string `json:"trace_id"`
+	ActionID            string `json:"action_id"`
 }
 
 // PlatformEventRef is an experimental cross-repo projection. IntegrityRef is
