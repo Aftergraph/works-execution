@@ -266,7 +266,7 @@
 | Code Review | PR + review | `.github/PULL_REQUEST_TEMPLATE.md` (new, see §1) | founder | PLANNED |
 | Dangerous Workflow | (none) | `.github/workflows/` (none defined) | founder | PARTIAL |
 | Dependency Update Tool | Dependabot/Renovate | (TBD) | founder | PLANNED |
-| License | `LICENSE` | `LICENSE` (TBD) | founder | PLANNED |
+| License | Apache-2.0 | `LICENSE` | founder | IMPLEMENTED |
 | Pinned Dependencies | Action pinning | (N/A — no GHA workflows) | founder | N/A |
 | SAST | `go vet` | `Makefile` | founder | PARTIAL |
 | SBOM | CycloneDX/SPDX (slice 3) | (slice 3) | founder | PLANNED |
