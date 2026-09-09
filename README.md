@@ -1,4 +1,4 @@
-<!-- aftergraph-brand-os:v1.0.0 -->
+<!-- aftergraph-brand-os:v1.1.0 -->
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Aftergraph/works-execution/badge)](https://scorecard.dev/viewer/?uri=github.com/Aftergraph/works-execution)
 

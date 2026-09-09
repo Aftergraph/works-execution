@@ -51,6 +51,32 @@ if not manifest_path.exists():
 
 data = json.loads(manifest_path.read_text(encoding="utf-8"))
 
+# v2 capability-aware contract: validate shape, derive file inventory.
+if data.get("schema_version") == 2:
+    for key in ("schema_version", "brand", "surfaces", "assets", "provenance"):
+        if key not in data:
+            errors.append(f"v2 contract missing key: {key}")
+    brand = data.get("brand", {})
+    if brand.get("parent") != "aftergraph":
+        errors.append("v2 brand.parent must be 'aftergraph'")
+    if brand.get("canonical_package") != "@aftergraph/brand":
+        errors.append("v2 brand.canonical_package must be '@aftergraph/brand'")
+    import re as _re
+    if not _re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", str(brand.get("version", ""))):
+        errors.append("v2 brand.version must be semver")
+    if brand.get("class") not in ("corporate", "product", "technology", "research", "governance", "internal"):
+        errors.append("v2 brand.class not in class enum")
+    prov = data.get("provenance", {})
+    if not _re.fullmatch(r"(WORKTREE|[0-9a-f]{40})", str(prov.get("source_commit", ""))):
+        errors.append("v2 provenance.source_commit must be WORKTREE or full SHA")
+    data = dict(data)
+    data["required"] = [".github/assets/brand/icon.svg"]
+    if (ROOT / ".github/assets/brand/logo.svg").exists():
+        data["required"] += [".github/assets/brand/logo-dark.svg",
+                             ".github/assets/brand/logo-light.svg"]
+    data["architectureFamily"] = sorted(
+        str(p.relative_to(ROOT)) for p in (ROOT / ".github/assets/architecture").glob("*.svg"))
+
 # 1. required files
 for rel in data.get("required", []):
     if not (ROOT / rel).exists():
@@ -84,8 +110,8 @@ else:
 readme = ROOT / "README.md"
 if readme.exists():
     txt = readme.read_text(encoding="utf-8")
-    if "<!-- aftergraph-brand-os:v1.0.0 -->" not in txt:
-        errors.append("README.md missing Brand OS marker")
+    if "<!-- aftergraph-brand-os:v1.1.0 -->" not in txt:
+        errors.append("README.md missing Brand OS v1.1.0 marker")
 
 # 5. manifest parses
 if (ROOT / "brand-manifest.json").exists():
