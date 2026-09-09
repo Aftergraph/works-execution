@@ -10,7 +10,7 @@ import (
 // VerificationVerdict is the durable semantic-verification record for a Work.
 // It is intentionally separate from Work.State and work evidence integrity:
 // execution may finish without an independent verifier having ruled on the
-// requested outcome.
+// requested outcome. The store preserves that boundary across process restarts.
 type VerificationVerdict struct {
 	WorkID      string    `json:"work_id"`
 	Result      string    `json:"result"`
