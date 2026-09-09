@@ -46,6 +46,32 @@ func TestEvidenceEndpoint_SucceededWithoutIndependentVerdictIsPending(t *testing
 	}
 }
 
+// Failure is also execution state, not a verifier decision. This keeps the
+// read model symmetric and prevents consumers from inventing a semantic
+// verifier verdict merely because execution reached a terminal state.
+func TestEvidenceEndpoint_FailedWithoutIndependentVerdictIsPending(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w := seedTerminalWork(t, st, workgraph.StateFailed)
+
+	resp, err := http.Get(ts.URL + "/v1/works/" + w.ID + "/evidence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	ov, ok := got["outcome_verification"].(map[string]any)
+	if !ok || ov["status"] != "pending" {
+		t.Fatalf("terminal failure invented outcome verification: %#v", ov)
+	}
+}
+
 // evidence_verdicts is an integrity projection (ok/tampered/unsealed), not an
 // outcome verdict. Even if every evidence item is hash-valid, the outcome
 // remains pending without an independent verifier.
