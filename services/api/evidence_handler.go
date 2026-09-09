@@ -2,14 +2,26 @@ package api
 
 import (
 	"encoding/json"
-	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"errors"
 	"net/http"
 	"strings"
 
+	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/evidence"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
+
+// outcomeVerificationProjection is deliberately separate from the evidence
+// integrity verdicts returned by workgraph.VerifyEvidence. Executor state and
+// hash-valid evidence are inputs to a verifier, not a verifier decision.
+// Until a durable independent verdict exists, the only truthful projection is
+// pending. Optional provenance fields are omitted rather than invented.
+type outcomeVerificationProjection struct {
+	Status      string `json:"status"`
+	VerifierID  string `json:"verifier_id,omitempty"`
+	EvidenceRef string `json:"evidence_ref,omitempty"`
+	VerifiedAt  string `json:"verified_at,omitempty"`
+}
 
 // workEvidenceHandler implements GET /v1/works/{id}/evidence.
 //
@@ -44,9 +56,9 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := evidence.ProducerConfig{
-		KeyID:    s.EvidenceConfig.KeyID,
-		HMACKey:  s.EvidenceConfig.HMACKey,
-		Runner:   s.EvidenceConfig.Runner,
+		KeyID:   s.EvidenceConfig.KeyID,
+		HMACKey: s.EvidenceConfig.HMACKey,
+		Runner:  s.EvidenceConfig.Runner,
 	}
 
 	bundle, err := evidence.Produce(r.Context(), s.Store, workID, cfg)
@@ -91,5 +103,6 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out["evidence_verdicts"] = verdicts
+	out["outcome_verification"] = outcomeVerificationProjection{Status: "pending"}
 	writeJSON(w, http.StatusOK, out)
 }
