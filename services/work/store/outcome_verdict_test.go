@@ -58,6 +58,8 @@ func TestVerificationVerdictPersistsAcrossRestart(t *testing.T) {
 	}
 }
 
+// A conflicting re-attestation requires explicit reconciliation; persistence
+// must never silently rewrite the independent verifier's original record.
 func TestVerificationVerdictIsIdempotentAndImmutable(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(filepath.Join(t.TempDir(), "works.db"))
