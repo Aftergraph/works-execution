@@ -1,0 +1,79 @@
+{
+  "$id": "contract:dispatch.acceptance/1.0",
+  "properties": {
+    "attempt_id": {
+      "type": "string"
+    },
+    "authority_epoch": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "authority_ref": {
+      "type": "string"
+    },
+    "budget_ceiling": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "budget_ref": {
+      "type": "string"
+    },
+    "causal_id": {
+      "type": "string"
+    },
+    "checkpoint_id": {
+      "type": "string"
+    },
+    "effect_id": {
+      "type": "string"
+    },
+    "evidence_root": {
+      "type": "string"
+    },
+    "idempotency_key": {
+      "type": "string"
+    },
+    "mission_id": {
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "ACCEPTED",
+        "SUCCEEDED",
+        "FAILED",
+        "INDETERMINATE"
+      ]
+    },
+    "runtime_dispatch_id": {
+      "type": "string"
+    },
+    "verification_subject": {
+      "type": "string"
+    },
+    "verified": {
+      "type": "boolean"
+    },
+    "verifier_id": {
+      "type": "string"
+    },
+    "works_execution_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "mission_id",
+    "authority_ref",
+    "authority_epoch",
+    "runtime_dispatch_id",
+    "attempt_id",
+    "effect_id",
+    "idempotency_key",
+    "budget_ref",
+    "budget_ceiling",
+    "checkpoint_id",
+    "evidence_root",
+    "verification_subject",
+    "causal_id"
+  ],
+  "type": "object"
+}
