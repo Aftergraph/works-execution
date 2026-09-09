@@ -35,21 +35,36 @@ func (s *SQLiteStore) ensureVerificationVerdictTable(ctx context.Context) error 
 	return nil
 }
 
+// ErrVerificationVerdictConflict reports a conflicting re-attestation for a
+// Work that already carries an independent verifier record. Callers must
+// reconcile explicitly; the store never silently rewrites the original.
+var ErrVerificationVerdictConflict = fmt.Errorf("conflicting verification verdict for immutable verifier record")
+
 // SaveVerificationVerdict persists the independent verifier's semantic
 // verdict. This first persistence slice deliberately does not infer or derive
 // a verdict from execution state; callers must supply the verifier record.
+// A byte-identical retry is idempotent; a conflicting second verdict fails
+// closed with ErrVerificationVerdictConflict and preserves the original.
 func (s *SQLiteStore) SaveVerificationVerdict(ctx context.Context, v VerificationVerdict) error {
 	if err := s.ensureVerificationVerdictTable(ctx); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `
+	existing, err := s.GetVerificationVerdict(ctx, v.WorkID)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		if existing.Result == v.Result &&
+			existing.VerifierID == v.VerifierID &&
+			existing.EvidenceRef == v.EvidenceRef &&
+			existing.VerifiedAt.Equal(v.VerifiedAt) {
+			return nil
+		}
+		return fmt.Errorf("%w: work_id=%s", ErrVerificationVerdictConflict, v.WorkID)
+	}
+	_, err = s.db.ExecContext(ctx, `
 INSERT INTO work_verification_verdicts(work_id, result, verifier_id, evidence_ref, verified_at)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(work_id) DO UPDATE SET
-    result = excluded.result,
-    verifier_id = excluded.verifier_id,
-    evidence_ref = excluded.evidence_ref,
-    verified_at = excluded.verified_at`,
+VALUES (?, ?, ?, ?, ?)`,
 		v.WorkID, v.Result, v.VerifierID, v.EvidenceRef,
 		v.VerifiedAt.UTC().Format(time.RFC3339Nano),
 	)
