@@ -9,6 +9,8 @@ import (
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
+// RED contract: an independently authored semantic verdict is durable state,
+// not a projection inferred from execution success or evidence integrity.
 func TestVerificationVerdictPersistsAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "works.db")
