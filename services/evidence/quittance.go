@@ -9,6 +9,10 @@
 //	verification=failed  ⇒  price_hint MUST be absent (no payment claim)
 //	duplicate quittance  ⇒  same idempotency hash ⇒ same quittance
 //	missing evidence     ⇒  no quittance at all (Produce is the only writer)
+//	verifier == executor ⇒  refused (self-verification is not independence)
+//	verdict for bundle A ⇒  never settles bundle B (assessed-bundle binding)
+//	failed verdict on success ⇒ explicit attribution required (the kernel
+//	                            cannot attribute a disagreement it denies)
 //
 // Driver attribution (ADR-0014): each segment of the work carries its
 // driver (agent|human) so a quittance distinguishes machine work from
@@ -82,11 +86,14 @@ type Usage struct {
 	Tokens     int64   `json:"tokens,omitempty"`
 }
 
-// VerificationVerdict is an independently produced assessment of the
+// VerificationVerdict is an independently produced assessment of ONE
 // evidence bundle. Execution state is an input to verification, never the
 // verification result itself. Provenance is mandatory so replay/settlement
-// can prove which verifier and evidence produced the decision.
+// can prove which verifier assessed which bundle on which evidence.
+// BundleID binds the verdict to the assessed bundle: a verdict travels
+// with its subject and can never be replayed onto another bundle.
 type VerificationVerdict struct {
+	BundleID    string    `json:"bundle_id"`    // assessed bundle (must equal the issued bundle)
 	Result      string    `json:"result"`       // passed | failed
 	VerifierID  string    `json:"verifier_id"`  // stable independent verifier identity
 	EvidenceRef string    `json:"evidence_ref"` // immutable evidence/verdict reference
@@ -114,15 +121,19 @@ type Quittance struct {
 
 // ErrQuittanceConflict mirrors the kernel-negation and verification laws.
 var (
-	ErrQuittanceNoEvidence           = errors.New("quittance requires an evidence bundle (missing evidence cannot yield quittance)")
-	ErrQuittanceFailedPriced         = errors.New("failed verification cannot carry a price hint (kernel-negation, quittance.rules/1.0)")
-	ErrQuittanceInvalidState         = errors.New("quittance requires a terminal work state")
-	ErrQuittanceVerificationRequired = errors.New("quittance requires an independent verifier verdict with identity, evidence, and timestamp")
-	ErrQuittanceVerdictConflict      = errors.New("verifier verdict conflicts with kernel terminal execution state")
+	ErrQuittanceNoEvidence            = errors.New("quittance requires an evidence bundle (missing evidence cannot yield quittance)")
+	ErrQuittanceFailedPriced          = errors.New("failed verification cannot carry a price hint (kernel-negation, quittance.rules/1.0)")
+	ErrQuittanceInvalidState          = errors.New("quittance requires a terminal work state")
+	ErrQuittanceVerificationRequired  = errors.New("quittance requires an independent verifier verdict with assessed bundle, identity, evidence, and timestamp")
+	ErrQuittanceVerdictConflict       = errors.New("verifier verdict conflicts with kernel terminal execution state")
+	ErrQuittanceVerdictBundleMismatch = errors.New("verifier verdict does not assess this bundle (cross-bundle verdict reuse refused)")
+	ErrQuittanceRunnerRequired        = errors.New("quittance requires a bundle runner identity (independence is unverifiable without an executor)")
+	ErrQuittanceSelfVerification      = errors.New("verifier must be independent of the bundle executor (self-verification refused)")
+	ErrQuittanceAttributionRequired   = errors.New("failed verdict on succeeded execution requires explicit failure attribution (the kernel cannot attribute a disagreement it denies)")
 )
 
 func validateVerdict(v *VerificationVerdict) error {
-	if v == nil || v.VerifierID == "" || v.EvidenceRef == "" || v.VerifiedAt.IsZero() {
+	if v == nil || v.BundleID == "" || v.VerifierID == "" || v.EvidenceRef == "" || v.VerifiedAt.IsZero() {
 		return ErrQuittanceVerificationRequired
 	}
 	switch v.Result {
@@ -154,15 +165,15 @@ func (q *Quittance) derive() error {
 		return fmt.Errorf("quittance.failure.category %q not in frozen set", q.Failure.Category)
 	}
 	raw, err := json.Marshal(struct {
-		BundleID            string  `json:"bundle_id"`
-		Verification        string  `json:"verification"`
-		VerifierID          string  `json:"verifier_id"`
-		VerifierEvidenceRef string  `json:"verifier_evidence_ref"`
-		VerifiedAt          string  `json:"verified_at"`
+		BundleID            string   `json:"bundle_id"`
+		Verification        string   `json:"verification"`
+		VerifierID          string   `json:"verifier_id"`
+		VerifierEvidenceRef string   `json:"verifier_evidence_ref"`
+		VerifiedAt          string   `json:"verified_at"`
 		Price               *float64 `json:"price_hint"`
-		ComputeEUR          float64 `json:"compute_eur"`
-		WallClockS          int64   `json:"wall_clock_s"`
-		Tokens              int64   `json:"tokens"`
+		ComputeEUR          float64  `json:"compute_eur"`
+		WallClockS          int64    `json:"wall_clock_s"`
+		Tokens              int64    `json:"tokens"`
 	}{
 		BundleID:            q.BundleID,
 		Verification:        q.Verification,
@@ -203,6 +214,15 @@ func IssueQuittance(b *Bundle, verdict *VerificationVerdict, usage Usage, segs [
 	if err := validateVerdict(verdict); err != nil {
 		return nil, err
 	}
+	if verdict.BundleID != b.BundleID {
+		return nil, fmt.Errorf("%w: verdict assesses %q, bundle is %q", ErrQuittanceVerdictBundleMismatch, verdict.BundleID, b.BundleID)
+	}
+	if b.Runner == nil || b.Runner.ID == "" {
+		return nil, ErrQuittanceRunnerRequired
+	}
+	if verdict.VerifierID == b.Runner.ID {
+		return nil, fmt.Errorf("%w: verifier %q executed bundle %q", ErrQuittanceSelfVerification, verdict.VerifierID, b.BundleID)
+	}
 
 	q := &Quittance{
 		BundleID:            b.BundleID,
@@ -223,12 +243,7 @@ func IssueQuittance(b *Bundle, verdict *VerificationVerdict, usage Usage, segs [
 			}
 		} else {
 			if failure == nil {
-				failure = &FailureAttribution{
-					Category: FailWrongAssumption,
-					Detail:   "independent verifier rejected a kernel-successful execution",
-					Driver:   DriverAgent,
-					At:       now,
-				}
+				return nil, ErrQuittanceAttributionRequired
 			}
 			q.Failure = failure
 		}
