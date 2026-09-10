@@ -1,0 +1,14 @@
+# Sentinel gate caller — thin wrapper. All logic lives in
+# Aftergraph/.github (Sentinel gate engine), pinned to a full SHA.
+# Re-pin to the engine main HEAD after the engine lineage merges.
+name: Sentinel gate
+on:
+  pull_request_target:
+    types: [opened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  sentinel-gate:
+    uses: Aftergraph/.github/.github/workflows/agent-review.yml@c2273d8b60cce21d1d401cdddce4f3298388ea43
+    secrets: inherit
