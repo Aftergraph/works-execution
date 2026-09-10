@@ -1,0 +1,11 @@
+{
+  "schema": "golden-mission-pins/0.1",
+  "head": "7543af6fe1183b832bb91ea47244074a2f27e3ef",
+  "pins": {
+    "crash-recovery": "2a0b63246ad0c30dcbe36a087adcaf4e6ce838b9e72f9e50a85cd8e26cab78f2",
+    "refusal": "cdea0e99f87a1b7c49399fdb501f536bb581fa43c777722f4836b9678cd97d6a",
+    "revocation": "4d63b9d1f0c2ecd632336c6257c6d503f12f34ab8677c71e77299ca2c0c71f5f",
+    "success": "cc509c7c3a09416bed5ee41f847991f6c1c2d0367c40dbed4aa203299d1bc773",
+    "verifier-failure": "fe1fe15554027b339125641ace81f9b5e35e2babbbf43626b36714adb738f9a9"
+  }
+}
