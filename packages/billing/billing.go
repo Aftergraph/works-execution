@@ -1,5 +1,5 @@
 // Package billing implements the settlement law over the frozen
-// quittance.rules/1.0 + kernel.budget/1.0 contracts (k-billing-01).
+// quittance.rules/1.1 + kernel.budget/1.0 contracts (k-billing-01).
 //
 // Settlement is the moment a mission's budget clock is closed out against a
 // quittance. The law it enforces:
@@ -42,20 +42,33 @@ const (
 	HardStopCompute   = "compute"
 )
 
-// idempotencyHex matches the frozen quittance.rules/1.0 idempotency pattern
-// (sha256 hex, 64 chars).
+// Verification outcomes (quittance.rules/1.1 frozen enum).
+const (
+	VerificationPassed = "passed"
+	VerificationFailed = "failed"
+)
+
+// idempotencyHex matches the frozen quittance.rules/1.1 idempotency pattern
+// (sha256 hex, 64 chars; unchanged from 1.0).
 var idempotencyHex = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 // QuittanceView is the minimal quittance surface settlement needs. It is
-// satisfied by *evidence.Quittance (services/evidence) — billing depends on
-// the shape, not on the evidence package (no import cycle, quittance.rules/1.0).
+// satisfied by *billing.QuittanceRef — billing depends on the shape, not on
+// the evidence package (no import cycle, quittance.rules/1.1).
 type QuittanceView interface {
-	// QuittanceID is the quittance identifier (required by quittance.rules/1.0).
+	// QuittanceID is the quittance identifier (required by quittance.rules/1.1).
 	QuittanceID() string
 	// WorkID binds the quittance to one work (required, must equal ledger's).
 	WorkID() string
-	// Verification is "passed" | "failed" (required by quittance.rules/1.0).
+	// Verification is "passed" | "failed" (required by quittance.rules/1.1).
 	Verification() string
+	// VerifierID is the independent verifier identity (required by 1.1:
+	// settlement never touches unattributed refs).
+	VerifierID() string
+	// VerifierEvidenceRef is the immutable verdict evidence ref (required).
+	VerifierEvidenceRef() string
+	// VerifiedAt is the verification instant (required).
+	VerifiedAt() string
 	// Idempotency is the content-addressed sha256 hex (64 chars, pattern law).
 	Idempotency() string
 }
@@ -64,18 +77,24 @@ type QuittanceView interface {
 // issued quittance (services/evidence.Quittance shape) that settlement binds
 // to. Billing never re-derives or re-prices a quittance — it only reads it.
 type QuittanceRef struct {
-	BundleID       string   `json:"bundle_id"`
-	QuittanceIDF   string   `json:"quittance_id"`
-	WorkIDF        string   `json:"work_id"`
-	VerificationF  string   `json:"verification"`         // passed | failed
-	PriceHint      *float64 `json:"price_hint,omitempty"` // nil ⇔ failed (kernel-negation)
-	IdempotencyHex string   `json:"idempotency"`
+	BundleID             string   `json:"bundle_id"`
+	QuittanceIDF         string   `json:"quittance_id"`
+	WorkIDF              string   `json:"work_id"`
+	VerificationF        string   `json:"verification"` // passed | failed
+	VerifierIDF          string   `json:"verifier_id"`
+	VerifierEvidenceRefF string   `json:"verifier_evidence_ref"`
+	VerifiedAtF          string   `json:"verified_at"`
+	PriceHint            *float64 `json:"price_hint,omitempty"` // nil ⇔ failed (kernel-negation)
+	IdempotencyHex       string   `json:"idempotency"`
 }
 
-func (r *QuittanceRef) QuittanceID() string  { return r.QuittanceIDF }
-func (r *QuittanceRef) WorkID() string       { return r.WorkIDF }
-func (r *QuittanceRef) Verification() string { return r.VerificationF }
-func (r *QuittanceRef) Idempotency() string  { return r.IdempotencyHex }
+func (r *QuittanceRef) QuittanceID() string         { return r.QuittanceIDF }
+func (r *QuittanceRef) WorkID() string              { return r.WorkIDF }
+func (r *QuittanceRef) Verification() string        { return r.VerificationF }
+func (r *QuittanceRef) VerifierID() string          { return r.VerifierIDF }
+func (r *QuittanceRef) VerifierEvidenceRef() string { return r.VerifierEvidenceRefF }
+func (r *QuittanceRef) VerifiedAt() string          { return r.VerifiedAtF }
+func (r *QuittanceRef) Idempotency() string         { return r.IdempotencyHex }
 
 // Settlement is the immutable record a Settle call produces. It mirrors the
 // kernel.budget/1.0 view (consumed, ceiling, hard_stop, clock_state) plus the
@@ -106,7 +125,11 @@ var (
 	ErrSettleWhileRunning   = errors.New("billing: settlement under active metering (clock RUNNING) is a law violation")
 	ErrQuittanceRequired    = errors.New("billing: quittance is required for settlement")
 	ErrQuittanceWorkID      = errors.New("billing: quittance work_id does not match ledger work_id")
-	ErrQuittanceIdempotency = errors.New("billing: quittance idempotency must be a 64-char sha256 hex (quittance.rules/1.0)")
+	ErrQuittanceIdempotency = errors.New("billing: quittance idempotency must be a 64-char sha256 hex (quittance.rules/1.1)")
+	// quittance.rules/1.1 settlement-intake provenance: refs without a named
+	// independent verifier never reach metering, even when structurally valid.
+	ErrQuittanceVerifierProvenance = errors.New("billing: quittance must carry verifier identity, evidence ref, and verification instant")
+	ErrQuittanceVerificationValue  = errors.New("billing: quittance verification must be passed or failed")
 )
 
 // Settle closes out a mission's budget ledger against its quittance.
@@ -147,7 +170,7 @@ func Settle(ledger *workgraph.BudgetLedger, q QuittanceView) (*Settlement, error
 		return nil, fmt.Errorf("%w: %q", ErrUnknownClockState, ledger.ClockState)
 	}
 
-	// --- quittance binding (quittance.rules/1.0 required fields) ---
+	// --- quittance binding (quittance.rules/1.1 required fields) ---
 	if q == nil {
 		return nil, ErrQuittanceRequired
 	}
@@ -157,6 +180,12 @@ func Settle(ledger *workgraph.BudgetLedger, q QuittanceView) (*Settlement, error
 	idem := q.Idempotency()
 	if !idempotencyHex.MatchString(idem) {
 		return nil, ErrQuittanceIdempotency
+	}
+	if q.VerifierID() == "" || q.VerifierEvidenceRef() == "" || q.VerifiedAt() == "" {
+		return nil, ErrQuittanceVerifierProvenance
+	}
+	if q.Verification() != VerificationPassed && q.Verification() != VerificationFailed {
+		return nil, ErrQuittanceVerificationValue
 	}
 
 	// --- L2: clamp law — settled consumed never exceeds ceiling ---

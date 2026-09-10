@@ -6,7 +6,7 @@ package evidence
 //   - missing evidence ⇒ no quittance
 //   - execution success != verified outcome
 //   - every quittance requires an independent verifier verdict
-//   - failed verification ⇒ NO price (kernel-negation, quittance.rules/1.0)
+//   - failed verification ⇒ NO price (kernel-negation, quittance.rules/1.1)
 //   - passed verification ⇒ price allowed; failure attribution forbidden
 //   - failure categories are a closed frozen set
 //   - idempotency: same inputs ⇒ same hash (replay-safe); different inputs ⇒

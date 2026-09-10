@@ -79,7 +79,7 @@ func ValidFailureCategory(c string) bool {
 }
 
 // Usage is the measured cost side of a completed mission (kernel.budget/1.0
-// + quittance.rules/1.0). Tokens are optional; EUR and wall-clock are not.
+// + quittance.rules/1.1). Tokens are optional; EUR and wall-clock are not.
 type Usage struct {
 	ComputeEUR float64 `json:"compute_eur"`
 	WallClockS int64   `json:"wall_clock_s"`
@@ -122,7 +122,7 @@ type Quittance struct {
 // ErrQuittanceConflict mirrors the kernel-negation and verification laws.
 var (
 	ErrQuittanceNoEvidence            = errors.New("quittance requires an evidence bundle (missing evidence cannot yield quittance)")
-	ErrQuittanceFailedPriced          = errors.New("failed verification cannot carry a price hint (kernel-negation, quittance.rules/1.0)")
+	ErrQuittanceFailedPriced          = errors.New("failed verification cannot carry a price hint (kernel-negation, quittance.rules/1.1)")
 	ErrQuittanceInvalidState          = errors.New("quittance requires a terminal work state")
 	ErrQuittanceVerificationRequired  = errors.New("quittance requires an independent verifier verdict with assessed bundle, identity, evidence, and timestamp")
 	ErrQuittanceVerdictConflict       = errors.New("verifier verdict conflicts with kernel terminal execution state")

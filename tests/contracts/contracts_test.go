@@ -100,7 +100,7 @@ func TestManifestCoversAllTwentyContracts(t *testing.T) {
 	}
 	want := []string{
 		"work.schema/1.0", "kernel.budget/1.0", "handoff.schema/1.0",
-		"evidence.schema/1.1", "quittance.rules/1.0", "cpi/1.0", "rab/1.0",
+		"evidence.schema/1.1", "quittance.rules/1.1", "cpi/1.0", "rab/1.0",
 		"identity/1.0", "policy.token/1.0", "events/1.0", "sync.rules/1.0",
 		"proto.charter/1.0", "secret.ref/1.0", "brain.ns/1.0",
 		"obs.evidence.rules/1.0", "shell.contracts/1.0", "link.wire/1.0",
@@ -143,7 +143,10 @@ func TestBaselineRealWorkValidatesAgainstFrozenSchema(t *testing.T) {
 func TestBaselineStateMachineTransitionsLocked(t *testing.T) {
 	// Frozen lifecycle law (kernel.lifecycle/1.0): existing graph must keep
 	// exactly these transitions; additions require contract version bump.
-	cases := []struct{ from, to workgraph.State; want bool }{
+	cases := []struct {
+		from, to workgraph.State
+		want     bool
+	}{
 		{workgraph.StateCreated, workgraph.StatePlanning, true},
 		{workgraph.StateQueued, workgraph.StateRunning, true},
 		{workgraph.StateRunning, workgraph.StateVerifying, true},
@@ -213,8 +216,8 @@ func TestAdversarialCrossTenantFailsClosed(t *testing.T) {
 	// identity schema requires org pattern; wrong-shaped principal is rejected here,
 	// and the kernel rule is: token.org must equal mount/payload org else fail-closed.
 	if err := sch.Validate(bad); err == nil {
-	// wrong: valid org format IS valid — the fail-closed test is the policy check below
-	_ = err
+		// wrong: valid org format IS valid — the fail-closed test is the policy check below
+		_ = err
 	}
 	// policy-level law (invariant, mirrored from ADR-0017 amendment):
 	mountOrg := "org_a"
@@ -357,9 +360,18 @@ func TestAdversarialQuittanceRequiresEvidenceCompleteness(t *testing.T) {
 	}
 	passed := fixture(`{"quittance_id":"q2","work_id":"work:00","bundle_id":"b2",
 		"verification":"passed","price_hint":12.5,
+		"verifier_id":"verifier/independent-1","verifier_evidence_ref":"evidence/verdict-1",
+		"verified_at":"2026-09-09T04:00:00Z",
 		"usage":{"compute_eur":1.2,"wall_clock_s":3000},
 		"idempotency":"` + strings.Repeat("a", 64) + `"}`)
 	mustPass(t, sch, "passed quittance", passed)
+	// settlement intake provenance: a ref without verifier identity is not
+	// a quittance the settlement path may touch (quittance.rules/1.1).
+	provenanceless := fixture(`{"quittance_id":"q3","work_id":"work:00","bundle_id":"b3",
+		"verification":"passed",
+		"usage":{"compute_eur":1.2,"wall_clock_s":300},
+		"idempotency":"` + strings.Repeat("b", 64) + `"}`)
+	mustFail(t, sch, "provenance-less quittance ref", provenanceless)
 	// duplicate quittance: same idempotency key ⇒ same quittance (dedup is intake law)
 }
 
