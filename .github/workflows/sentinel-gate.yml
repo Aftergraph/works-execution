@@ -10,5 +10,5 @@ on:
 permissions: {}
 jobs:
   sentinel-gate:
-    uses: Aftergraph/.github/.github/workflows/agent-review.yml@c2273d8b60cce21d1d401cdddce4f3298388ea43
+    uses: Aftergraph/.github/.github/workflows/agent-review.yml@6819f4051076fff6bc8c312ef9831bf3139bb69d
     secrets: inherit
