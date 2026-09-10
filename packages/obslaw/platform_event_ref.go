@@ -13,13 +13,13 @@ import (
 // WorkEvent mirrors the frozen events/1.0 envelope at the adapter boundary.
 // It remains observability data, not evidence.
 type WorkEvent struct {
-	Source     string
-	Seq        int64
-	Type       string
-	Subject    string
-	PayloadRef string
-	Timestamp  string
-	Version    string
+	Source     string `json:"source"`
+	Seq        int64  `json:"seq"`
+	Type       string `json:"type"`
+	Subject    string `json:"subject"`
+	PayloadRef string `json:"payload_ref"`
+	Timestamp  string `json:"ts"`
+	Version    string `json:"version"`
 }
 
 // PlatformCorrelation is the correlation/1.0-compatible subset required by
@@ -125,7 +125,11 @@ func validateWorkEvent(event WorkEvent) (time.Time, error) {
 }
 
 func nativeEventDigest(event WorkEvent) string {
-	material := strings.Join([]string{
+	// Length-prefixed framing: a bare NUL join is ambiguous when a
+	// field itself contains NUL ("a\x00b"+"c" vs "a"+"b\x00c" collide).
+	// Byte-length prefixes make the digest injective over field tuples.
+	var material strings.Builder
+	for _, field := range []string{
 		event.Source,
 		fmt.Sprintf("%d", event.Seq),
 		event.Type,
@@ -133,8 +137,10 @@ func nativeEventDigest(event WorkEvent) string {
 		event.PayloadRef,
 		event.Timestamp,
 		event.Version,
-	}, "\x00")
-	digest := sha256.Sum256([]byte(material))
+	} {
+		fmt.Fprintf(&material, "%d\x00%s", len(field), field)
+	}
+	digest := sha256.Sum256([]byte(material.String()))
 	return hex.EncodeToString(digest[:])
 }
 
