@@ -1,15 +1,42 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/evidence"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
+
+// projectOutcomeVerification returns pending only when the lookup yields no
+// record; otherwise it projects the stored verifier record with its
+// provenance. A lookup error fails closed to evidence_failed — a store fault
+// is not a verdict. The lookup is injected (production: Store method value)
+// so the error path stays unit-testable without stubbing the whole Store.
+func projectOutcomeVerification(
+	ctx context.Context,
+	lookup func(context.Context, string) (*store.VerificationVerdict, error),
+	workID string,
+) (outcomeVerificationProjection, error) {
+	v, err := lookup(ctx, workID)
+	if err != nil {
+		return outcomeVerificationProjection{}, err
+	}
+	if v == nil {
+		return outcomeVerificationProjection{Status: "pending"}, nil
+	}
+	return outcomeVerificationProjection{
+		Status:      v.Result,
+		VerifierID:  v.VerifierID,
+		EvidenceRef: v.EvidenceRef,
+		VerifiedAt:  v.VerifiedAt.UTC().Format(time.RFC3339Nano),
+	}, nil
+}
 
 // outcomeVerificationProjection is deliberately separate from the evidence
 // integrity verdicts returned by workgraph.VerifyEvidence. Executor state and
@@ -103,6 +130,12 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out["evidence_verdicts"] = verdicts
-	out["outcome_verification"] = outcomeVerificationProjection{Status: "pending"}
+	ov, verr := projectOutcomeVerification(r.Context(), s.Store.GetVerificationVerdict, workID)
+	if verr != nil {
+		s.logf("outcome verdict lookup: %v", verr)
+		writeError(w, http.StatusInternalServerError, "evidence_failed", verr.Error())
+		return
+	}
+	out["outcome_verification"] = ov
 	writeJSON(w, http.StatusOK, out)
 }
