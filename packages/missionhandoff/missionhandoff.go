@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 
@@ -54,14 +55,21 @@ type StageConfig struct {
 	TimeoutS    int               `yaml:"timeout_s" json:"timeout_s,omitempty"`
 }
 
-// Parse decodes one mission document. Unknown YAML fields are rejected so
-// misspelled authority or recovery controls cannot silently disappear.
+// Parse decodes exactly one mission document. Unknown YAML fields and trailing
+// documents are rejected so ambiguous or misspelled controls cannot disappear.
 func Parse(raw []byte) (Config, error) {
 	var cfg Config
 	dec := yaml.NewDecoder(strings.NewReader(string(raw)))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("missionhandoff: decode: %w", err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return Config{}, errors.New("missionhandoff: exactly one YAML document is allowed; single YAML document required")
+		}
+		return Config{}, fmt.Errorf("missionhandoff: trailing YAML: %w", err)
 	}
 	return cfg, nil
 }
@@ -151,6 +159,11 @@ func validateConfig(cfg Config) error {
 	}
 	if len(cfg.PurposeBindings) == 0 {
 		return errors.New("missionhandoff: purpose_bindings must not be empty")
+	}
+	for i, binding := range cfg.PurposeBindings {
+		if strings.TrimSpace(binding) == "" {
+			return fmt.Errorf("missionhandoff: purpose_bindings[%d] must not be blank", i)
+		}
 	}
 	if cfg.Budget.ComputeEUR <= 0 && cfg.Budget.WallClockH <= 0 {
 		return errors.New("missionhandoff: budget must set compute_eur or wall_clock_h")
