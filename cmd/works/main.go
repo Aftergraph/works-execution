@@ -30,6 +30,7 @@ Usage:
   works init [--out works.yaml]
   works run --config works.yaml [--api http://127.0.0.1:8080] [--idempotency-key KEY]
   works status <work_id> [--api http://127.0.0.1:8080] [--follow]
+  works mission run --config mission.yaml [--api URL] [--follow]
   works runners [--pool NAME] [--alive] [--api URL]   # BYOC: list scheduler-visible runners
   works missions [--limit N] [--json] [--api URL]     # k-037: NOW-ordered mission projection (needs-human first)
   works onboard <owner/repo> [--pool NAME] [--api URL] # design-partner day-1 checklist
@@ -55,6 +56,8 @@ func main() {
 		runCmd(os.Args[2:])
 	case "status":
 		statusCmd(os.Args[2:])
+	case "mission":
+		missionCmd(os.Args[2:])
 	case "runners":
 		runnersCmd(os.Args[2:])
 	case "missions":
@@ -158,16 +161,9 @@ func runCmd(args []string) {
 // sibling (see createBody in services/api/api.go), so we inject the queue
 // flag into the Work's JSON object directly.
 func wireCreate(workJSON []byte) []byte {
-	// workJSON is `{"id":...,"source":...,...}`. We want
-	// `{"id":...,"source":...,"queue":true,...}`. Easiest: insert "queue":true
-	// right after the opening brace.
 	out := make([]byte, 0, len(workJSON)+16)
 	out = append(out, '{')
-	// Skip the opening '{'
 	rest := workJSON[1:]
-	// Find the first key:value pair boundary (end of first quoted key)
-	// Insert before it. Simplest correct approach: inject "queue":true after
-	// the opening brace.
 	out = append(out, []byte(`"queue":true,`)...)
 	out = append(out, rest...)
 	return out
@@ -185,7 +181,6 @@ func configToWork(raw []byte) (*workgraph.Work, error) {
 	if len(doc.Work) == 0 {
 		return nil, fmt.Errorf("config has no work entries")
 	}
-	// Pick the (only) work for V1; multi-work support comes later.
 	var name string
 	for k := range doc.Work {
 		name = k
@@ -255,10 +250,6 @@ func statusCmd(args []string) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	api := fs.String("api", envOr("WORKS_API", "http://127.0.0.1:8080"), "control plane URL")
 	follow := fs.Bool("follow", false, "poll until terminal state")
-	// Split flag-style args from positional args. Each known flag consumes the
-	// next arg as its value (for --api and --idempotency-key style). Anything
-	// starting with "-" that isn't recognized ends up in positional, which is
-	// a bug we'll surface as a usage error.
 	var positional []string
 	var flagArgs []string
 	knownFlags := map[string]bool{"--api": true, "-api": true, "--follow": true, "-follow": true}
@@ -266,7 +257,6 @@ func statusCmd(args []string) {
 		a := args[i]
 		if knownFlags[a] {
 			flagArgs = append(flagArgs, a)
-			// consume value for non-bool flags
 			if a == "--api" || a == "-api" {
 				if i+1 < len(args) {
 					flagArgs = append(flagArgs, args[i+1])
@@ -276,7 +266,7 @@ func statusCmd(args []string) {
 			continue
 		}
 		if strings.HasPrefix(a, "-") {
-			flagArgs = append(flagArgs, a) // let flag.Parse error
+			flagArgs = append(flagArgs, a)
 			continue
 		}
 		positional = append(positional, a)
