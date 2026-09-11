@@ -66,5 +66,6 @@ Runtime dispatches an envelope; WORKS accepts durably and returns a
 - No authority semantics (AIE owns), no admission (TG owns), no outcome
   correctness verdicts (independent verifiers own). WORKS owns durability
   and exactly-once effect identity.
-- SQLite persistence of the acceptance record is a follow-up; the `Store`
-  seam is defined and memory-backed in tests.
+- The `Store` seam remains pluggable. The WORKS SQLite adapter persists acceptance,
+  effect, budget and verification state across restart; memory-backed stores remain
+  test fixtures only.
