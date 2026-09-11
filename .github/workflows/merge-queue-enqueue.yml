@@ -5,7 +5,7 @@ on:
     types: [ready_for_review]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: read
 
 jobs:
@@ -19,12 +19,14 @@ jobs:
     steps:
       - name: Enqueue pull request through repository merge policy
         env:
-          GH_TOKEN: ${{ secrets.AUTOMERGE_PAT }}
-          PR_NODE_ID: ${{ github.event.pull_request.node_id }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          test -n "$GH_TOKEN" || { echo 'AUTOMERGE_PAT is not configured'; exit 2; }
-          gh api graphql \
-            -f query='mutation($id:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head}){mergeQueueEntry{id position}}}' \
-            -F id="$PR_NODE_ID" \
-            -F head="$PR_HEAD_SHA"
+          gh api --method PUT \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge-async" \
+            -f sha="$PR_HEAD_SHA" \
+            -f merge_method='squash' \
+            -f merge_action='merge_queue'
