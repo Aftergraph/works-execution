@@ -147,6 +147,15 @@
     },
     {
       "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
+      "contract": "dispatch.acceptance",
+      "owner": "works-kernel",
+      "schema": "contracts/schemas/dispatch.acceptance.schema.json",
+      "sha256": "ee1f21c357ba3660eded8f6435212ca5f4fa574f59001640361644e103e3f89d",
+      "source_adr": "RFC-0008",
+      "version": "1.0"
+    },
+    {
+      "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
       "contract": "link.wire",
       "owner": "pulse-link",
       "schema": "contracts/schemas/link.wire.schema.json",
@@ -191,7 +200,7 @@
       "version": "1.0"
     }
   ],
-  "entry_count": 21,
+  "entry_count": 22,
   "generated_by": "Contract Freeze Slice 0",
   "manifest_version": "1.0",
   "note": "hash over denne fil = freeze-attestation; endringer i schemas \u00e6ndrer hashen (drift, aldrig stille)"

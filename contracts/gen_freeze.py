@@ -300,6 +300,33 @@ SCHEMAS = {
             ]
         }
     },
+    "dispatch.acceptance": {
+        "version": "1.0", "adr": "RFC-0008", "owner": "works-kernel",
+        "schema": {
+            "$id": "contract:dispatch.acceptance/1.0",
+            "type": "object",
+            "required": ["mission_id", "authority_ref", "authority_epoch", "runtime_dispatch_id", "attempt_id", "effect_id", "idempotency_key", "budget_ref", "budget_ceiling", "checkpoint_id", "evidence_root", "verification_subject", "causal_id"],
+            "properties": {
+                "mission_id": {"type": "string"},
+                "authority_ref": {"type": "string"},
+                "authority_epoch": {"type": "integer", "minimum": 0},
+                "runtime_dispatch_id": {"type": "string"},
+                "works_execution_id": {"type": "string"},
+                "attempt_id": {"type": "string"},
+                "effect_id": {"type": "string"},
+                "idempotency_key": {"type": "string"},
+                "budget_ref": {"type": "string"},
+                "budget_ceiling": {"type": "integer", "minimum": 0},
+                "checkpoint_id": {"type": "string"},
+                "evidence_root": {"type": "string"},
+                "verification_subject": {"type": "string"},
+                "causal_id": {"type": "string"},
+                "outcome": {"enum": ["ACCEPTED", "SUCCEEDED", "FAILED", "INDETERMINATE"]},
+                "verified": {"type": "boolean"},
+                "verifier_id": {"type": "string"}
+            }
+        }
+    },
     "link.wire": {
         "version": "1.0", "adr": "ADR-0026", "owner": "pulse-link",
         "schema": {
