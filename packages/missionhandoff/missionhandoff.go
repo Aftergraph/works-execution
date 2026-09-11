@@ -17,13 +17,13 @@ import (
 
 // Config is the operator-facing durable mission document.
 type Config struct {
-	Version         int                  `yaml:"version" json:"version"`
-	MissionID       string               `yaml:"mission_id" json:"mission_id"`
-	Objective       string               `yaml:"objective" json:"objective"`
-	PurposeBindings []string             `yaml:"purpose_bindings" json:"purpose_bindings"`
-	Budget          BudgetConfig         `yaml:"budget" json:"budget"`
-	Verification    []VerificationConfig `yaml:"verification" json:"verification"`
-	Requirements    RequirementsConfig   `yaml:"requirements" json:"requirements"`
+	Version         int                    `yaml:"version" json:"version"`
+	MissionID       string                 `yaml:"mission_id" json:"mission_id"`
+	Objective       string                 `yaml:"objective" json:"objective"`
+	PurposeBindings []string               `yaml:"purpose_bindings" json:"purpose_bindings"`
+	Budget          BudgetConfig           `yaml:"budget" json:"budget"`
+	Verification    []VerificationConfig   `yaml:"verification" json:"verification"`
+	Requirements    RequirementsConfig     `yaml:"requirements" json:"requirements"`
 	Stages          map[string]StageConfig `yaml:"stages" json:"stages"`
 }
 
@@ -121,8 +121,10 @@ func Compile(cfg Config) (*workgraph.Work, error) {
 			Confidence: cfg.Requirements.Confidence, Pool: cfg.Requirements.Pool,
 		},
 		Mission: &workgraph.MissionContract{
-			BudgetCeiling: &workgraph.BudgetCeiling{ComputeEUR: cfg.Budget.ComputeEUR, WallClockH: cfg.Budget.WallClockH},
-			Verification: criteria, PurposeBindings: append([]string(nil), cfg.PurposeBindings...), KillSwitch: "always",
+			BudgetCeiling:   &workgraph.BudgetCeiling{ComputeEUR: cfg.Budget.ComputeEUR, WallClockH: cfg.Budget.WallClockH},
+			Verification:    criteria,
+			PurposeBindings: append([]string(nil), cfg.PurposeBindings...),
+			KillSwitch:      "always",
 		},
 	}
 	if err := w.Validate(); err != nil {
@@ -174,10 +176,55 @@ func validateConfig(cfg Config) error {
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(s.Run) == "" {
 			return fmt.Errorf("missionhandoff: stage %q requires run", name)
 		}
+		if len(s.SideEffects) > 0 && strings.TrimSpace(s.Reconcile) == "" {
+			return fmt.Errorf("missionhandoff: consequential stage %q requires read-only reconcile", name)
+		}
 		for key, value := range s.Env {
 			if secretLikeKey(key) && value != "" && !strings.HasPrefix(value, "secret://") {
 				return fmt.Errorf("missionhandoff: stage %q env %q must use secret:// reference", name, key)
 			}
+		}
+	}
+	if err := validateAcyclic(cfg.Stages); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateAcyclic(stages map[string]StageConfig) error {
+	const (
+		unseen = iota
+		visiting
+		done
+	)
+	state := make(map[string]int, len(stages))
+	var visit func(string) error
+	visit = func(name string) error {
+		switch state[name] {
+		case visiting:
+			return fmt.Errorf("missionhandoff: dependency cycle includes stage %q", name)
+		case done:
+			return nil
+		}
+		stage, ok := stages[name]
+		if !ok {
+			return fmt.Errorf("missionhandoff: stage dependency %q is not declared", name)
+		}
+		state[name] = visiting
+		for _, dep := range stage.Needs {
+			if _, ok := stages[dep]; !ok {
+				return fmt.Errorf("missionhandoff: stage %q needs undeclared stage %q", name, dep)
+			}
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		state[name] = done
+		return nil
+	}
+	for name := range stages {
+		if err := visit(name); err != nil {
+			return err
 		}
 	}
 	return nil
