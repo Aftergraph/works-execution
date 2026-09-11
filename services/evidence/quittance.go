@@ -3,8 +3,9 @@
 // Quittance + FailureAttribution: the mission receipt layer. A quittance is
 // an EXTENSION of the evidence bundle (not a separate store row — one source
 // of truth), content-addressed through the same canonicalization, with the
-// kernel-negation law baked in:
+// kernel-negation and independent-verification laws baked in:
 //
+//	execution success != verified outcome
 //	verification=failed  ⇒  price_hint MUST be absent (no payment claim)
 //	duplicate quittance  ⇒  same idempotency hash ⇒ same quittance
 //	missing evidence     ⇒  no quittance at all (Produce is the only writer)
@@ -36,9 +37,9 @@ const (
 
 // DriverSegment attributes a slice of the work's timeline to a driver.
 type DriverSegment struct {
-	Driver Driver `json:"driver"`
-	FromSeq int64 `json:"from_seq"`
-	ToSeq   int64 `json:"to_seq"`
+	Driver  Driver `json:"driver"`
+	FromSeq int64  `json:"from_seq"`
+	ToSeq   int64  `json:"to_seq"`
 	WorkID  string `json:"work_id,omitempty"`
 }
 
@@ -55,12 +56,12 @@ type FailureAttribution struct {
 
 // Failure categories (closed set — CUAErrorBench-informed):
 const (
-	FailWrongAssumption   = "wrong_assumption"    // agent acted on a false premise
-	FailModelRejection    = "model_rejection"     // model declined/refused a step
-	FailEnvironment       = "environment"         // infra/provider/network
-	FailBudgetExhausted   = "budget_exhausted"    // ceiling hard-stop (ADR-0009)
-	FailCorruptState      = "corrupt_state"       // checkpoint/handoff corruption
-	FailPermissionDenied  = "permission"          // policy token refused the action
+	FailWrongAssumption  = "wrong_assumption" // agent acted on a false premise
+	FailModelRejection   = "model_rejection"  // model declined/refused a step
+	FailEnvironment      = "environment"      // infra/provider/network
+	FailBudgetExhausted  = "budget_exhausted" // ceiling hard-stop (ADR-0009)
+	FailCorruptState     = "corrupt_state"    // checkpoint/handoff corruption
+	FailPermissionDenied = "permission"       // policy token refused the action
 )
 
 // ValidFailureCategory reports whether c is in the frozen closed set.
@@ -81,28 +82,56 @@ type Usage struct {
 	Tokens     int64   `json:"tokens,omitempty"`
 }
 
-// Quittance is the settlement-grade receipt for a mission completion.
-// Content-addressed via the bundle it extends; Idempotency is the sha256 of
-// (bundle_id + verification + usage canonical JSON) so billing intake can
-// deduplicate without trusting any caller.
-type Quittance struct {
-	BundleID       string              `json:"bundle_id"`
-	WorkID         string              `json:"work_id"`
-	Verification   string              `json:"verification"`         // passed | failed
-	PriceHint      *float64            `json:"price_hint,omitempty"` // nil ⇔ failed (kernel-negation)
-	Usage          Usage               `json:"usage"`
-	Idempotency    string              `json:"idempotency"` // sha256 hex (64)
-	DriverSegments []DriverSegment     `json:"driver_segments,omitempty"`
-	Failure        *FailureAttribution `json:"failure,omitempty"`
-	IssuedAt       time.Time           `json:"issued_at"`
+// VerificationVerdict is an independently produced assessment of the
+// evidence bundle. Execution state is an input to verification, never the
+// verification result itself. Provenance is mandatory so replay/settlement
+// can prove which verifier and evidence produced the decision.
+type VerificationVerdict struct {
+	Result      string    `json:"result"`       // passed | failed
+	VerifierID  string    `json:"verifier_id"`  // stable independent verifier identity
+	EvidenceRef string    `json:"evidence_ref"` // immutable evidence/verdict reference
+	VerifiedAt  time.Time `json:"verified_at"`
 }
 
-// ErrQuittanceConflict mirrors the kernel-negation rules.
+// Quittance is the settlement-grade receipt for a mission completion.
+// Content-addressed via the bundle it extends; Idempotency includes verifier
+// provenance so a different verifier decision/evidence cannot alias an old
+// settlement receipt.
+type Quittance struct {
+	BundleID            string              `json:"bundle_id"`
+	WorkID              string              `json:"work_id"`
+	Verification        string              `json:"verification"`          // passed | failed
+	VerifierID          string              `json:"verifier_id"`           // independent verifier identity
+	VerifierEvidenceRef string              `json:"verifier_evidence_ref"` // immutable verdict evidence ref
+	VerifiedAt          time.Time           `json:"verified_at"`
+	PriceHint           *float64            `json:"price_hint,omitempty"` // nil ⇔ failed (kernel-negation)
+	Usage               Usage               `json:"usage"`
+	Idempotency         string              `json:"idempotency"` // sha256 hex (64)
+	DriverSegments      []DriverSegment     `json:"driver_segments,omitempty"`
+	Failure             *FailureAttribution `json:"failure,omitempty"`
+	IssuedAt            time.Time           `json:"issued_at"`
+}
+
+// ErrQuittanceConflict mirrors the kernel-negation and verification laws.
 var (
-	ErrQuittanceNoEvidence   = errors.New("quittance requires an evidence bundle (missing evidence cannot yield quittance)")
-	ErrQuittanceFailedPriced = errors.New("failed verification cannot carry a price hint (kernel-negation, quittance.rules/1.0)")
-	ErrQuittanceInvalidState = errors.New("quittance requires a terminal work state")
+	ErrQuittanceNoEvidence           = errors.New("quittance requires an evidence bundle (missing evidence cannot yield quittance)")
+	ErrQuittanceFailedPriced         = errors.New("failed verification cannot carry a price hint (kernel-negation, quittance.rules/1.0)")
+	ErrQuittanceInvalidState         = errors.New("quittance requires a terminal work state")
+	ErrQuittanceVerificationRequired = errors.New("quittance requires an independent verifier verdict with identity, evidence, and timestamp")
+	ErrQuittanceVerdictConflict      = errors.New("verifier verdict conflicts with kernel terminal execution state")
 )
+
+func validateVerdict(v *VerificationVerdict) error {
+	if v == nil || v.VerifierID == "" || v.EvidenceRef == "" || v.VerifiedAt.IsZero() {
+		return ErrQuittanceVerificationRequired
+	}
+	switch v.Result {
+	case "passed", "failed":
+		return nil
+	default:
+		return fmt.Errorf("%w: result must be passed|failed, got %q", ErrQuittanceVerificationRequired, v.Result)
+	}
+}
 
 // QuittanceID derives the content-addressed id from the canonical quittance.
 // Replay-safety: identical inputs always derive the identical id.
@@ -115,6 +144,9 @@ func (q *Quittance) derive() error {
 	default:
 		return fmt.Errorf("quittance.verification must be passed|failed, got %q", q.Verification)
 	}
+	if q.VerifierID == "" || q.VerifierEvidenceRef == "" || q.VerifiedAt.IsZero() {
+		return ErrQuittanceVerificationRequired
+	}
 	if q.Verification == "failed" && q.PriceHint != nil {
 		return ErrQuittanceFailedPriced
 	}
@@ -122,13 +154,26 @@ func (q *Quittance) derive() error {
 		return fmt.Errorf("quittance.failure.category %q not in frozen set", q.Failure.Category)
 	}
 	raw, err := json.Marshal(struct {
-		BundleID     string  `json:"bundle_id"`
-		Verification string  `json:"verification"`
-		Price        *float64 `json:"price_hint"`
-		ComputeEUR   float64 `json:"compute_eur"`
-		WallClockS   int64   `json:"wall_clock_s"`
-		Tokens       int64   `json:"tokens"`
-	}{q.BundleID, q.Verification, q.PriceHint, q.Usage.ComputeEUR, q.Usage.WallClockS, q.Usage.Tokens})
+		BundleID            string  `json:"bundle_id"`
+		Verification        string  `json:"verification"`
+		VerifierID          string  `json:"verifier_id"`
+		VerifierEvidenceRef string  `json:"verifier_evidence_ref"`
+		VerifiedAt          string  `json:"verified_at"`
+		Price               *float64 `json:"price_hint"`
+		ComputeEUR          float64 `json:"compute_eur"`
+		WallClockS          int64   `json:"wall_clock_s"`
+		Tokens              int64   `json:"tokens"`
+	}{
+		BundleID:            q.BundleID,
+		Verification:        q.Verification,
+		VerifierID:          q.VerifierID,
+		VerifierEvidenceRef: q.VerifierEvidenceRef,
+		VerifiedAt:          q.VerifiedAt.UTC().Format(time.RFC3339Nano),
+		Price:               q.PriceHint,
+		ComputeEUR:          q.Usage.ComputeEUR,
+		WallClockS:          q.Usage.WallClockS,
+		Tokens:              q.Usage.Tokens,
+	})
 	if err != nil {
 		return err
 	}
@@ -139,30 +184,58 @@ func (q *Quittance) derive() error {
 	}
 	return nil
 }
-// IssueQuittance is the ONLY way a Quittance comes into existence: it
-// requires an already-produced evidence bundle (missing evidence cannot
-// yield quittance — freeze law). Verification follows the bundle's terminal
-// summary: SUCCEEDED → passed (price allowed), FAILED/CANCELLED → failed
-// (kernel-negation forbids a price). Failure attribution must carry a
-// category from the frozen closed set.
-func IssueQuittance(b *Bundle, usage Usage, segs []DriverSegment, failure *FailureAttribution, now time.Time) (*Quittance, error) {
+
+// IssueQuittance is the ONLY way a Quittance comes into existence. It
+// requires both an already-produced evidence bundle and an independent
+// verifier verdict. Kernel execution state constrains what the verifier may
+// assert, but never self-issues verification:
+//
+//	SUCCEEDED + passed verdict -> verified settlement
+//	SUCCEEDED + failed verdict -> failed quittance (no price)
+//	FAILED/CANCELLED + failed verdict -> failed quittance (no price)
+//	FAILED/CANCELLED + passed verdict -> conflict, refused
+//
+// Failure attribution must carry a category from the frozen closed set.
+func IssueQuittance(b *Bundle, verdict *VerificationVerdict, usage Usage, segs []DriverSegment, failure *FailureAttribution, now time.Time) (*Quittance, error) {
 	if b == nil || b.BundleID == "" {
 		return nil, ErrQuittanceNoEvidence
 	}
-	q := &Quittance{
-		BundleID:       b.BundleID,
-		WorkID:         b.WorkID,
-		Usage:          usage,
-		DriverSegments: segs,
+	if err := validateVerdict(verdict); err != nil {
+		return nil, err
 	}
+
+	q := &Quittance{
+		BundleID:            b.BundleID,
+		WorkID:              b.WorkID,
+		Verification:        verdict.Result,
+		VerifierID:          verdict.VerifierID,
+		VerifierEvidenceRef: verdict.EvidenceRef,
+		VerifiedAt:          verdict.VerifiedAt.UTC(),
+		Usage:               usage,
+		DriverSegments:      segs,
+	}
+
 	switch b.Summary.Result {
 	case workgraph.StateSucceeded:
-		q.Verification = "passed"
-		if failure != nil {
-			return nil, errors.New("passed quittance cannot carry failure attribution")
+		if verdict.Result == "passed" {
+			if failure != nil {
+				return nil, errors.New("passed quittance cannot carry failure attribution")
+			}
+		} else {
+			if failure == nil {
+				failure = &FailureAttribution{
+					Category: FailWrongAssumption,
+					Detail:   "independent verifier rejected a kernel-successful execution",
+					Driver:   DriverAgent,
+					At:       now,
+				}
+			}
+			q.Failure = failure
 		}
 	case workgraph.StateFailed, workgraph.StateCancelled:
-		q.Verification = "failed"
+		if verdict.Result == "passed" {
+			return nil, ErrQuittanceVerdictConflict
+		}
 		if failure == nil {
 			failure = &FailureAttribution{
 				Category: FailEnvironment,
@@ -171,17 +244,21 @@ func IssueQuittance(b *Bundle, usage Usage, segs []DriverSegment, failure *Failu
 				At:       now,
 			}
 		}
-		if !ValidFailureCategory(failure.Category) {
-			return nil, fmt.Errorf("failure category %q not in frozen closed set", failure.Category)
-		}
-		failure.At = failure.At.UTC()
-		if failure.At.IsZero() {
-			failure.At = now
-		}
 		q.Failure = failure
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrQuittanceInvalidState, b.Summary.Result)
 	}
+
+	if q.Failure != nil {
+		if !ValidFailureCategory(q.Failure.Category) {
+			return nil, fmt.Errorf("failure category %q not in frozen closed set", q.Failure.Category)
+		}
+		q.Failure.At = q.Failure.At.UTC()
+		if q.Failure.At.IsZero() {
+			q.Failure.At = now.UTC()
+		}
+	}
+
 	if err := q.derive(); err != nil {
 		return nil, err
 	}
