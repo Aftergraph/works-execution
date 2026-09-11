@@ -28,5 +28,4 @@ jobs:
             -H 'X-GitHub-Api-Version: 2026-03-10' \
             "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge-async" \
             -f sha="$PR_HEAD_SHA" \
-            -f merge_method='squash' \
             -f merge_action='merge_queue'
