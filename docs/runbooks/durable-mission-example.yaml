@@ -1,0 +1,15 @@
+version: 1
+mission_id: example-durable-mission-001
+objective: prove execution can outlive the submitting coordinator
+purpose_bindings: [repository-maintenance]
+budget:
+  wall_clock_h: 1
+verification:
+  - criterion: marker exists with expected content
+    kind: deterministic
+stages:
+  apply:
+    reconcile: test -f "$MARKER"
+    run: printf '%s\n' durable-ok > "$MARKER"
+    permissions: [read, write, execute]
+    side_effects: [filesystem_write]
