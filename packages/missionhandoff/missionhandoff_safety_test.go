@@ -38,3 +38,19 @@ func TestConsequentialStageRequiresReconcile(t *testing.T) {
 		t.Fatalf("consequential stage without reconcile accepted: %v", err)
 	}
 }
+
+func TestParseRejectsTrailingYAMLDocument(t *testing.T) {
+	raw := validYAML + "---\nversion: 1\nmission_id: shadow\n"
+	if _, err := missionhandoff.Parse([]byte(raw)); err == nil || !strings.Contains(err.Error(), "single YAML document") {
+		t.Fatalf("trailing YAML document accepted: %v", err)
+	}
+}
+
+func TestCompileRejectsBlankPurposeBinding(t *testing.T) {
+	raw := strings.Replace(validYAML, "purpose_bindings: [aftergraph-maintenance]", `purpose_bindings: [""]`, 1)
+	cfg, err := missionhandoff.Parse([]byte(raw))
+	if err != nil { t.Fatal(err) }
+	if _, err := missionhandoff.Compile(cfg); err == nil || !strings.Contains(err.Error(), "purpose_bindings") {
+		t.Fatalf("blank purpose binding accepted: %v", err)
+	}
+}
