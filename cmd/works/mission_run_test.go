@@ -52,7 +52,9 @@ func TestMissionRunDetachedCreatesQueuedDurableWork(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer test-token" { http.Error(w, "unauthorized", 401); return }
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/works/"+want.ID:
-			http.NotFound(w, r)
+			if posts.Load() == 0 { http.NotFound(w, r); return }
+			confirmed := *want; confirmed.State = workgraph.StateQueued
+			_ = json.NewEncoder(w).Encode(&confirmed)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/works":
 			posts.Add(1)
 			var body struct { workgraph.Work; Queue bool `json:"queue"` }
