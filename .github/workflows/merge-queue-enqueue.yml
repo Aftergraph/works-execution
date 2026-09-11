@@ -6,22 +6,24 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: read
 
 jobs:
   enqueue:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == 'JonasAbde' &&
       contains(github.event.pull_request.body, '<!-- merge-queue:enqueue -->')
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
       - name: Enqueue pull request through repository merge policy
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AUTOMERGE_PAT }}
           PR_NODE_ID: ${{ github.event.pull_request.node_id }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          test -n "$GH_TOKEN" || { echo 'AUTOMERGE_PAT is not configured'; exit 2; }
           gh api graphql \
             -f query='mutation($id:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head}){mergeQueueEntry{id position}}}' \
             -F id="$PR_NODE_ID" \
