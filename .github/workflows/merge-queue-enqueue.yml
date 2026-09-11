@@ -5,7 +5,7 @@ on:
     types: [ready_for_review]
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 jobs:
@@ -19,5 +19,10 @@ jobs:
       - name: Enqueue pull request through repository merge policy
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge "$PR_URL" --squash
+          PR_NODE_ID: ${{ github.event.pull_request.node_id }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api graphql \
+            -f query='mutation($id:ID!,$head:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$id,expectedHeadOid:$head}){mergeQueueEntry{id position}}}' \
+            -F id="$PR_NODE_ID" \
+            -F head="$PR_HEAD_SHA"
