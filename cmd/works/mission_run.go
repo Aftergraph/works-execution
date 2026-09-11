@@ -69,15 +69,30 @@ func runMission(args []string, stdout, stderr io.Writer) error {
 		}
 		owned = existing
 	} else {
-		var got workgraph.Work
+		var accepted workgraph.Work
 		body := struct {
 			*workgraph.Work
 			Queue bool `json:"queue"`
 		}{Work: want, Queue: true}
-		if _, err := auth.postJSON("/v1/works", body, &got); err != nil {
+		if _, err := auth.postJSON("/v1/works", body, &accepted); err != nil {
 			return fmt.Errorf("submit mission: %w", err)
 		}
-		owned = &got
+
+		// A concurrent submitter may have raced between our preflight GET and
+		// POST. Re-read canonical control-plane state before claiming success.
+		// This also defends against the store's same-ID idempotent path, which
+		// deliberately does not compare full payload bytes.
+		confirmed, err := getMissionIfExists(auth, want.ID)
+		if err != nil {
+			return fmt.Errorf("post-submit reconcile: %w", err)
+		}
+		if confirmed == nil {
+			return fmt.Errorf("post-submit reconcile: work %s not found after create", want.ID)
+		}
+		if err := sameMissionSpec(confirmed, want); err != nil {
+			return fmt.Errorf("post-submit reconcile: %w", err)
+		}
+		owned = confirmed
 		created = true
 	}
 
