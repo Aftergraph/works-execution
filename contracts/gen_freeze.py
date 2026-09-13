@@ -321,6 +321,7 @@ SCHEMAS = {
                 "evidence_root": {"type": "string"},
                 "verification_subject": {"type": "string"},
                 "causal_id": {"type": "string"},
+                "record_version": {"type": "integer", "minimum": 1},
                 "outcome": {"enum": ["ACCEPTED", "SUCCEEDED", "FAILED", "INDETERMINATE"]},
                 "verified": {"type": "boolean"},
                 "verifier_id": {"type": "string"},
