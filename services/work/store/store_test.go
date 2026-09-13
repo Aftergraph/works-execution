@@ -204,6 +204,30 @@ func TestIdempotency_SamePayload_Ok(t *testing.T) {
 	}
 }
 
+func TestIdempotency_SameID_DifferentPayload_Conflict(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	w1 := sampleWork()
+	w1.IdempotencyKey = "key_same_id"
+	if err := s.CreateWork(ctx, w1); err != nil {
+		t.Fatal(err)
+	}
+
+	w2 := *w1
+	w2.Objective.Type = "different_objective"
+	if err := s.CreateWork(ctx, &w2); err != store.ErrIdempotencyConflict {
+		t.Fatalf("got %v, want ErrIdempotencyConflict", err)
+	}
+
+	got, err := s.GetWork(ctx, w1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Objective.Type != w1.Objective.Type {
+		t.Fatalf("idempotency replay mutated durable payload: got objective %q, want %q", got.Objective.Type, w1.Objective.Type)
+	}
+}
+
 func TestListWorks_ReturnsRecentFirst(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
