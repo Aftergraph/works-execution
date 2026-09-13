@@ -47,6 +47,36 @@
     "runtime_dispatch_id": {
       "type": "string"
     },
+    "verdict": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_ref": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "recorded_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "result": {
+          "enum": [
+            "ACCEPT",
+            "REJECT"
+          ]
+        },
+        "subject": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "result",
+        "subject",
+        "evidence_ref",
+        "recorded_at"
+      ],
+      "type": "object"
+    },
     "verification_subject": {
       "type": "string"
     },
