@@ -17,10 +17,22 @@ func newMemoryStore() *memoryStore {
 	return &memoryStore{byK: map[string]*Acceptance{}, byE: map[string]*Acceptance{}}
 }
 
+func cloneAcceptance(a *Acceptance) *Acceptance {
+	if a == nil {
+		return nil
+	}
+	cp := *a
+	if a.Verdict != nil {
+		verdict := *a.Verdict
+		cp.Verdict = &verdict
+	}
+	return &cp
+}
+
 func (m *memoryStore) LoadByIdempotency(key string) (*Acceptance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.byK[key], nil
+	return cloneAcceptance(m.byK[key]), nil
 }
 
 func (m *memoryStore) LoadByExecution(id string) (*Acceptance, error) {
