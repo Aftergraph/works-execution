@@ -35,7 +35,7 @@ func sampleWork() *workgraph.Work {
 			},
 		},
 		Requirements: workgraph.Requirements{OS: "linux", Arch: "amd64"},
-		Policy:      workgraph.Policy{ForkPolicy: "deny", TrustClass: "standard"},
+		Policy:       workgraph.Policy{ForkPolicy: "deny", TrustClass: "standard"},
 	}
 }
 
