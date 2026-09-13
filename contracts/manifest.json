@@ -42,9 +42,9 @@
       "contract": "quittance.rules",
       "owner": "works-evidence",
       "schema": "contracts/schemas/quittance.rules.schema.json",
-      "sha256": "3adef1d540d7da025dd25637e0dedf66228ddcf8d5cdcaae6533ed805c388f63",
+      "sha256": "b2b60514bcb569f901b77e4683bda6f8a1ba236a7ba18066ba7af23d785b4fcb",
       "source_adr": "ADR-0011",
-      "version": "1.0"
+      "version": "1.1"
     },
     {
       "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",

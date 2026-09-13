@@ -104,16 +104,19 @@ SCHEMAS = {
         }
     },
     "quittance.rules": {
-        "version": "1.0", "adr": "ADR-0011", "owner": "works-evidence",
+        "version": "1.1", "adr": "ADR-0011", "owner": "works-evidence",
         "schema": {
-            "$id": "contract:quittance.rules/1.0",
+            "$id": "contract:quittance.rules/1.1",
             "type": "object",
-            "required": ["quittance_id", "work_id", "bundle_id", "verification", "usage"],
+            "required": ["quittance_id", "work_id", "bundle_id", "verification", "verifier_id", "verifier_evidence_ref", "verified_at", "usage"],
             "properties": {
                 "quittance_id": {"type": "string"},
                 "work_id": {"type": "string"},
                 "bundle_id": {"type": "string"},
                 "verification": {"enum": ["passed", "failed"]},
+                "verifier_id": {"type": "string"},
+                "verifier_evidence_ref": {"type": "string"},
+                "verified_at": {"type": "string"},
                 "price_hint": {"type": "number"},
                 "usage": {"type": "object", "required": ["compute_eur", "wall_clock_s"], "properties": {"compute_eur": {"type": "number"}, "wall_clock_s": {"type": "integer"}, "tokens": {"type": "integer"}}},
                 "idempotency": {"type": "string", "pattern": "^[a-f0-9]{64}$"}

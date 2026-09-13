@@ -1,5 +1,5 @@
 {
-  "$id": "contract:quittance.rules/1.0",
+  "$id": "contract:quittance.rules/1.1",
   "not": {
     "properties": {
       "price_hint": {
@@ -48,6 +48,15 @@
         "failed"
       ]
     },
+    "verified_at": {
+      "type": "string"
+    },
+    "verifier_evidence_ref": {
+      "type": "string"
+    },
+    "verifier_id": {
+      "type": "string"
+    },
     "work_id": {
       "type": "string"
     }
@@ -57,6 +66,9 @@
     "work_id",
     "bundle_id",
     "verification",
+    "verifier_id",
+    "verifier_evidence_ref",
+    "verified_at",
     "usage"
   ],
   "type": "object"

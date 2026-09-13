@@ -1,4 +1,4 @@
-// k-billing-01 tests — settlement law over quittance.rules/1.0 +
+// k-billing-01 tests — settlement law over quittance.rules/1.1 +
 // kernel.budget/1.0.
 //
 // Freeze law under test:
@@ -38,11 +38,14 @@ func ledger() *workgraph.BudgetLedger {
 
 func quittance() *billing.QuittanceRef {
 	return &billing.QuittanceRef{
-		BundleID:       "bundle_abc",
-		QuittanceIDF:   "quit_001",
-		WorkIDF:        "work_01234567",
-		VerificationF:  "passed",
-		IdempotencyHex: validIDem,
+		BundleID:             "bundle_abc",
+		QuittanceIDF:         "quit_001",
+		WorkIDF:              "work_01234567",
+		VerificationF:        "passed",
+		VerifierIDF:          "verifier/independent-1",
+		VerifierEvidenceRefF: "evidence/verdict-1",
+		VerifiedAtF:          "2026-09-09T04:00:00Z",
+		IdempotencyHex:       validIDem,
 	}
 }
 
@@ -252,6 +255,26 @@ func TestSettleL4FailClosed(t *testing.T) {
 			name:    "quittance work_id mismatch",
 			mutate:  func(_ *workgraph.BudgetLedger, q *billing.QuittanceRef) { q.WorkIDF = "work_other" },
 			wantErr: billing.ErrQuittanceWorkID,
+		},
+		{
+			name:    "quittance without verifier identity",
+			mutate:  func(_ *workgraph.BudgetLedger, q *billing.QuittanceRef) { q.VerifierIDF = "" },
+			wantErr: billing.ErrQuittanceVerifierProvenance,
+		},
+		{
+			name:    "quittance without verifier evidence",
+			mutate:  func(_ *workgraph.BudgetLedger, q *billing.QuittanceRef) { q.VerifierEvidenceRefF = "" },
+			wantErr: billing.ErrQuittanceVerifierProvenance,
+		},
+		{
+			name:    "quittance without verification instant",
+			mutate:  func(_ *workgraph.BudgetLedger, q *billing.QuittanceRef) { q.VerifiedAtF = "" },
+			wantErr: billing.ErrQuittanceVerifierProvenance,
+		},
+		{
+			name:    "quittance with unknown verification value",
+			mutate:  func(_ *workgraph.BudgetLedger, q *billing.QuittanceRef) { q.VerificationF = "maybe" },
+			wantErr: billing.ErrQuittanceVerificationValue,
 		},
 		{
 			name:    "idempotency not sha256 hex",
