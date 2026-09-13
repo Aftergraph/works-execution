@@ -43,7 +43,7 @@ func TestDispatchAcceptanceSurvivesStoreRestartWithoutDuplicateEffect(t *testing
 	if err := first.Complete(accepted.WorksExecutionID, "SUCCEEDED"); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
-	if err := first.RecordVerdict(accepted.WorksExecutionID, "verifier_live", input.VerificationSubj, true, true); err != nil {
+	if err := first.RecordVerdict(accepted.WorksExecutionID, "verifier_live", input.VerificationSubj, true, true, "ACCEPT", "evidence/live-success"); err != nil {
 		t.Fatalf("record verdict: %v", err)
 	}
 	if err := firstStore.Close(); err != nil {
