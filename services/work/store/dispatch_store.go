@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS dispatch_acceptances (
     idempotency_key    TEXT NOT NULL UNIQUE,
     causal_id          TEXT NOT NULL,
     acceptance_json    TEXT NOT NULL,
+    version            INTEGER NOT NULL DEFAULT 1,
     updated_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_acceptances_causal
@@ -28,8 +29,37 @@ ON dispatch_acceptances(causal_id);
 `
 
 func (s *SQLiteStore) migrateDispatchAcceptance() error {
-	_, err := s.db.Exec(dispatchAcceptanceSchema)
-	return err
+	if _, err := s.db.Exec(dispatchAcceptanceSchema); err != nil {
+		return err
+	}
+	hasVersion, err := s.dispatchAcceptanceHasVersionColumn()
+	if err != nil {
+		return err
+	}
+	if !hasVersion {
+		if _, err := s.db.Exec(`ALTER TABLE dispatch_acceptances ADD COLUMN version INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return fmt.Errorf("migrate dispatch_acceptances.version: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) dispatchAcceptanceHasVersionColumn() (bool, error) {
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('dispatch_acceptances')`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == "version" {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // DispatchAcceptanceStore returns the durable adapter consumed by
@@ -57,6 +87,7 @@ func (s *dispatchAcceptanceStore) AcceptIfAbsent(accepted *dispatch.Acceptance) 
 	if accepted.WorksExecutionID == "" || accepted.Dispatch.IdempotencyKey == "" || accepted.Dispatch.CausalID == "" {
 		return nil, errors.New("dispatch acceptance: missing identity binding")
 	}
+	accepted.RecordVersion = 1
 	payload, err := json.Marshal(accepted)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch acceptance encode: %w", err)
@@ -69,13 +100,14 @@ func (s *dispatchAcceptanceStore) AcceptIfAbsent(accepted *dispatch.Acceptance) 
 
 	result, err := tx.Exec(`
 		INSERT INTO dispatch_acceptances
-			(works_execution_id, idempotency_key, causal_id, acceptance_json, updated_at)
-		VALUES (?, ?, ?, ?, ?)
+			(works_execution_id, idempotency_key, causal_id, acceptance_json, version, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(idempotency_key) DO NOTHING`,
 		accepted.WorksExecutionID,
 		accepted.Dispatch.IdempotencyKey,
 		accepted.Dispatch.CausalID,
 		string(payload),
+		accepted.RecordVersion,
 		time.Now().UTC().Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -87,7 +119,7 @@ func (s *dispatchAcceptanceStore) AcceptIfAbsent(accepted *dispatch.Acceptance) 
 	}
 	if rows == 0 {
 		existing, err := loadAcceptance(tx,
-			`SELECT works_execution_id, idempotency_key, causal_id, acceptance_json
+			`SELECT works_execution_id, idempotency_key, causal_id, acceptance_json, version
 			 FROM dispatch_acceptances WHERE idempotency_key = ?`,
 			accepted.Dispatch.IdempotencyKey,
 		)
@@ -122,7 +154,7 @@ func cloneDispatchAcceptance(a *dispatch.Acceptance) *dispatch.Acceptance {
 
 func (s *dispatchAcceptanceStore) LoadByIdempotency(key string) (*dispatch.Acceptance, error) {
 	return s.load(
-		`SELECT works_execution_id, idempotency_key, causal_id, acceptance_json
+		`SELECT works_execution_id, idempotency_key, causal_id, acceptance_json, version
 		 FROM dispatch_acceptances WHERE idempotency_key = ?`,
 		key,
 	)
@@ -130,7 +162,7 @@ func (s *dispatchAcceptanceStore) LoadByIdempotency(key string) (*dispatch.Accep
 
 func (s *dispatchAcceptanceStore) LoadByExecution(id string) (*dispatch.Acceptance, error) {
 	return s.load(
-		`SELECT works_execution_id, idempotency_key, causal_id, acceptance_json
+		`SELECT works_execution_id, idempotency_key, causal_id, acceptance_json, version
 		 FROM dispatch_acceptances WHERE works_execution_id = ?`,
 		id,
 	)
@@ -141,8 +173,9 @@ func (s *dispatchAcceptanceStore) load(query string, arg string) (*dispatch.Acce
 
 func loadAcceptance(q queryRower, query string, arg string) (*dispatch.Acceptance, error) {
 	var worksExecutionID, idempotencyKey, causalID, payload string
+	var recordVersion int64
 	err := q.QueryRow(query, arg).Scan(
-		&worksExecutionID, &idempotencyKey, &causalID, &payload,
+		&worksExecutionID, &idempotencyKey, &causalID, &payload, &recordVersion,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -154,6 +187,10 @@ func loadAcceptance(q queryRower, query string, arg string) (*dispatch.Acceptanc
 	if err := json.Unmarshal([]byte(payload), &accepted); err != nil {
 		return nil, fmt.Errorf("dispatch acceptance decode: %w", err)
 	}
+	if recordVersion < 1 {
+		return nil, errors.New("dispatch acceptance invalid record version")
+	}
+	accepted.RecordVersion = recordVersion
 	if accepted.WorksExecutionID != worksExecutionID ||
 		accepted.Dispatch.IdempotencyKey != idempotencyKey ||
 		accepted.Dispatch.CausalID != causalID {
@@ -162,34 +199,64 @@ func loadAcceptance(q queryRower, query string, arg string) (*dispatch.Acceptanc
 	return &accepted, nil
 }
 
-func (s *dispatchAcceptanceStore) Save(accepted *dispatch.Acceptance) error {
-	if accepted == nil {
-		return errors.New("dispatch acceptance: nil record")
+func (s *dispatchAcceptanceStore) MutateByExecution(id string, mutate func(*dispatch.Acceptance) error) (*dispatch.Acceptance, error) {
+	if id == "" {
+		return nil, errors.New("dispatch acceptance: execution id required")
 	}
-	if accepted.WorksExecutionID == "" || accepted.Dispatch.IdempotencyKey == "" || accepted.Dispatch.CausalID == "" {
-		return errors.New("dispatch acceptance: missing identity binding")
+	if mutate == nil {
+		return nil, errors.New("dispatch acceptance: nil mutation")
 	}
-	payload, err := json.Marshal(accepted)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("dispatch acceptance encode: %w", err)
+		return nil, fmt.Errorf("dispatch acceptance mutation begin: %w", err)
 	}
-	_, err = s.db.Exec(`
-		INSERT INTO dispatch_acceptances
-			(works_execution_id, idempotency_key, causal_id, acceptance_json, updated_at)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(works_execution_id) DO UPDATE SET
-			idempotency_key = excluded.idempotency_key,
-			causal_id = excluded.causal_id,
-			acceptance_json = excluded.acceptance_json,
-			updated_at = excluded.updated_at`,
-		accepted.WorksExecutionID,
-		accepted.Dispatch.IdempotencyKey,
-		accepted.Dispatch.CausalID,
-		string(payload),
-		time.Now().UTC().Format(time.RFC3339Nano),
+	defer tx.Rollback()
+
+	current, err := loadAcceptance(tx,
+		`SELECT works_execution_id, idempotency_key, causal_id, acceptance_json, version
+		 FROM dispatch_acceptances WHERE works_execution_id = ?`,
+		id,
 	)
 	if err != nil {
-		return fmt.Errorf("dispatch acceptance save: %w", err)
+		return nil, err
 	}
-	return nil
+	if current == nil {
+		return nil, fmt.Errorf("%w: %q", dispatch.ErrUnknownAcceptance, id)
+	}
+	expectedVersion := current.RecordVersion
+	if err := mutate(current); err != nil {
+		return nil, err
+	}
+	nextVersion := expectedVersion + 1
+	if nextVersion <= expectedVersion {
+		return nil, dispatch.ErrMutationConflict
+	}
+	current.RecordVersion = nextVersion
+	payload, err := json.Marshal(current)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch acceptance mutation encode: %w", err)
+	}
+	result, err := tx.Exec(`UPDATE dispatch_acceptances
+		   SET acceptance_json = ?, version = ?, updated_at = ?
+		 WHERE works_execution_id = ? AND version = ?`,
+		string(payload),
+		nextVersion,
+		time.Now().UTC().Format(time.RFC3339Nano),
+		id,
+		expectedVersion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch acceptance mutation update: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("dispatch acceptance mutation rows affected: %w", err)
+	}
+	if rows != 1 {
+		return nil, dispatch.ErrMutationConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("dispatch acceptance mutation commit: %w", err)
+	}
+	return cloneDispatchAcceptance(current), nil
 }
