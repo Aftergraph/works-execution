@@ -525,6 +525,91 @@ func (s *SQLiteStore) Close() error { return s.db.Close() }
 // package owns its own table; callers must not touch works tables.
 func (s *SQLiteStore) DB() *sql.DB { return s.db }
 
+// idempotencyPayload is the immutable creation intent used to validate
+// same-key replays. Runtime state, timestamps, attempts, evidence and artifacts
+// are deliberately excluded: queueing and execution may change those after the
+// initial create, while the admitted Work definition must remain byte-stable.
+type idempotencyPayload struct {
+	Source       workgraph.Source          `json:"source"`
+	Objective    workgraph.Objective       `json:"objective"`
+	Graph        workgraph.Graph           `json:"graph"`
+	Requirements workgraph.Requirements    `json:"requirements"`
+	Policy       workgraph.Policy          `json:"policy"`
+	Mission      *workgraph.MissionContract `json:"mission,omitempty"`
+	CorrelationID string                  `json:"correlation_id,omitempty"`
+}
+
+func creationPayloadJSON(w *workgraph.Work) ([]byte, error) {
+	return json.Marshal(idempotencyPayload{
+		Source:        w.Source,
+		Objective:     w.Objective,
+		Graph:         w.Graph,
+		Requirements:  w.Requirements,
+		Policy:        w.Policy,
+		Mission:       w.Mission,
+		CorrelationID: w.CorrelationID,
+	})
+}
+
+func sameCreationPayload(a, b *workgraph.Work) (bool, error) {
+	left, err := creationPayloadJSON(a)
+	if err != nil {
+		return false, err
+	}
+	right, err := creationPayloadJSON(b)
+	if err != nil {
+		return false, err
+	}
+	return string(left) == string(right), nil
+}
+
+// loadCreationPayloadTx reads only the immutable Work definition while the
+// idempotency transaction is open. Keeping this lookup inside the same
+// transaction prevents a replay decision from racing a concurrent insert.
+func loadCreationPayloadTx(ctx context.Context, tx *sql.Tx, id string) (*workgraph.Work, error) {
+	var sourceJ, objectiveJ, graphJ, requirementsJ, policyJ, missionJ string
+	var correlationID sql.NullString
+	err := tx.QueryRowContext(ctx, `
+        SELECT source_json, objective_json, graph_json, requirements_json,
+               policy_json, COALESCE(mission_json, ''), correlation_id
+        FROM works WHERE id = ?
+    `, id).Scan(
+		&sourceJ, &objectiveJ, &graphJ, &requirementsJ, &policyJ, &missionJ,
+		&correlationID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	w := &workgraph.Work{ID: id}
+	if err := json.Unmarshal([]byte(sourceJ), &w.Source); err != nil {
+		return nil, fmt.Errorf("decode idempotency source: %w", err)
+	}
+	if err := json.Unmarshal([]byte(objectiveJ), &w.Objective); err != nil {
+		return nil, fmt.Errorf("decode idempotency objective: %w", err)
+	}
+	if err := json.Unmarshal([]byte(graphJ), &w.Graph); err != nil {
+		return nil, fmt.Errorf("decode idempotency graph: %w", err)
+	}
+	if err := json.Unmarshal([]byte(requirementsJ), &w.Requirements); err != nil {
+		return nil, fmt.Errorf("decode idempotency requirements: %w", err)
+	}
+	if err := json.Unmarshal([]byte(policyJ), &w.Policy); err != nil {
+		return nil, fmt.Errorf("decode idempotency policy: %w", err)
+	}
+	if missionJ != "" {
+		var mission workgraph.MissionContract
+		if err := json.Unmarshal([]byte(missionJ), &mission); err != nil {
+			return nil, fmt.Errorf("decode idempotency mission: %w", err)
+		}
+		w.Mission = &mission
+	}
+	if correlationID.Valid {
+		w.CorrelationID = correlationID.String
+	}
+	return w, nil
+}
+
 // CreateWork persists a new Work. Returns ErrIdempotencyConflict if a Work
 // with the same idempotency key already exists with a different payload.
 func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
@@ -548,18 +633,30 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 	}
 	defer tx.Rollback()
 
-	// Idempotency check: if a key is set and a work with the same key exists,
-	// return ErrIdempotencyConflict.
+	// Idempotency check: a same-key replay is successful only when the
+	// immutable creation intent is identical. State is excluded because the
+	// API may auto-queue the Work after this insert.
 	if w.IdempotencyKey != "" {
 		var existingID string
 		err := tx.QueryRowContext(ctx,
 			`SELECT id FROM works WHERE idempotency_key = ?`, w.IdempotencyKey,
 		).Scan(&existingID)
 		if err == nil {
-			if existingID == w.ID {
-				return tx.Commit() // same payload, idempotent success
+			if existingID != w.ID {
+				return ErrIdempotencyConflict
 			}
-			return ErrIdempotencyConflict
+			existing, err := loadCreationPayloadTx(ctx, tx, existingID)
+			if err != nil {
+				return fmt.Errorf("idempotency lookup: %w", err)
+			}
+			same, err := sameCreationPayload(existing, w)
+			if err != nil {
+				return fmt.Errorf("idempotency payload comparison: %w", err)
+			}
+			if !same {
+				return ErrIdempotencyConflict
+			}
+			return tx.Commit() // same key + same immutable payload: idempotent success
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
