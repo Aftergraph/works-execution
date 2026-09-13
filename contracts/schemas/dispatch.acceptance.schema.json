@@ -44,6 +44,10 @@
         "INDETERMINATE"
       ]
     },
+    "record_version": {
+      "minimum": 1,
+      "type": "integer"
+    },
     "runtime_dispatch_id": {
       "type": "string"
     },
