@@ -41,7 +41,10 @@ import (
 // read-view mounts.
 // v12 (RFC-0008): dispatch_acceptances — durable Runtime -> WORKS acceptance
 // state, including exactly-once effect identity and verification state.
-const SchemaVersion = 12
+// v13 (RFC-0008 follow-up): versioned atomic acceptance mutations. The
+// dispatch_acceptances record version is the compare-and-swap boundary for
+// revoke, spend, effect, completion and verdict updates.
+const SchemaVersion = 13
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -384,6 +387,9 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateDispatchAcceptance(); err != nil {
 		return fmt.Errorf("migrate dispatch acceptance: %w", err)
 	}
+	// Migration v12 -> v13 (RFC-0008 follow-up): add the record-version
+	// compare-and-swap column to pre-existing dispatch_acceptances tables.
+	// migrateDispatchAcceptance is idempotent and performs that upgrade.
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
 	}
