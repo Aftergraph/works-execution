@@ -50,6 +50,12 @@ Runtime dispatches an envelope; WORKS accepts durably and returns a
    accepted subject, a normalized `ACCEPT`/`REJECT` result, and a non-empty
    evidence reference recorded with timestamp. Pre-terminal, stale-subject,
    unavailable-verifier, or missing-evidence calls fail closed.
+7. **Consequential mutations are linearizable.** Revoke, spend, effect,
+   completion and verdict updates execute through `MutateByExecution` under
+   the persistence adapter's atomic boundary. Each successful mutation
+   increments `record_version`; stale load-then-save writes are forbidden.
+   Conflicting terminal outcomes and verdicts fail closed, while identical
+   replays are idempotent.
 
 ## Adversarial coverage
 
@@ -69,6 +75,9 @@ Runtime dispatches an envelope; WORKS accepts durably and returns a
 13. Concurrent duplicate accepts → one durable execution identity.
 14. Non-positive and overflowing spend → rejected without budget mutation.
 15. Pre-terminal or evidence-less verdict → rejected without verification.
+16. Concurrent budget mutations → linearizable ceiling, no lost spend.
+17. Concurrent revoke/terminal updates → revocation and first terminal verdict
+    cannot be overwritten by a stale last write.
 
 ## Non-goals
 
@@ -76,6 +85,7 @@ Runtime dispatches an envelope; WORKS accepts durably and returns a
   correctness verdicts (independent verifiers own). WORKS owns durability
   and exactly-once effect identity.
 - The `Store` seam remains pluggable, but every production adapter MUST provide
-  an atomic `AcceptIfAbsent` implementation. The WORKS SQLite adapter persists
-  acceptance, effect, budget and verification state across restart; memory-backed
+  atomic `AcceptIfAbsent` and `MutateByExecution` implementations. The WORKS
+  SQLite adapter persists acceptance, effect, budget and verification state
+  across restart, including the monotonic `record_version`; memory-backed
   stores remain test fixtures only.

@@ -150,7 +150,7 @@
       "contract": "dispatch.acceptance",
       "owner": "works-kernel",
       "schema": "contracts/schemas/dispatch.acceptance.schema.json",
-      "sha256": "0994d2ad1d5229627199871bbfa53b26c1145983a53125b51643ce2a63ab4d74",
+      "sha256": "ddc0fe2c161afdf12cc7a316d1434c3f2c5a61c1295921d1290e9d1e49520191",
       "source_adr": "RFC-0008",
       "version": "1.0"
     },
