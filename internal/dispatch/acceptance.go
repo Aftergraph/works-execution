@@ -34,6 +34,9 @@ var (
 	ErrInvalidBudget          = errors.New("dispatch: persisted budget state is invalid")
 	ErrExecutionNotTerminal   = errors.New("dispatch: verification requires terminal execution outcome")
 	ErrMissingVerdictEvidence = errors.New("dispatch: verdict result and evidence reference are required")
+	ErrOutcomeConflict        = errors.New("dispatch: terminal outcome already recorded")
+	ErrVerdictConflict        = errors.New("dispatch: verifier verdict already recorded")
+	ErrMutationConflict       = errors.New("dispatch: concurrent mutation conflict")
 	ErrInvalidVerdict         = errors.New("dispatch: verdict result must be ACCEPT or REJECT")
 )
 
@@ -78,6 +81,7 @@ type Acceptance struct {
 	Verified         bool
 	VerifierID       string
 	Verdict          *VerificationVerdict
+	RecordVersion    int64 `json:"record_version,omitempty"`
 }
 
 // Store is the durability seam. Production uses SQLite; tests use memory.
@@ -87,7 +91,10 @@ type Store interface {
 	// AcceptIfAbsent must atomically insert on the idempotency key and return
 	// the winner when another request already inserted the same key.
 	AcceptIfAbsent(a *Acceptance) (*Acceptance, error)
-	Save(a *Acceptance) error
+	// MutateByExecution loads, validates, mutates and persists one record
+	// under the adapter's atomic concurrency boundary. The callback must not
+	// retain the pointer after it returns.
+	MutateByExecution(id string, mutate func(*Acceptance) error) (*Acceptance, error)
 }
 
 // Clock decouples expiry/freshness checks in tests.
@@ -125,6 +132,7 @@ func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
 		AcceptedAt:       a.clock(),
 		AuthorityEpochAt: d.AuthorityEpoch,
 		Outcome:          "ACCEPTED",
+		RecordVersion:    1,
 	}
 	// The persistence adapter owns the atomic insert/unique-key race. A
 	// load-then-save sequence is not sufficient: two Runtime retries can pass
@@ -148,12 +156,10 @@ func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
 // Revoke marks authority revoked mid-flight. Revoked executions cannot apply
 // effects or verify afterwards.
 func (a *Acceptor) Revoke(worksExecutionID string) error {
-	acc, err := a.get(worksExecutionID)
-	if err != nil {
-		return err
-	}
-	acc.Revoked = true
-	return a.store.Save(acc)
+	return a.mutate(worksExecutionID, func(acc *Acceptance) error {
+		acc.Revoked = true
+		return nil
+	})
 }
 
 // Spend charges budget. Over-ceiling spend fails closed and can never
@@ -163,67 +169,67 @@ func (a *Acceptor) Spend(worksExecutionID string, amount int64) error {
 	if amount <= 0 {
 		return fmt.Errorf("%w: amount %d", ErrInvalidSpend, amount)
 	}
-	acc, err := a.get(worksExecutionID)
-	if err != nil {
-		return err
-	}
-	if acc.Revoked {
-		return ErrRevoked
-	}
-	if acc.Dispatch.BudgetCeiling < 0 || acc.BudgetSpent < 0 || acc.BudgetSpent > acc.Dispatch.BudgetCeiling {
-		return ErrInvalidBudget
-	}
-	// Use subtraction rather than spent+amount so an overflowing amount cannot
-	// wrap below the hard ceiling.
-	if amount > acc.Dispatch.BudgetCeiling-acc.BudgetSpent {
-		return fmt.Errorf("%w: spent %d + %d > ceiling %d", ErrBudgetExhausted, acc.BudgetSpent, amount, acc.Dispatch.BudgetCeiling)
-	}
-	acc.BudgetSpent += amount
-	return a.store.Save(acc)
+	return a.mutate(worksExecutionID, func(acc *Acceptance) error {
+		if acc.Revoked {
+			return ErrRevoked
+		}
+		if acc.Dispatch.BudgetCeiling < 0 || acc.BudgetSpent < 0 || acc.BudgetSpent > acc.Dispatch.BudgetCeiling {
+			return ErrInvalidBudget
+		}
+		// Use subtraction rather than spent+amount so an overflowing amount cannot
+		// wrap below the hard ceiling.
+		if amount > acc.Dispatch.BudgetCeiling-acc.BudgetSpent {
+			return fmt.Errorf("%w: spent %d + %d > ceiling %d", ErrBudgetExhausted, acc.BudgetSpent, amount, acc.Dispatch.BudgetCeiling)
+		}
+		acc.BudgetSpent += amount
+		return nil
+	})
 }
 
 // ApplyEffect records an externally visible effect exactly once. A second
 // apply of the same effect id is a duplicate (rejected, not re-executed).
 // An effect whose outcome cannot be established resolves INDETERMINATE.
 func (a *Acceptor) ApplyEffect(worksExecutionID, effectID string, outcomeKnown bool) error {
-	acc, err := a.get(worksExecutionID)
-	if err != nil {
-		return err
-	}
-	if acc.Revoked {
-		return ErrRevoked
-	}
-	if effectID != acc.Dispatch.EffectID {
-		return fmt.Errorf("%w: %q is not the accepted effect", ErrCausalMismatch, effectID)
-	}
-	if acc.EffectApplied {
-		return fmt.Errorf("%w: %q", ErrEffectDuplicate, effectID)
-	}
-	if !outcomeKnown {
-		acc.Outcome = "INDETERMINATE"
-		return a.store.Save(acc)
-	}
-	acc.EffectApplied = true
-	return a.store.Save(acc)
+	return a.mutate(worksExecutionID, func(acc *Acceptance) error {
+		if acc.Revoked {
+			return ErrRevoked
+		}
+		if effectID != acc.Dispatch.EffectID {
+			return fmt.Errorf("%w: %q is not the accepted effect", ErrCausalMismatch, effectID)
+		}
+		if acc.EffectApplied {
+			return fmt.Errorf("%w: %q", ErrEffectDuplicate, effectID)
+		}
+		if !outcomeKnown {
+			acc.Outcome = "INDETERMINATE"
+			return nil
+		}
+		acc.EffectApplied = true
+		return nil
+	})
 }
 
 // Complete records execution outcome. SUCCEEDED here is execution-complete
 // only — Verified stays false until RecordVerdict with independent evidence.
 func (a *Acceptor) Complete(worksExecutionID, outcome string) error {
-	acc, err := a.get(worksExecutionID)
-	if err != nil {
-		return err
-	}
-	if acc.Revoked {
-		return ErrRevoked
-	}
-	switch outcome {
-	case "SUCCEEDED", "FAILED":
-		acc.Outcome = outcome
-		return a.store.Save(acc)
-	default:
-		return fmt.Errorf("dispatch: unknown outcome %q", outcome)
-	}
+	return a.mutate(worksExecutionID, func(acc *Acceptance) error {
+		if acc.Revoked {
+			return ErrRevoked
+		}
+		switch outcome {
+		case "SUCCEEDED", "FAILED":
+			if acc.Outcome == "SUCCEEDED" || acc.Outcome == "FAILED" || acc.Outcome == "INDETERMINATE" {
+				if acc.Outcome == outcome {
+					return nil
+				}
+				return fmt.Errorf("%w: %s -> %s", ErrOutcomeConflict, acc.Outcome, outcome)
+			}
+			acc.Outcome = outcome
+			return nil
+		default:
+			return fmt.Errorf("dispatch: unknown outcome %q", outcome)
+		}
+	})
 }
 
 // RecordVerdict records an independent verifier verdict over the exact
@@ -232,49 +238,52 @@ func (a *Acceptor) Complete(worksExecutionID, outcome string) error {
 // is not a proof. REJECT is a recorded independent review but does not promote
 // the execution to Verified.
 func (a *Acceptor) RecordVerdict(worksExecutionID, verifierID, subject string, subjectCurrent, verifierAvailable bool, verdictResult, evidenceRef string) error {
-	acc, err := a.get(worksExecutionID)
-	if err != nil {
-		return err
-	}
-	if verifierID == "" || verifierID == acc.Dispatch.RuntimeDispatchID {
-		return ErrSelfVerification
-	}
-	if !subjectCurrent || subject != acc.Dispatch.VerificationSubj {
-		return fmt.Errorf("%w: %q", ErrStaleSubject, subject)
-	}
-	if !verifierAvailable {
-		return ErrVerifierUnavailable
-	}
-	if acc.Revoked {
-		return ErrRevoked
-	}
-	if acc.Outcome != "SUCCEEDED" && acc.Outcome != "FAILED" {
-		return ErrExecutionNotTerminal
-	}
-	if strings.TrimSpace(verdictResult) == "" || strings.TrimSpace(evidenceRef) == "" {
-		return ErrMissingVerdictEvidence
-	}
-	if verdictResult != "ACCEPT" && verdictResult != "REJECT" {
-		return fmt.Errorf("%w: %q", ErrInvalidVerdict, verdictResult)
-	}
-	acc.Verified = verdictResult == "ACCEPT"
-	acc.VerifierID = verifierID
-	acc.Verdict = &VerificationVerdict{
-		Result:      verdictResult,
-		Subject:     subject,
-		EvidenceRef: evidenceRef,
-		RecordedAt:  a.clock(),
-	}
-	return a.store.Save(acc)
+	return a.mutate(worksExecutionID, func(acc *Acceptance) error {
+		if verifierID == "" || verifierID == acc.Dispatch.RuntimeDispatchID {
+			return ErrSelfVerification
+		}
+		if !subjectCurrent || subject != acc.Dispatch.VerificationSubj {
+			return fmt.Errorf("%w: %q", ErrStaleSubject, subject)
+		}
+		if !verifierAvailable {
+			return ErrVerifierUnavailable
+		}
+		if acc.Revoked {
+			return ErrRevoked
+		}
+		if acc.Outcome != "SUCCEEDED" && acc.Outcome != "FAILED" {
+			return ErrExecutionNotTerminal
+		}
+		if strings.TrimSpace(verdictResult) == "" || strings.TrimSpace(evidenceRef) == "" {
+			return ErrMissingVerdictEvidence
+		}
+		if verdictResult != "ACCEPT" && verdictResult != "REJECT" {
+			return fmt.Errorf("%w: %q", ErrInvalidVerdict, verdictResult)
+		}
+		if acc.Verdict != nil {
+			if acc.Verdict.Result == verdictResult &&
+				acc.Verdict.Subject == subject &&
+				acc.Verdict.EvidenceRef == evidenceRef {
+				return nil
+			}
+			return ErrVerdictConflict
+		}
+		acc.Verified = verdictResult == "ACCEPT"
+		acc.VerifierID = verifierID
+		acc.Verdict = &VerificationVerdict{
+			Result:      verdictResult,
+			Subject:     subject,
+			EvidenceRef: evidenceRef,
+			RecordedAt:  a.clock(),
+		}
+		return nil
+	})
 }
 
-func (a *Acceptor) get(id string) (*Acceptance, error) {
-	acc, err := a.store.LoadByExecution(id)
-	if err != nil {
-		return nil, err
+func (a *Acceptor) mutate(worksExecutionID string, mutate func(*Acceptance) error) error {
+	if mutate == nil {
+		return errors.New("dispatch: nil mutation")
 	}
-	if acc == nil {
-		return nil, fmt.Errorf("%w: %q", ErrUnknownAcceptance, id)
-	}
-	return acc, nil
+	_, err := a.store.MutateByExecution(worksExecutionID, mutate)
+	return err
 }
