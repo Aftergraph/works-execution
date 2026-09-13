@@ -323,7 +323,18 @@ SCHEMAS = {
                 "causal_id": {"type": "string"},
                 "outcome": {"enum": ["ACCEPTED", "SUCCEEDED", "FAILED", "INDETERMINATE"]},
                 "verified": {"type": "boolean"},
-                "verifier_id": {"type": "string"}
+                "verifier_id": {"type": "string"},
+                "verdict": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["result", "subject", "evidence_ref", "recorded_at"],
+                    "properties": {
+                        "result": {"enum": ["ACCEPT", "REJECT"]},
+                        "subject": {"type": "string", "minLength": 1},
+                        "evidence_ref": {"type": "string", "minLength": 1},
+                        "recorded_at": {"type": "string", "format": "date-time"}
+                    }
+                }
             }
         }
     },
