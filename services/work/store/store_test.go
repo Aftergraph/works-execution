@@ -228,6 +228,38 @@ func TestIdempotency_SameID_DifferentPayload_Conflict(t *testing.T) {
 	}
 }
 
+func TestIdempotency_ConcurrentSamePayload_ConvergesToOneWork(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	w := sampleWork()
+	w.IdempotencyKey = "key_concurrent_replay"
+
+	const attempts = 8
+	start := make(chan struct{})
+	errs := make(chan error, attempts)
+	for i := 0; i < attempts; i++ {
+		go func() {
+			<-start
+			copyOfWork := *w
+			errs <- s.CreateWork(ctx, &copyOfWork)
+		}()
+	}
+	close(start)
+
+	for i := 0; i < attempts; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent replay %d failed: %v", i, err)
+		}
+	}
+	works, err := s.ListWorks(ctx, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(works) != 1 {
+		t.Fatalf("concurrent idempotent create produced %d works, want 1", len(works))
+	}
+}
+
 func TestListWorks_ReturnsRecentFirst(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
