@@ -19,22 +19,22 @@ import (
 // Sentinel failures. All are fail-closed: callers must not proceed with
 // protected work when Accept or a transition returns one of these.
 var (
-	ErrMissingBinding      = errors.New("dispatch: missing mission/authority/dispatch/idempotency binding")
-	ErrStaleAuthority      = errors.New("dispatch: authority epoch is stale")
-	ErrCausalMismatch      = errors.New("dispatch: idempotency key already bound to a different causal identity")
-	ErrUnknownAcceptance   = errors.New("dispatch: unknown works execution")
-	ErrEffectDuplicate     = errors.New("dispatch: effect already applied")
-	ErrEffectUnknown       = errors.New("dispatch: effect outcome unknown; INDETERMINATE")
-	ErrBudgetExhausted     = errors.New("dispatch: budget ceiling exhausted; autonomous retry forbidden")
-	ErrRevoked             = errors.New("dispatch: authority revoked mid-flight")
-	ErrSelfVerification    = errors.New("dispatch: executor cannot verify itself")
-	ErrStaleSubject        = errors.New("dispatch: verification subject is stale")
-	ErrVerifierUnavailable = errors.New("dispatch: verifier unavailable; outcome stays UNVERIFIED")
-	ErrInvalidSpend = errors.New("dispatch: spend amount must be positive")
-	ErrInvalidBudget = errors.New("dispatch: persisted budget state is invalid")
-	ErrExecutionNotTerminal = errors.New("dispatch: verification requires terminal execution outcome")
+	ErrMissingBinding         = errors.New("dispatch: missing mission/authority/dispatch/idempotency binding")
+	ErrStaleAuthority         = errors.New("dispatch: authority epoch is stale")
+	ErrCausalMismatch         = errors.New("dispatch: idempotency key already bound to a different causal identity")
+	ErrUnknownAcceptance      = errors.New("dispatch: unknown works execution")
+	ErrEffectDuplicate        = errors.New("dispatch: effect already applied")
+	ErrEffectUnknown          = errors.New("dispatch: effect outcome unknown; INDETERMINATE")
+	ErrBudgetExhausted        = errors.New("dispatch: budget ceiling exhausted; autonomous retry forbidden")
+	ErrRevoked                = errors.New("dispatch: authority revoked mid-flight")
+	ErrSelfVerification       = errors.New("dispatch: executor cannot verify itself")
+	ErrStaleSubject           = errors.New("dispatch: verification subject is stale")
+	ErrVerifierUnavailable    = errors.New("dispatch: verifier unavailable; outcome stays UNVERIFIED")
+	ErrInvalidSpend           = errors.New("dispatch: spend amount must be positive")
+	ErrInvalidBudget          = errors.New("dispatch: persisted budget state is invalid")
+	ErrExecutionNotTerminal   = errors.New("dispatch: verification requires terminal execution outcome")
 	ErrMissingVerdictEvidence = errors.New("dispatch: verdict result and evidence reference are required")
-	ErrInvalidVerdict = errors.New("dispatch: verdict result must be ACCEPT or REJECT")
+	ErrInvalidVerdict         = errors.New("dispatch: verdict result must be ACCEPT or REJECT")
 )
 
 // Dispatch is the Runtime-built envelope. WORKS never mints these identities;
@@ -77,7 +77,7 @@ type Acceptance struct {
 	Outcome          string // ACCEPTED | SUCCEEDED | FAILED | INDETERMINATE
 	Verified         bool
 	VerifierID       string
-	Verdict           *VerificationVerdict
+	Verdict          *VerificationVerdict
 }
 
 // Store is the durability seam. Production uses SQLite; tests use memory.
