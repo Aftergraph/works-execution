@@ -1,5 +1,5 @@
 {
-  "authority": "final-freeze-review.md (READY_FOR_CONTRACT_FREEZE) — approved by Jonas",
+  "authority": "final-freeze-review.md (READY_FOR_CONTRACT_FREEZE) \u2014 approved by Jonas",
   "contracts": [
     {
       "compat": "N-1 read tolerance per proto.charter/1.0; breaking = major bump (ADR-0021)",
@@ -203,5 +203,5 @@
   "entry_count": 22,
   "generated_by": "Contract Freeze Slice 0",
   "manifest_version": "1.0",
-  "note": "hash over denne fil = freeze-attestation; endringer i schemas ændrer hashen (drift, aldrig stille)"
+  "note": "hash over denne fil = freeze-attestation; endringer i schemas \u00e6ndrer hashen (drift, aldrig stille)"
 }
