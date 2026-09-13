@@ -530,13 +530,13 @@ func (s *SQLiteStore) DB() *sql.DB { return s.db }
 // are deliberately excluded: queueing and execution may change those after the
 // initial create, while the admitted Work definition must remain byte-stable.
 type idempotencyPayload struct {
-	Source       workgraph.Source          `json:"source"`
-	Objective    workgraph.Objective       `json:"objective"`
-	Graph        workgraph.Graph           `json:"graph"`
-	Requirements workgraph.Requirements    `json:"requirements"`
-	Policy       workgraph.Policy          `json:"policy"`
-	Mission      *workgraph.MissionContract `json:"mission,omitempty"`
-	CorrelationID string                  `json:"correlation_id,omitempty"`
+	Source        workgraph.Source           `json:"source"`
+	Objective     workgraph.Objective        `json:"objective"`
+	Graph         workgraph.Graph            `json:"graph"`
+	Requirements  workgraph.Requirements     `json:"requirements"`
+	Policy        workgraph.Policy           `json:"policy"`
+	Mission       *workgraph.MissionContract `json:"mission,omitempty"`
+	CorrelationID string                     `json:"correlation_id,omitempty"`
 }
 
 func creationPayloadJSON(w *workgraph.Work) ([]byte, error) {
