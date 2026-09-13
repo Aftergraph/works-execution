@@ -108,7 +108,6 @@ func TestDispatchAcceptanceRejectsCausalReplayAfterStoreRestart(t *testing.T) {
 	}
 }
 
-
 func TestDispatchAcceptanceMutationsAreLinearizableInSQLite(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "works.db")
 	st, err := workstore.Open(dbPath)
