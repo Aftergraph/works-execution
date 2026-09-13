@@ -48,18 +48,35 @@ func (m *memoryStore) AcceptIfAbsent(a *Acceptance) (*Acceptance, error) {
 		return cloneAcceptance(existing), nil
 	}
 	cp := cloneAcceptance(a)
+	if cp.RecordVersion < 1 {
+		cp.RecordVersion = 1
+	}
 	m.byK[a.Dispatch.IdempotencyKey] = cp
 	m.byE[a.WorksExecutionID] = cp
 	return cloneAcceptance(cp), nil
 }
 
-func (m *memoryStore) Save(a *Acceptance) error {
+func (m *memoryStore) MutateByExecution(id string, mutate func(*Acceptance) error) (*Acceptance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cp := cloneAcceptance(a)
-	m.byK[a.Dispatch.IdempotencyKey] = cp
-	m.byE[a.WorksExecutionID] = cp
-	return nil
+	current := m.byE[id]
+	if current == nil {
+		return nil, ErrUnknownAcceptance
+	}
+	if mutate == nil {
+		return nil, errors.New("dispatch: nil mutation")
+	}
+	cp := cloneAcceptance(current)
+	if err := mutate(cp); err != nil {
+		return nil, err
+	}
+	if cp.RecordVersion < current.RecordVersion {
+		return nil, ErrMutationConflict
+	}
+	cp.RecordVersion = current.RecordVersion + 1
+	m.byK[cp.Dispatch.IdempotencyKey] = cp
+	m.byE[cp.WorksExecutionID] = cp
+	return cloneAcceptance(cp), nil
 }
 
 func testDispatch() Dispatch {
@@ -328,5 +345,115 @@ func TestAccept_RestartPreservesAuthorityBounds(t *testing.T) {
 	}
 	if _, err := restarted.Accept(testDispatch(), 9); !errors.Is(err, ErrStaleAuthority) {
 		t.Fatalf("restart must not erase epoch, got %v", err)
+	}
+}
+
+func TestMutations_ConcurrentSpendIsLinearizable(t *testing.T) {
+	a := newAcceptor()
+	d := testDispatch()
+	d.BudgetCeiling = 8
+	acc, err := a.Accept(d, d.AuthorityEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- a.Spend(acc.WorksExecutionID, 1)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	var succeeded, exhausted int
+	for err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrBudgetExhausted):
+			exhausted++
+		default:
+			t.Fatalf("concurrent spend: %v", err)
+		}
+	}
+	if succeeded != int(d.BudgetCeiling) || exhausted != callers-succeeded {
+		t.Fatalf("spend results succeeded=%d exhausted=%d", succeeded, exhausted)
+	}
+	got, err := a.store.LoadByExecution(acc.WorksExecutionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BudgetSpent != d.BudgetCeiling {
+		t.Fatalf("budget spent=%d want %d", got.BudgetSpent, d.BudgetCeiling)
+	}
+	if got.RecordVersion != 1+d.BudgetCeiling {
+		t.Fatalf("record version=%d want %d", got.RecordVersion, 1+d.BudgetCeiling)
+	}
+}
+
+func TestMutations_ConcurrentRevokeCannotBeLost(t *testing.T) {
+	a := newAcceptor()
+	acc, err := a.Accept(testDispatch(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_ = a.Revoke(acc.WorksExecutionID)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_ = a.Spend(acc.WorksExecutionID, 1)
+	}()
+	close(start)
+	wg.Wait()
+
+	got, err := a.store.LoadByExecution(acc.WorksExecutionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Revoked {
+		t.Fatal("concurrent revoke was lost")
+	}
+	if got.BudgetSpent != 0 && got.BudgetSpent != 1 {
+		t.Fatalf("unexpected budget after concurrent revoke/spend: %d", got.BudgetSpent)
+	}
+}
+
+func TestMutations_OutcomeAndVerdictAreNotLastWriteWins(t *testing.T) {
+	a := newAcceptor()
+	acc, err := a.Accept(testDispatch(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Complete(acc.WorksExecutionID, "SUCCEEDED"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/a", "subject/1", true, true, "ACCEPT", "evidence/a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/b", "subject/1", true, true, "REJECT", "evidence/b"); !errors.Is(err, ErrVerdictConflict) {
+		t.Fatalf("conflicting verdict err=%v", err)
+	}
+	if err := a.Complete(acc.WorksExecutionID, "FAILED"); !errors.Is(err, ErrOutcomeConflict) {
+		t.Fatalf("conflicting outcome err=%v", err)
+	}
+	got, err := a.store.LoadByExecution(acc.WorksExecutionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != "SUCCEEDED" || !got.Verified || got.Verdict == nil || got.Verdict.EvidenceRef != "evidence/a" {
+		t.Fatalf("last-write-wins mutation escaped: %+v", got)
 	}
 }
