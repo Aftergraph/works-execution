@@ -12,23 +12,29 @@ package dispatch
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 // Sentinel failures. All are fail-closed: callers must not proceed with
 // protected work when Accept or a transition returns one of these.
 var (
-	ErrMissingBinding      = errors.New("dispatch: missing mission/authority/dispatch/idempotency binding")
-	ErrStaleAuthority      = errors.New("dispatch: authority epoch is stale")
-	ErrCausalMismatch      = errors.New("dispatch: idempotency key already bound to a different causal identity")
-	ErrUnknownAcceptance   = errors.New("dispatch: unknown works execution")
-	ErrEffectDuplicate     = errors.New("dispatch: effect already applied")
-	ErrEffectUnknown       = errors.New("dispatch: effect outcome unknown; INDETERMINATE")
-	ErrBudgetExhausted     = errors.New("dispatch: budget ceiling exhausted; autonomous retry forbidden")
-	ErrRevoked             = errors.New("dispatch: authority revoked mid-flight")
-	ErrSelfVerification    = errors.New("dispatch: executor cannot verify itself")
-	ErrStaleSubject        = errors.New("dispatch: verification subject is stale")
-	ErrVerifierUnavailable = errors.New("dispatch: verifier unavailable; outcome stays UNVERIFIED")
+	ErrMissingBinding         = errors.New("dispatch: missing mission/authority/dispatch/idempotency binding")
+	ErrStaleAuthority         = errors.New("dispatch: authority epoch is stale")
+	ErrCausalMismatch         = errors.New("dispatch: idempotency key already bound to a different causal identity")
+	ErrUnknownAcceptance      = errors.New("dispatch: unknown works execution")
+	ErrEffectDuplicate        = errors.New("dispatch: effect already applied")
+	ErrEffectUnknown          = errors.New("dispatch: effect outcome unknown; INDETERMINATE")
+	ErrBudgetExhausted        = errors.New("dispatch: budget ceiling exhausted; autonomous retry forbidden")
+	ErrRevoked                = errors.New("dispatch: authority revoked mid-flight")
+	ErrSelfVerification       = errors.New("dispatch: executor cannot verify itself")
+	ErrStaleSubject           = errors.New("dispatch: verification subject is stale")
+	ErrVerifierUnavailable    = errors.New("dispatch: verifier unavailable; outcome stays UNVERIFIED")
+	ErrInvalidSpend           = errors.New("dispatch: spend amount must be positive")
+	ErrInvalidBudget          = errors.New("dispatch: persisted budget state is invalid")
+	ErrExecutionNotTerminal   = errors.New("dispatch: verification requires terminal execution outcome")
+	ErrMissingVerdictEvidence = errors.New("dispatch: verdict result and evidence reference are required")
+	ErrInvalidVerdict         = errors.New("dispatch: verdict result must be ACCEPT or REJECT")
 )
 
 // Dispatch is the Runtime-built envelope. WORKS never mints these identities;
@@ -49,6 +55,16 @@ type Dispatch struct {
 	CausalID          string
 }
 
+// VerificationVerdict is the immutable proof reference attached to an execution
+// verdict. The verifier identity remains duplicated on Acceptance for
+// compatibility with the frozen 1.0 record shape.
+type VerificationVerdict struct {
+	Result      string
+	Subject     string
+	EvidenceRef string
+	RecordedAt  time.Time
+}
+
 // Acceptance is the durable WORKS-owned record.
 type Acceptance struct {
 	WorksExecutionID string
@@ -61,12 +77,16 @@ type Acceptance struct {
 	Outcome          string // ACCEPTED | SUCCEEDED | FAILED | INDETERMINATE
 	Verified         bool
 	VerifierID       string
+	Verdict          *VerificationVerdict
 }
 
 // Store is the durability seam. Production uses SQLite; tests use memory.
 type Store interface {
 	LoadByIdempotency(key string) (*Acceptance, error)
 	LoadByExecution(id string) (*Acceptance, error)
+	// AcceptIfAbsent must atomically insert on the idempotency key and return
+	// the winner when another request already inserted the same key.
+	AcceptIfAbsent(a *Acceptance) (*Acceptance, error)
 	Save(a *Acceptance) error
 }
 
@@ -99,20 +119,6 @@ func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
 	if d.AuthorityEpoch < currentEpoch {
 		return nil, fmt.Errorf("%w: dispatch epoch %d < current %d", ErrStaleAuthority, d.AuthorityEpoch, currentEpoch)
 	}
-	existing, err := a.store.LoadByIdempotency(d.IdempotencyKey)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		if existing.Dispatch.CausalID != d.CausalID {
-			return nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
-		}
-		if existing.Dispatch.AuthorityEpoch != d.AuthorityEpoch ||
-			existing.Dispatch.MissionID != d.MissionID {
-			return nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
-		}
-		return existing, nil
-	}
 	acc := &Acceptance{
 		WorksExecutionID: "wexec/" + d.IdempotencyKey,
 		Dispatch:         d,
@@ -120,10 +126,23 @@ func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
 		AuthorityEpochAt: d.AuthorityEpoch,
 		Outcome:          "ACCEPTED",
 	}
-	if err := a.store.Save(acc); err != nil {
+	// The persistence adapter owns the atomic insert/unique-key race. A
+	// load-then-save sequence is not sufficient: two Runtime retries can pass
+	// the load concurrently and create two effects.
+	accepted, err := a.store.AcceptIfAbsent(acc)
+	if err != nil {
 		return nil, err
 	}
-	return acc, nil
+	if accepted == nil {
+		return nil, errors.New("dispatch: store returned nil acceptance")
+	}
+	if accepted.Dispatch.IdempotencyKey != d.IdempotencyKey ||
+		accepted.Dispatch.CausalID != d.CausalID ||
+		accepted.Dispatch.AuthorityEpoch != d.AuthorityEpoch ||
+		accepted.Dispatch.MissionID != d.MissionID {
+		return nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
+	}
+	return accepted, nil
 }
 
 // Revoke marks authority revoked mid-flight. Revoked executions cannot apply
@@ -141,6 +160,9 @@ func (a *Acceptor) Revoke(worksExecutionID string) error {
 // autonomously retry around the ceiling: only a new dispatched budget
 // reference (new idempotency key) can continue.
 func (a *Acceptor) Spend(worksExecutionID string, amount int64) error {
+	if amount <= 0 {
+		return fmt.Errorf("%w: amount %d", ErrInvalidSpend, amount)
+	}
 	acc, err := a.get(worksExecutionID)
 	if err != nil {
 		return err
@@ -148,7 +170,12 @@ func (a *Acceptor) Spend(worksExecutionID string, amount int64) error {
 	if acc.Revoked {
 		return ErrRevoked
 	}
-	if acc.BudgetSpent+amount > acc.Dispatch.BudgetCeiling {
+	if acc.Dispatch.BudgetCeiling < 0 || acc.BudgetSpent < 0 || acc.BudgetSpent > acc.Dispatch.BudgetCeiling {
+		return ErrInvalidBudget
+	}
+	// Use subtraction rather than spent+amount so an overflowing amount cannot
+	// wrap below the hard ceiling.
+	if amount > acc.Dispatch.BudgetCeiling-acc.BudgetSpent {
 		return fmt.Errorf("%w: spent %d + %d > ceiling %d", ErrBudgetExhausted, acc.BudgetSpent, amount, acc.Dispatch.BudgetCeiling)
 	}
 	acc.BudgetSpent += amount
@@ -200,10 +227,11 @@ func (a *Acceptor) Complete(worksExecutionID, outcome string) error {
 }
 
 // RecordVerdict records an independent verifier verdict over the exact
-// accepted verification subject. The executor can never verify itself, a
-// stale subject fails closed, and an unavailable verifier leaves the outcome
-// UNVERIFIED (never auto-promotes).
-func (a *Acceptor) RecordVerdict(worksExecutionID, verifierID, subject string, subjectCurrent, verifierAvailable bool) error {
+// accepted verification subject and a terminal execution outcome. A verifier
+// must bind the verdict to an evidence reference; boolean availability alone
+// is not a proof. REJECT is a recorded independent review but does not promote
+// the execution to Verified.
+func (a *Acceptor) RecordVerdict(worksExecutionID, verifierID, subject string, subjectCurrent, verifierAvailable bool, verdictResult, evidenceRef string) error {
 	acc, err := a.get(worksExecutionID)
 	if err != nil {
 		return err
@@ -220,8 +248,23 @@ func (a *Acceptor) RecordVerdict(worksExecutionID, verifierID, subject string, s
 	if acc.Revoked {
 		return ErrRevoked
 	}
-	acc.Verified = true
+	if acc.Outcome != "SUCCEEDED" && acc.Outcome != "FAILED" {
+		return ErrExecutionNotTerminal
+	}
+	if strings.TrimSpace(verdictResult) == "" || strings.TrimSpace(evidenceRef) == "" {
+		return ErrMissingVerdictEvidence
+	}
+	if verdictResult != "ACCEPT" && verdictResult != "REJECT" {
+		return fmt.Errorf("%w: %q", ErrInvalidVerdict, verdictResult)
+	}
+	acc.Verified = verdictResult == "ACCEPT"
 	acc.VerifierID = verifierID
+	acc.Verdict = &VerificationVerdict{
+		Result:      verdictResult,
+		Subject:     subject,
+		EvidenceRef: evidenceRef,
+		RecordedAt:  a.clock(),
+	}
 	return a.store.Save(acc)
 }
 

@@ -17,24 +17,48 @@ func newMemoryStore() *memoryStore {
 	return &memoryStore{byK: map[string]*Acceptance{}, byE: map[string]*Acceptance{}}
 }
 
+func cloneAcceptance(a *Acceptance) *Acceptance {
+	if a == nil {
+		return nil
+	}
+	cp := *a
+	if a.Verdict != nil {
+		verdict := *a.Verdict
+		cp.Verdict = &verdict
+	}
+	return &cp
+}
+
 func (m *memoryStore) LoadByIdempotency(key string) (*Acceptance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.byK[key], nil
+	return cloneAcceptance(m.byK[key]), nil
 }
 
 func (m *memoryStore) LoadByExecution(id string) (*Acceptance, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.byE[id], nil
+	return cloneAcceptance(m.byE[id]), nil
+}
+
+func (m *memoryStore) AcceptIfAbsent(a *Acceptance) (*Acceptance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing := m.byK[a.Dispatch.IdempotencyKey]; existing != nil {
+		return cloneAcceptance(existing), nil
+	}
+	cp := cloneAcceptance(a)
+	m.byK[a.Dispatch.IdempotencyKey] = cp
+	m.byE[a.WorksExecutionID] = cp
+	return cloneAcceptance(cp), nil
 }
 
 func (m *memoryStore) Save(a *Acceptance) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	cp := *a
-	m.byK[a.Dispatch.IdempotencyKey] = &cp
-	m.byE[a.WorksExecutionID] = &cp
+	cp := cloneAcceptance(a)
+	m.byK[a.Dispatch.IdempotencyKey] = cp
+	m.byE[a.WorksExecutionID] = cp
 	return nil
 }
 
@@ -126,7 +150,7 @@ func TestRevoke_BlocksDownstreamWork(t *testing.T) {
 	if err := a.ApplyEffect(acc.WorksExecutionID, "effect/1", true); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("expected ErrRevoked on effect, got %v", err)
 	}
-	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/1", true, true); !errors.Is(err, ErrRevoked) {
+	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/1", true, true, "ACCEPT", "evidence/subject-1"); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("expected ErrRevoked on verdict, got %v", err)
 	}
 }
@@ -184,19 +208,19 @@ func TestVerdict_ExecutionSuccessIsNotVerification(t *testing.T) {
 		t.Fatal("execution SUCCEEDED must not imply VERIFIED")
 	}
 	// 9. Verifier unavailable: stays UNVERIFIED.
-	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/1", true, false); !errors.Is(err, ErrVerifierUnavailable) {
+	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/1", true, false, "ACCEPT", "evidence/unavailable"); !errors.Is(err, ErrVerifierUnavailable) {
 		t.Fatalf("expected ErrVerifierUnavailable, got %v", err)
 	}
 	// 10. Stale verification subject: fails closed.
-	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/OLD", false, true); !errors.Is(err, ErrStaleSubject) {
+	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/OLD", false, true, "ACCEPT", "evidence/stale"); !errors.Is(err, ErrStaleSubject) {
 		t.Fatalf("expected ErrStaleSubject, got %v", err)
 	}
 	// Executor cannot verify itself.
-	if err := a.RecordVerdict(acc.WorksExecutionID, "rdisp/1", "subject/1", true, true); !errors.Is(err, ErrSelfVerification) {
+	if err := a.RecordVerdict(acc.WorksExecutionID, "rdisp/1", "subject/1", true, true, "ACCEPT", "evidence/self"); !errors.Is(err, ErrSelfVerification) {
 		t.Fatalf("expected ErrSelfVerification, got %v", err)
 	}
 	// Independent verdict over the exact subject verifies.
-	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/1", true, true); err != nil {
+	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/1", true, true, "ACCEPT", "evidence/subject-1"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = a.store.LoadByExecution(acc.WorksExecutionID)
@@ -207,6 +231,87 @@ func TestVerdict_ExecutionSuccessIsNotVerification(t *testing.T) {
 
 // Restart does not widen authority: a reloaded acceptance keeps epoch,
 // revocation, spend and verified flags (durability seam, not amnesia).
+func TestAccept_ConcurrentDuplicateDispatchCreatesOneAcceptance(t *testing.T) {
+	a := newAcceptor()
+	d := testDispatch()
+	const callers = 32
+	ids := make(chan string, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			acc, err := a.Accept(d, d.AuthorityEpoch)
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- acc.WorksExecutionID
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent accept: %v", err)
+	}
+	var first string
+	count := 0
+	for id := range ids {
+		if first == "" {
+			first = id
+		}
+		if id != first {
+			t.Fatalf("concurrent accept returned different execution IDs: %q vs %q", first, id)
+		}
+		count++
+	}
+	if count != callers {
+		t.Fatalf("acceptance responses=%d want %d", count, callers)
+	}
+}
+
+func TestSpend_RejectsNonPositiveAndOverflow(t *testing.T) {
+	a := newAcceptor()
+	acc, err := a.Accept(testDispatch(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, amount := range []int64{0, -1, 1<<63 - 1} {
+		if err := a.Spend(acc.WorksExecutionID, amount); !errors.Is(err, ErrInvalidSpend) && !errors.Is(err, ErrBudgetExhausted) {
+			t.Fatalf("amount %d: unexpected error %v", amount, err)
+		}
+	}
+}
+
+func TestVerdict_RequiresTerminalOutcomeAndEvidence(t *testing.T) {
+	a := newAcceptor()
+	acc, err := a.Accept(testDispatch(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/1", true, true, "ACCEPT", "evidence/early"); !errors.Is(err, ErrExecutionNotTerminal) {
+		t.Fatalf("pre-terminal verdict: %v", err)
+	}
+	if err := a.Complete(acc.WorksExecutionID, "SUCCEEDED"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/1", true, true, "ACCEPT", ""); !errors.Is(err, ErrMissingVerdictEvidence) {
+		t.Fatalf("missing evidence: %v", err)
+	}
+	if err := a.RecordVerdict(acc.WorksExecutionID, "verifier/sentinel", "subject/1", true, true, "ACCEPT", "evidence/success-1"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.store.LoadByExecution(acc.WorksExecutionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Verdict == nil || got.Verdict.EvidenceRef != "evidence/success-1" || got.Verdict.Subject != "subject/1" || got.Verdict.RecordedAt.IsZero() {
+		t.Fatalf("verdict evidence binding missing: %+v", got.Verdict)
+	}
+}
+
 func TestAccept_RestartPreservesAuthorityBounds(t *testing.T) {
 	st := newMemoryStore()
 	a := NewAcceptor(st, nil)

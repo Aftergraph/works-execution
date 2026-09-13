@@ -56,6 +56,10 @@ func TestAcceptanceSchema_RoundTrip(t *testing.T) {
 		"causal_id":            "causal/1",
 		"outcome":              "ACCEPTED",
 		"verified":             false,
+		"verdict": map[string]any{
+			"result": "ACCEPT", "subject": "subject/1",
+			"evidence_ref": "evidence/1", "recorded_at": "2026-09-10T00:00:00Z",
+		},
 	}
 	if err := schema.Validate(record); err != nil {
 		t.Fatalf("valid acceptance record rejected: %v", err)
@@ -78,5 +82,17 @@ func TestAcceptanceSchema_RoundTrip(t *testing.T) {
 	negativeEpoch["authority_epoch"] = -1
 	if err := schema.Validate(negativeEpoch); err == nil {
 		t.Fatal("record with negative authority_epoch must be rejected")
+	}
+
+	missingEvidence := map[string]any{}
+	for k, v := range record {
+		missingEvidence[k] = v
+	}
+	missingEvidence["verdict"] = map[string]any{
+		"result": "ACCEPT", "subject": "subject/1",
+		"evidence_ref": "", "recorded_at": "2026-09-10T00:00:00Z",
+	}
+	if err := schema.Validate(missingEvidence); err == nil {
+		t.Fatal("verdict without evidence_ref must be rejected")
 	}
 }
