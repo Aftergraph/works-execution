@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -271,7 +272,15 @@ type heartbeatLeaseBody struct {
 
 func (s *Server) heartbeatLease(w http.ResponseWriter, r *http.Request, leaseID string) {
 	var body heartbeatLeaseBody
-	_ = json.NewDecoder(r.Body).Decode(&body) // body optional
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		// An empty body is allowed (heartbeat renews with the default TTL);
+		// io.EOF is the no-body case. Any other decode error is malformed JSON
+		// and would otherwise silently fall back to TTLSeconds=0.
+		if !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+			return
+		}
+	}
 	ttl := time.Duration(body.TTLSeconds) * time.Second
 	lease, err := s.Store.RenewLease(r.Context(), leaseID, ttl)
 	if err != nil {
@@ -332,8 +341,11 @@ func (s *Server) releaseLease(w http.ResponseWriter, r *http.Request, leaseID st
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, "lease_not_found", leaseID)
+		case errors.Is(err, workgraph.ErrInvalidTransition):
+			writeError(w, http.StatusConflict, "lease_not_active", leaseID)
 		default:
-			writeError(w, http.StatusConflict, "release_failed", err.Error())
+			s.logf("release lease: %v", err)
+			writeError(w, http.StatusInternalServerError, "release_failed", err.Error())
 		}
 		return
 	}
@@ -352,8 +364,11 @@ func (s *Server) revokeLease(w http.ResponseWriter, r *http.Request, leaseID str
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, "lease_not_found", leaseID)
+		case errors.Is(err, workgraph.ErrInvalidTransition):
+			writeError(w, http.StatusConflict, "lease_not_active", leaseID)
 		default:
-			writeError(w, http.StatusConflict, "revoke_failed", err.Error())
+			s.logf("revoke lease: %v", err)
+			writeError(w, http.StatusInternalServerError, "revoke_failed", err.Error())
 		}
 		return
 	}
@@ -401,7 +416,12 @@ func RunLeaseReaper(ctx context.Context, s store.Store, cfg ReaperConfig) error 
 	}
 }
 
-// reapOnce performs a single reaper pass. Returns the number of leases expired.
+// reapOnce performs a single reaper pass. Returns the number of leases
+// transitioned to EXPIRED. A lease that was already moved to a terminal
+// status by a concurrent reaper (or an explicit release/revoke) returns
+// ErrNotFound or ErrInvalidTransition from the transition and is skipped
+// without being counted, so overlapping reapers and explicit terminations
+// don't inflate the reported count.
 func reapOnce(ctx context.Context, s store.Store, limit int) (int, error) {
 	expired, err := s.ListExpiredLeases(ctx, limit)
 	if err != nil {
@@ -409,10 +429,16 @@ func reapOnce(ctx context.Context, s store.Store, limit int) (int, error) {
 	}
 	n := 0
 	for _, l := range expired {
-		// Mark lease EXPIRED, cancel attempt. Both must be idempotent.
-		if err := s.RevokeLease(ctx, l.ID, "lease expired"); err != nil {
-			// Skip — probably already revoked by a concurrent reaper or worker.
-			continue
+		// EXPIRED is the timeout path; RevokeLease would mislabel a TTL
+		// lapse as an explicit/administrative REVOKED. The transition is
+		// idempotent via transitionLeaseAttempt's state-machine guard.
+		if err := s.ExpireLease(ctx, l.ID, "lease expired"); err != nil {
+			if errors.Is(err, store.ErrNotFound) || errors.Is(err, workgraph.ErrInvalidTransition) {
+				// Already terminal — concurrent reaper or worker
+				// released/revoked it between List and Expire.
+				continue
+			}
+			return n, fmt.Errorf("expire lease %s: %w", l.ID, err)
 		}
 		_ = s.MarkAttemptCancelled(ctx, l.AttemptID, "lease expired")
 		n++

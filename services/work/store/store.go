@@ -78,6 +78,7 @@ type Store interface {
 	CompleteLease(ctx context.Context, leaseID string, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error)
 	ReleaseLease(ctx context.Context, leaseID, reason string) error
 	RevokeLease(ctx context.Context, leaseID, reason string) error
+	ExpireLease(ctx context.Context, leaseID, reason string) error
 	GetLease(ctx context.Context, leaseID string) (*workgraph.Lease, error)
 	ListExpiredLeases(ctx context.Context, limit int) ([]*workgraph.Lease, error)
 	MarkAttemptCancelled(ctx context.Context, attemptID, reason string) error
