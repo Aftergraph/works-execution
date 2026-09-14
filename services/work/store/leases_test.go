@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -182,6 +183,49 @@ func TestRevokeLease_MarksAttemptCancelled(t *testing.T) {
 	}
 	if len(active) != 0 {
 		t.Errorf("expected no active leases, got %v", active)
+	}
+}
+
+func TestExpireLease_MarksExpiredNotRevoked(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	w := sampleWork()
+	if err := s.CreateWork(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateState(ctx, w.ID, workgraph.StateQueued); err != nil {
+		t.Fatal(err)
+	}
+	l, _, err := s.GrantLease(ctx, w.ID, "a", "wrkr_1", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ExpireLease(ctx, l.ID, "lease expired"); err != nil {
+		t.Fatalf("ExpireLease: %v", err)
+	}
+	got, err := s.GetLease(ctx, l.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != workgraph.LeaseExpired {
+		t.Errorf("status: got %s, want %s", got.Status, workgraph.LeaseExpired)
+	}
+	if got.Status == workgraph.LeaseRevoked {
+		t.Errorf("status is REVOKED — ExpireLease must not use the revoke path")
+	}
+	// The underlying attempt is cancelled, mirroring RevokeLease's semantics.
+	wk, err := s.GetWork(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range wk.Attempts {
+		if a.ID == l.AttemptID && a.Status != "cancelled" {
+			t.Errorf("attempt status: got %s, want cancelled", a.Status)
+		}
+	}
+	// Re-expiring a terminal lease fails the state-machine guard (idempotent).
+	if err := s.ExpireLease(ctx, l.ID, "lease expired"); !errors.Is(err, workgraph.ErrInvalidTransition) {
+		t.Errorf("second ExpireLease: got %v, want ErrInvalidTransition", err)
 	}
 }
 

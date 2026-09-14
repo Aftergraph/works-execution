@@ -183,6 +183,11 @@ func (s *SQLiteStore) RevokeLeaseEventful(ctx context.Context, leaseID, reason s
 	return s.transitionLeaseWithEvent(ctx, leaseID, EventWorkerLeaseRevoke, s.RevokeLease, reason)
 }
 
+// ExpireLeaseEventful wraps ExpireLease and emits worker.lease.expired.
+func (s *SQLiteStore) ExpireLeaseEventful(ctx context.Context, leaseID, reason string) error {
+	return s.transitionLeaseWithEvent(ctx, leaseID, EventWorkerLeaseExpire, s.ExpireLease, reason)
+}
+
 // transitionLeaseWithEvent runs the canonical lease transition and, only
 // after it succeeds, emits the journal event. The lease row is kept after
 // release/revoke (only its status changes), so GetLease resolves the Work
