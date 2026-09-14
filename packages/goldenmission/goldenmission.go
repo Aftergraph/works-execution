@@ -88,11 +88,12 @@ type Stage struct {
 
 // Mission is a durable mission execution request.
 type Mission struct {
-	Branch       Branch   `json:"branch"`
-	Canonical    Identity `json:"canonical"`
-	Stages       []Stage  `json:"stages"`
-	RefusedBy    string   `json:"refused_by,omitempty"`
-	RevokedAfter string   `json:"revoked_after,omitempty"`
+	Branch                 Branch   `json:"branch"`
+	Canonical              Identity `json:"canonical"`
+	Stages                 []Stage  `json:"stages"`
+	RefusedBy              string   `json:"refused_by,omitempty"`
+	RevokedAfter           string   `json:"revoked_after,omitempty"`
+	VerificationSubjectRef string   `json:"verification_subject_ref,omitempty"`
 }
 
 // Decision is a runner verdict.
@@ -114,6 +115,7 @@ type Verification struct {
 	Verdict           Decision `json:"verdict"`
 	ActionID          string   `json:"action_id"`
 	ActionDecisionID  string   `json:"action_decision_id"`
+	SubjectRef        string   `json:"subject_ref,omitempty"`
 }
 
 // Result is the runner's verdict plus the transcript pin binding it.
@@ -157,6 +159,8 @@ var consequential = map[string]bool{
 	"works":         true,
 	"verification":  true,
 }
+
+var subjectRefPattern = regexp.MustCompile(`^git:[A-Za-z0-9._/-]+@[a-f0-9]{40}([a-f0-9]{24})?$`)
 
 var idPatterns = map[string]*regexp.Regexp{
 	"tenant_id":            regexp.MustCompile(`^ten_[a-f0-9]{32}$`),
@@ -527,6 +531,9 @@ func validVerificationInput(v Verification) error {
 	if !idPatterns["action_decision_id"].MatchString(v.ActionDecisionID) {
 		return fmt.Errorf("%w: invalid action decision id", ErrBadVerification)
 	}
+	if v.SubjectRef != "" && !subjectRefPattern.MatchString(v.SubjectRef) {
+		return fmt.Errorf("%w: invalid subject ref", ErrBadVerification)
+	}
 	return nil
 }
 
@@ -547,6 +554,13 @@ func (r *Runner) RunWithVerification(m Mission, v Verification) (Result, error) 
 	}
 	if err := validVerificationInput(v); err != nil {
 		return Result{}, err
+	}
+	if m.VerificationSubjectRef != "" && !subjectRefPattern.MatchString(m.VerificationSubjectRef) {
+		return Result{}, fmt.Errorf("%w: invalid verification subject ref", ErrBadIdentity)
+	}
+	if (m.VerificationSubjectRef == "") != (v.SubjectRef == "") || (m.VerificationSubjectRef != "" && v.SubjectRef != m.VerificationSubjectRef) {
+		return pinResult(m, Result{Decision: DecisionReject,
+			Reason: "FAIL-CLOSED: verification subject does not match the Mission subject"}), nil
 	}
 	if v.VerifierPrincipal == r.principal || v.VerifierPrincipal == m.Canonical.PrincipalID {
 		res := pinResult(m, Result{Decision: DecisionReject,
