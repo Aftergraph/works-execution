@@ -41,7 +41,9 @@ import (
 // Brain namespace: append-only revisions, tombstones, ephemeral expiry, and
 // read-view mounts.
 // v12 (platform convergence V2.1): immutable work_execution_contexts bindings.
-const SchemaVersion = 12
+// v13 (RFC-0008): dispatch_acceptances — durable Runtime -> WORKS acceptance
+// state, including exactly-once effect identity and verification state.
+const SchemaVersion = 13
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -407,6 +409,11 @@ func (s *SQLiteStore) migrate() error {
 	// this slice.
 	if err := s.migrateBrain(); err != nil {
 		return fmt.Errorf("migrate brain: %w", err)
+	}
+	// Migration v12 -> v13 (RFC-0008): durable Runtime -> WORKS dispatch
+	// acceptance state. Net-new table, no backfill.
+	if err := s.migrateDispatchAcceptance(); err != nil {
+		return fmt.Errorf("migrate dispatch acceptance: %w", err)
 	}
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)

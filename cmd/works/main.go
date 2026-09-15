@@ -36,6 +36,7 @@ Usage:
   works connect github [--api URL]    # M1 k-impl-024: print webhook URL + secret + repo-policy hint
   works pilot <owner/repo> [--ref REF] [--sha SHA] [--api URL] [--timeout-s N] [--once]
                                      # M1 k-impl-024: submit work for repo, poll until terminal, print timeline
+  works golden-mission [--input PATH|-] # integration probe over the existing durable Golden Mission runner
 
 Environment:
   WORKS_API                default control plane URL (default http://127.0.0.1:8080)
@@ -65,6 +66,10 @@ func main() {
 		connectCmd(os.Args[2:])
 	case "pilot":
 		pilotCmd(os.Args[2:])
+	case "golden-mission":
+		if err := goldenMissionCmd(os.Args[2:], os.Stdin, os.Stdout); err != nil {
+			fail("golden-mission: %v", err)
+		}
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
@@ -230,8 +235,8 @@ func configToWork(raw []byte) (*workgraph.Work, error) {
 }
 
 type yamlWorkConfig struct {
-	Triggers     []string                 `yaml:"triggers"`
-	Requirements yamlRequirements         `yaml:"requirements"`
+	Triggers     []string                  `yaml:"triggers"`
+	Requirements yamlRequirements          `yaml:"requirements"`
 	Nodes        map[string]yamlNodeConfig `yaml:"nodes"`
 }
 

@@ -207,6 +207,47 @@ func TestSuccessBranchAcceptsFullChainWithIndependentVerification(t *testing.T) 
 	}
 }
 
+func TestVerificationSubjectMismatchRejectsBeforeEffect(t *testing.T) {
+	r, log := newTestRunner(t)
+	c := ids77()
+	m := goldenmission.Mission{
+		Branch:                 goldenmission.BranchSuccess,
+		Canonical:              c,
+		Stages:                 golden001Stages(),
+		VerificationSubjectRef: "git:Aftergraph/runtime@" + strings.Repeat("a", 40),
+	}
+	v := acceptVerification(c)
+	v.SubjectRef = "git:Aftergraph/runtime@" + strings.Repeat("b", 40)
+	res, err := r.RunWithVerification(m, v)
+	if err != nil {
+		t.Fatalf("subject mismatch should be a fail-closed verdict, got error: %v", err)
+	}
+	if res.Decision != goldenmission.DecisionReject || !strings.Contains(res.Reason, "verification subject") {
+		t.Fatalf("stale verification subject not rejected: %+v", res)
+	}
+	if got := log.Count(c.WorkID + "|" + c.ActionID); got != 0 {
+		t.Fatalf("stale verification must not apply an effect, got %d", got)
+	}
+}
+
+func TestVerificationSubjectExactMatchAllowsIndependentVerification(t *testing.T) {
+	r, _ := newTestRunner(t)
+	c := ids77()
+	subject := "git:Aftergraph/runtime@" + strings.Repeat("a", 40)
+	m := goldenmission.Mission{
+		Branch:                 goldenmission.BranchSuccess,
+		Canonical:              c,
+		Stages:                 golden001Stages(),
+		VerificationSubjectRef: subject,
+	}
+	v := acceptVerification(c)
+	v.SubjectRef = subject
+	res, err := r.RunWithVerification(m, v)
+	if err != nil || res.Decision != goldenmission.DecisionAccept {
+		t.Fatalf("exact subject verification rejected: res=%+v err=%v", res, err)
+	}
+}
+
 func TestSuccessBranchWithoutVerificationFailsClosed(t *testing.T) {
 	r, log := newTestRunner(t)
 	c := ids77()
