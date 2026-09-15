@@ -13,6 +13,8 @@
 
 > Autonomous Software Execution Infrastructure — verified software state as the output.
 
+[![Aftergraph on StartupScores](https://startupscores.com/badge/aftergraph.svg?style=shield&v=combo&theme=dark)](https://startupscores.com/open-source/aftergraph)
+
 **Brand:** WORKS (working repo name; full trademark review pending, ADR-0006).
 **Status:** v0.3.5 on main (`9d4f92c..HEAD` line: v0.3.5 wave closed the k-064 composition-adversary ledger; v0.3 added the Company Brain; v0.2 froze the kernel behind hash-attested contracts).
 
