@@ -185,6 +185,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler))) // POST = create, GET = list
 	mux.HandleFunc("/v1/works/", s.workPathHandler)                            // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
+	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)   // GET immutable execution context
 	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)                      // unauthenticated; issues tokens
 	// /v1/workers/ and /v1/leases/ are mounted through auth middleware.
 	// We can't wrap an http.Handler with a HandleFunc, so we register the
@@ -290,6 +291,10 @@ func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 2 && parts[1] == "provenance" {
 		s.workProvenanceHandler(w, r)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "execution-contexts" && r.Method == http.MethodPost {
+		s.createExecutionContext(w, r, parts[0])
 		return
 	}
 	s.workItemHandler(w, r)
