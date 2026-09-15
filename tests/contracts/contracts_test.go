@@ -143,7 +143,10 @@ func TestBaselineRealWorkValidatesAgainstFrozenSchema(t *testing.T) {
 func TestBaselineStateMachineTransitionsLocked(t *testing.T) {
 	// Frozen lifecycle law (kernel.lifecycle/1.0): existing graph must keep
 	// exactly these transitions; additions require contract version bump.
-	cases := []struct{ from, to workgraph.State; want bool }{
+	cases := []struct {
+		from, to workgraph.State
+		want     bool
+	}{
 		{workgraph.StateCreated, workgraph.StatePlanning, true},
 		{workgraph.StateQueued, workgraph.StateRunning, true},
 		{workgraph.StateRunning, workgraph.StateVerifying, true},
@@ -213,8 +216,8 @@ func TestAdversarialCrossTenantFailsClosed(t *testing.T) {
 	// identity schema requires org pattern; wrong-shaped principal is rejected here,
 	// and the kernel rule is: token.org must equal mount/payload org else fail-closed.
 	if err := sch.Validate(bad); err == nil {
-	// wrong: valid org format IS valid — the fail-closed test is the policy check below
-	_ = err
+		// wrong: valid org format IS valid — the fail-closed test is the policy check below
+		_ = err
 	}
 	// policy-level law (invariant, mirrored from ADR-0017 amendment):
 	mountOrg := "org_a"
@@ -463,4 +466,12 @@ func TestDocumentedDriftForwardStates(t *testing.T) {
 // signedEvent helper used in boundary test
 var signedEvent = map[string]any{
 	"kind": "event", "trimmable": true, "signed": true,
+}
+
+func TestExecutionContextV21SchemaConformance(t *testing.T) {
+	sch := compile(t, "execution-context")
+	good := fixture(`{"schema":"execution-context/1.0","execution_context_id":"ctx_11111111111111111111111111111111","organization_id":"org_22222222222222222222222222222222","tenant_id":"ten_33333333333333333333333333333333","principal_id":"prn_44444444444444444444444444444444","mission_id":"mis_example","authority_lease_id":"auth_55555555555555555555555555555555","work_id":"wrk_66666666666666666666666666666666","worker_id":"wrkr_77777777777777777777777777777777","worker_lease_id":"lse_88888888888888888888888888888888","admission_decision_id":"pdr_99999999999999999999999999999999","trace_id":"trc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)
+	mustPass(t, sch, "execution-context-v2.1", good)
+	bad := fixture(`{"schema":"execution-context/1.0","execution_context_id":"ctx_11111111111111111111111111111111","organization_id":"org_22222222222222222222222222222222","tenant_id":"ten_33333333333333333333333333333333","principal_id":"prn_44444444444444444444444444444444","mission_id":"mis_example","authority_lease_id":"lse_55555555555555555555555555555555","work_id":"wrk_66666666666666666666666666666666","worker_id":"wrkr_77777777777777777777777777777777","worker_lease_id":"auth_88888888888888888888888888888888","admission_decision_id":"pdr_99999999999999999999999999999999","trace_id":"trc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)
+	mustFail(t, sch, "execution-context-swapped-leases", bad)
 }

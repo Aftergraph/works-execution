@@ -21,6 +21,7 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registers itself
 
+	"github.com/JonasAbde/works-execution/packages/executioncontext"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/audit"
 )
@@ -39,9 +40,10 @@ import (
 // v11 (k-042, ADR-0023): brain_objects + brain_mounts — the durable Company
 // Brain namespace: append-only revisions, tombstones, ephemeral expiry, and
 // read-view mounts.
-// v12 (RFC-0008): dispatch_acceptances — durable Runtime -> WORKS acceptance
+// v12 (platform convergence V2.1): immutable work_execution_contexts bindings.
+// v13 (RFC-0008): dispatch_acceptances — durable Runtime -> WORKS acceptance
 // state, including exactly-once effect identity and verification state.
-const SchemaVersion = 12
+const SchemaVersion = 13
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -85,6 +87,10 @@ type Store interface {
 	MarkAttemptCancelled(ctx context.Context, attemptID, reason string) error
 	ActiveLeasesByWorkID(ctx context.Context, workID string) (map[string]bool, error)
 	LeasesByWorkID(ctx context.Context, workID string) ([]*workgraph.Lease, error)
+
+	CreateExecutionContext(ctx context.Context, c executioncontext.Context) (*executioncontext.Context, error)
+	GetExecutionContext(ctx context.Context, id string) (*executioncontext.Context, error)
+	ListExecutionContextsByWorkID(ctx context.Context, workID string) ([]executioncontext.Context, error)
 
 	// Audit (slice 6 / k-impl-012): read the CloudEvents audit stream.
 	// Empty filter fields are unbounded; limit clamps to 200 if zero and
@@ -309,6 +315,25 @@ CREATE TABLE IF NOT EXISTS work_events (
 );
 CREATE INDEX IF NOT EXISTS idx_work_events_work_sequence
 ON work_events(work_id, sequence);
+
+-- v12: immutable platform execution contexts.
+CREATE TABLE IF NOT EXISTS work_execution_contexts (
+    id TEXT PRIMARY KEY,
+    prior_context_id TEXT,
+    work_id TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
+    organization_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    mission_id TEXT NOT NULL,
+    authority_lease_id TEXT NOT NULL,
+    worker_id TEXT NOT NULL,
+    worker_lease_id TEXT NOT NULL,
+    admission_decision_id TEXT NOT NULL,
+    trace_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(worker_lease_id, authority_lease_id, admission_decision_id)
+);
+CREATE INDEX IF NOT EXISTS idx_execution_contexts_work ON work_execution_contexts(work_id, created_at);
 `
 
 func (s *SQLiteStore) migrate() error {
@@ -379,7 +404,7 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateBrain(); err != nil {
 		return fmt.Errorf("migrate brain: %w", err)
 	}
-	// Migration v11 -> v12 (RFC-0008): durable Runtime -> WORKS dispatch
+	// Migration v12 -> v13 (RFC-0008): durable Runtime -> WORKS dispatch
 	// acceptance state. Net-new table, no backfill.
 	if err := s.migrateDispatchAcceptance(); err != nil {
 		return fmt.Errorf("migrate dispatch acceptance: %w", err)
