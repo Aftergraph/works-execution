@@ -101,6 +101,12 @@ type Store interface {
 	LookupWebhookDelivery(ctx context.Context, deliveryID string) (string, error)
 	RecordWebhookDelivery(ctx context.Context, deliveryID, event, workID, body string) error
 
+	// Independent outcome verification (WE71): durable verifier verdicts.
+	// Save is idempotent for byte-identical retries and fails closed with
+	// ErrVerificationVerdictConflict on differing re-attestation.
+	SaveVerificationVerdict(ctx context.Context, v VerificationVerdict) error
+	GetVerificationVerdict(ctx context.Context, workID string) (*VerificationVerdict, error)
+
 	Close() error
 }
 
