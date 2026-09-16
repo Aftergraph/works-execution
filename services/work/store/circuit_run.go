@@ -14,6 +14,7 @@ import (
 
 var ErrCircuitRunConflict = errors.New("circuit run binding conflict")
 var ErrCircuitRunWorkNotMission = errors.New("circuit run requires a mission work")
+var ErrCircuitRunSubjectMismatch = errors.New("circuit run exact subject mismatch")
 
 func (s *SQLiteStore) CreateCircuitRun(ctx context.Context, in circuitrun.Input) (*circuitrun.Run, error) {
 	if err := in.Validate(); err != nil {
@@ -102,7 +103,15 @@ func scanCircuitRun(row rowScanner) (*circuitrun.Run, error) {
 		}
 		return nil, err
 	}
-	run.CircuitSpec = json.RawMessage(specJSON)
+	canonical, digest, err := circuitrun.CanonicalizeSpec(json.RawMessage(specJSON))
+	if err != nil || digest != run.CircuitSpecSHA256 {
+		return nil, ErrCircuitRunSubjectMismatch
+	}
+	probe := circuitrun.Input{CircuitID: run.CircuitID, CircuitSpec: canonical, WorkID: run.WorkID, MissionID: run.MissionID}
+	if err := probe.Validate(); err != nil {
+		return nil, ErrCircuitRunSubjectMismatch
+	}
+	run.CircuitSpec = canonical
 	parsed, err := time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("parse circuit run created_at: %w", err)

@@ -116,3 +116,22 @@ func TestCreateCircuitRunRejectsConflictingRebind(t *testing.T) {
 		t.Fatalf("mission rebind: %v", err)
 	}
 }
+func TestGetCircuitRunRejectsStoredSpecDigestDrift(t *testing.T) {
+	st, _ := openBrainStore(t)
+	ctx := context.Background()
+	w := circuitMissionWork()
+	if err := st.CreateWork(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	run, err := st.CreateCircuitRun(ctx, circuitInput(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`UPDATE circuit_runs SET circuit_spec_json = ? WHERE id = ?`,
+		`{"schema_version":"circuit-spec/0.1","circuit_id":"repair","mode":"READ_ONLY","consequential":false,"nodes":[],"edges":[]}`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetCircuitRun(ctx, run.ID); !errors.Is(err, ErrCircuitRunSubjectMismatch) {
+		t.Fatalf("tampered circuit run subject: %v", err)
+	}
+}
