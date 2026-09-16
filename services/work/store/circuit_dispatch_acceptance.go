@@ -32,6 +32,9 @@ func (s *SQLiteStore) AcceptCircuitDispatch(ctx context.Context, circuitRunID st
 	if err != nil {
 		return nil, nil, err
 	}
+	if _, err := seedDispatchedReceiptTx(ctx, tx, *binding, time.Now().UTC()); err != nil {
+		return nil, nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, nil, err
 	}
