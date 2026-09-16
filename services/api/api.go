@@ -124,6 +124,9 @@ type Server struct {
 	// default, and every existing test) means verification mode OFF: the
 	// gate stays exactly the k-058 presence-only advertisement law.
 	RABControlKey []byte
+	// VerifierToken authenticates Sentinel-owned semantic verification ingest.
+	// It is distinct from worker enrollment bearer tokens and must be at least 32 bytes.
+	VerifierToken []byte
 	// publisherWG tracks in-flight publish goroutines fired by
 	// maybePublishOnTerminal (k-068). Zero value = unbounded
 	// fire-and-forget, identical to pre-k-068 behavior for any Server
@@ -183,10 +186,11 @@ type ProvenanceConfig struct {
 func (s *Server) Routes() http.Handler {
 	s.ensureIssuer()
 	mux := http.NewServeMux()
-	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler))) // POST = create, GET = list
-	mux.HandleFunc("/v1/works/", s.workPathHandler)                            // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
-	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)   // GET immutable execution context
-	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)                      // unauthenticated; issues tokens
+	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))                        // POST = create, GET = list
+	mux.HandleFunc("/v1/works/", s.workPathHandler)                                                   // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
+	mux.Handle("POST /v1/works/{id}/verification", http.HandlerFunc(s.workVerificationIngestHandler)) // Sentinel-owned semantic verifier ingest
+	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)                          // GET immutable execution context
+	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)                                             // unauthenticated; issues tokens
 	// /v1/workers/ and /v1/leases/ are mounted through auth middleware.
 	// We can't wrap an http.Handler with a HandleFunc, so we register the
 	// mux's path under a small dispatcher that runs requireBearer first.

@@ -31,6 +31,7 @@ func main() {
 		webhookProduction = flag.Bool("webhook-production-access", envBool("WORKS_WEBHOOK_PRODUCTION_ACCESS", false), "mark webhook-derived Works with policy.production_access=true (requires approved evidence at lease-grant; leave false for M1 verify works)")
 		webUIPublic       = flag.Bool("webui-public", envBool("WORKS_WEBUI_PUBLIC", false), "serve /v1/ui execution view without a Bearer token (read-only)")
 		rabControlKey     = flag.String("rab-control-token", envOr("WORKS_RAB_CONTROL_TOKEN", ""), "HMAC key for server-verified RAB control tokens at lease claim (k-062); empty keeps the k-058 presence-only advertisement law")
+		verifierToken     = flag.String("verifier-token", envOr("WORKS_VERIFIER_TOKEN", ""), "dedicated Sentinel verifier credential for semantic verdict ingest; empty disables ingest")
 	)
 	flag.Parse()
 
@@ -98,6 +99,16 @@ func main() {
 		logger.Printf("RAB control-token verification enabled (WORKS_RAB_CONTROL_TOKEN set)")
 	} else {
 		logger.Printf("RAB control-token verification disabled (no WORKS_RAB_CONTROL_TOKEN); advertisement law only")
+	}
+
+	if *verifierToken != "" {
+		if len([]byte(*verifierToken)) < 32 {
+			logger.Fatalf("WORKS_VERIFIER_TOKEN must be at least 32 bytes when configured")
+		}
+		srv.VerifierToken = []byte(*verifierToken)
+		logger.Printf("Sentinel verification ingest enabled")
+	} else {
+		logger.Printf("Sentinel verification ingest unavailable (no WORKS_VERIFIER_TOKEN)")
 	}
 
 	// Publisher: prefer GitHub App if both App ID + installation-token
