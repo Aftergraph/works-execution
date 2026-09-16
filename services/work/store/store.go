@@ -21,6 +21,7 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registers itself
 
+	"github.com/JonasAbde/works-execution/packages/circuitrun"
 	"github.com/JonasAbde/works-execution/packages/executioncontext"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/audit"
@@ -43,7 +44,8 @@ import (
 // v12 (platform convergence V2.1): immutable work_execution_contexts bindings.
 // v13 (RFC-0008): dispatch_acceptances — durable Runtime -> WORKS acceptance
 // state, including exactly-once effect identity and verification state.
-const SchemaVersion = 13
+// v14: immutable CircuitSpec-to-Mission Work bindings.
+const SchemaVersion = 14
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -91,6 +93,10 @@ type Store interface {
 	CreateExecutionContext(ctx context.Context, c executioncontext.Context) (*executioncontext.Context, error)
 	GetExecutionContext(ctx context.Context, id string) (*executioncontext.Context, error)
 	ListExecutionContextsByWorkID(ctx context.Context, workID string) ([]executioncontext.Context, error)
+
+	CreateCircuitRun(ctx context.Context, in circuitrun.Input) (*circuitrun.Run, error)
+	GetCircuitRun(ctx context.Context, id string) (*circuitrun.Run, error)
+	GetCircuitRunByWorkID(ctx context.Context, workID string) (*circuitrun.Run, error)
 
 	// Audit (slice 6 / k-impl-012): read the CloudEvents audit stream.
 	// Empty filter fields are unbounded; limit clamps to 200 if zero and
@@ -340,6 +346,18 @@ CREATE TABLE IF NOT EXISTS work_execution_contexts (
     UNIQUE(worker_lease_id, authority_lease_id, admission_decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_execution_contexts_work ON work_execution_contexts(work_id, created_at);
+
+-- v14: immutable exact CircuitSpec-to-Mission Work binding.
+CREATE TABLE IF NOT EXISTS circuit_runs (
+    id TEXT PRIMARY KEY,
+    circuit_id TEXT NOT NULL,
+    circuit_spec_sha256 TEXT NOT NULL,
+    circuit_spec_json TEXT NOT NULL,
+    work_id TEXT NOT NULL UNIQUE REFERENCES works(id) ON DELETE CASCADE,
+    mission_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_circuit_runs_mission ON circuit_runs(mission_id, created_at);
 `
 
 func (s *SQLiteStore) migrate() error {
