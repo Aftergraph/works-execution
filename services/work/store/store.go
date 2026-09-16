@@ -46,7 +46,8 @@ import (
 // state, including exactly-once effect identity and verification state.
 // v14: immutable CircuitSpec-to-Mission Work bindings.
 // v15: immutable exact-subject CircuitVerdict attestations.
-const SchemaVersion = 15
+// v16: immutable CircuitRun-to-dispatch effect bindings.
+const SchemaVersion = 16
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -100,6 +101,10 @@ type Store interface {
 	GetCircuitRunByWorkID(ctx context.Context, workID string) (*circuitrun.Run, error)
 	CreateCircuitVerdict(ctx context.Context, in circuitrun.VerdictInput) (*circuitrun.Verdict, error)
 	GetCircuitVerdict(ctx context.Context, circuitRunID string) (*circuitrun.Verdict, error)
+	CreateCircuitEffectBinding(ctx context.Context, in circuitrun.EffectBindingInput) (*circuitrun.EffectBinding, error)
+	GetCircuitEffectBinding(ctx context.Context, id string) (*circuitrun.EffectBinding, error)
+	GetCircuitEffectBindingByExecutionID(ctx context.Context, worksExecutionID string) (*circuitrun.EffectBinding, error)
+	ListCircuitEffectBindingsByRunID(ctx context.Context, circuitRunID string) ([]circuitrun.EffectBinding, error)
 
 	// Audit (slice 6 / k-impl-012): read the CloudEvents audit stream.
 	// Empty filter fields are unbounded; limit clamps to 200 if zero and
@@ -446,6 +451,9 @@ func (s *SQLiteStore) migrate() error {
 	// acceptance state. Net-new table, no backfill.
 	if err := s.migrateDispatchAcceptance(); err != nil {
 		return fmt.Errorf("migrate dispatch acceptance: %w", err)
+	}
+	if err := s.migrateCircuitEffectBinding(); err != nil {
+		return fmt.Errorf("migrate circuit effect binding: %w", err)
 	}
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
