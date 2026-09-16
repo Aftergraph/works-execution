@@ -45,7 +45,8 @@ import (
 // v13 (RFC-0008): dispatch_acceptances — durable Runtime -> WORKS acceptance
 // state, including exactly-once effect identity and verification state.
 // v14: immutable CircuitSpec-to-Mission Work bindings.
-const SchemaVersion = 14
+// v15: immutable exact-subject CircuitVerdict attestations.
+const SchemaVersion = 15
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -97,6 +98,8 @@ type Store interface {
 	CreateCircuitRun(ctx context.Context, in circuitrun.Input) (*circuitrun.Run, error)
 	GetCircuitRun(ctx context.Context, id string) (*circuitrun.Run, error)
 	GetCircuitRunByWorkID(ctx context.Context, workID string) (*circuitrun.Run, error)
+	CreateCircuitVerdict(ctx context.Context, in circuitrun.VerdictInput) (*circuitrun.Verdict, error)
+	GetCircuitVerdict(ctx context.Context, circuitRunID string) (*circuitrun.Verdict, error)
 
 	// Audit (slice 6 / k-impl-012): read the CloudEvents audit stream.
 	// Empty filter fields are unbounded; limit clamps to 200 if zero and
@@ -358,6 +361,17 @@ CREATE TABLE IF NOT EXISTS circuit_runs (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_circuit_runs_mission ON circuit_runs(mission_id, created_at);
+
+-- v15: immutable independent verdict over the exact persisted CircuitRun subject.
+CREATE TABLE IF NOT EXISTS circuit_verdicts (
+    circuit_run_id TEXT PRIMARY KEY REFERENCES circuit_runs(id) ON DELETE CASCADE,
+    circuit_spec_sha256 TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    result TEXT NOT NULL,
+    verifier_id TEXT NOT NULL,
+    evidence_ref TEXT NOT NULL,
+    verified_at TEXT NOT NULL
+);
 `
 
 func (s *SQLiteStore) migrate() error {
