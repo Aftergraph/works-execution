@@ -116,6 +116,18 @@ type Server struct {
 	// 503 by design. After k-042 lands, the integrator's post-merge
 	// deploy flips the service live.
 	Brain *BrainService
+	// Dispatch, when non-nil with BOTH an Acceptor and a CurrentEpoch
+	// resolver, mounts the Runtime → WORKS dispatch acceptance seam
+	// (POST /v1/works/{id}/accept, contract:dispatch.acceptance/1.0). A
+	// mounted-but-unconfigured surface answers 503 dispatch_accept_unavailable
+	// on every route — the fail-closed law. The load-bearing gate is
+	// CurrentEpoch: Acceptor.Accept compares the client-asserted
+	// dispatch.authority_epoch against a server-owned current epoch, and WORKS
+	// has no authority-epoch resolver today. cmd/works-api/main.go therefore
+	// mounts the Acceptor but leaves the resolver nil until authority
+	// integration lands, rather than defaulting the staleness guard to a silent
+	// no-op ("visible, never silent").
+	Dispatch *DispatchConfig
 	// RABControlKey, when non-empty, upgrades the k-058 control-token
 	// advertisement law at lease claim into a server-verified credential
 	// bound to the claiming runner (k-062; see rab_control_token.go).
@@ -280,6 +292,7 @@ func (s *Server) workersAuthHandler(w http.ResponseWriter, r *http.Request) {
 //	/v1/works/{id}/cancel|queue          -> POST workItemHandler
 //	/v1/works/{id}/evidence              -> GET workEvidenceHandler
 //	/v1/works/{id}/provenance            -> GET workProvenanceHandler
+//	/v1/works/{id}/accept                -> POST acceptDispatch (dispatch acceptance seam)
 //	/v1/works/{id}/nodes/{n}/logs        -> GET workLogsHandler
 func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/works/")
@@ -299,6 +312,22 @@ func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 2 && parts[1] == "execution-contexts" && r.Method == http.MethodPost {
 		s.createExecutionContext(w, r, parts[0])
+		return
+	}
+	// The dispatch acceptance seam. Authentication is enforced here because
+	// workPathHandler is registered WITHOUT requireBearer, and every other
+	// state-mutating surface an untrusted caller can reach sits behind it.
+	// Wrapping the accept branch keeps the Runtime → WORKS boundary
+	// authenticated before the authority-epoch resolver is ever wired, so a
+	// future live mount cannot be reached by a caller who merely knows a work
+	// ID. Method is still checked inside the handler, so with auth disabled
+	// (dev/tests) a non-POST gets 405 rather than falling through to the
+	// work-item handler.
+	if len(parts) == 2 && parts[1] == "accept" {
+		accept := http.HandlerFunc(func(aw http.ResponseWriter, ar *http.Request) {
+			s.acceptDispatch(aw, ar, parts[0])
+		})
+		s.requireBearer(accept).ServeHTTP(w, r)
 		return
 	}
 	s.workItemHandler(w, r)
