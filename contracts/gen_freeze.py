@@ -337,7 +337,11 @@ SCHEMAS = {
                         "recorded_at": {"type": "string", "format": "date-time"}
                     }
                 }
-            }
+            },
+            "allOf": [
+                {"if": {"required": ["execution_context_id"]}, "then": {"required": ["trace_id"]}},
+                {"if": {"required": ["trace_id"]}, "then": {"required": ["execution_context_id"]}}
+            ]
         }
     },
     "link.wire": {

@@ -1,5 +1,31 @@
 {
   "$id": "contract:dispatch.acceptance/1.0",
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "execution_context_id"
+        ]
+      },
+      "then": {
+        "required": [
+          "trace_id"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "trace_id"
+        ]
+      },
+      "then": {
+        "required": [
+          "execution_context_id"
+        ]
+      }
+    }
+  ],
   "properties": {
     "attempt_id": {
       "type": "string"
