@@ -26,7 +26,7 @@ type PreActionSnapshotInput struct {
 	NodeID             string    `json:"node_id"`
 	AttemptID          string    `json:"attempt_id"`
 	RunID              string    `json:"run_id"`
-	ExecutionContextID string    `json:"execution_context_id"`
+	ExecutionContextID string    `json:"execution_context_id"`\n\tTraceID            string    `json:"trace_id"`
 
 	ConfidenceThreshold float64 `json:"confidence_threshold"`
 	VerificationDepth   int     `json:"verification_depth"`
@@ -49,7 +49,7 @@ type PreActionSnapshot struct {
 
 func validatePreActionInput(in PreActionSnapshotInput) error {
 	if in.WorkID == "" || in.NodeID == "" || in.AttemptID == "" ||
-		in.RunID == "" || in.ExecutionContextID == "" {
+		in.RunID == "" || in.ExecutionContextID == "" || in.TraceID == "" {
 		return fmt.Errorf("%w: execution identity fields are required", ErrInvalidPreActionSnapshot)
 	}
 	if in.CapturedAt.IsZero() {
