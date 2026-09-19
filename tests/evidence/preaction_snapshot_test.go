@@ -10,9 +10,9 @@ import (
 
 func validPreActionInput() evidence.PreActionSnapshotInput {
 	return evidence.PreActionSnapshotInput{
-		WorkID:             "wrk:0123456789abcdef0123456789abcdef",
+		WorkID:             "wrk_0123456789abcdef0123456789abcdef",
 		NodeID:             "node-verify",
-		AttemptID:          "att:0123456789abcdef0123456789abcdef",
+		AttemptID:          "att_0123456789abcdef0123456789abcdef",
 		RunID:              "run-001",
 		ExecutionContextID:  "ctx-001",
 		ConfidenceThreshold: 0.92,
@@ -119,7 +119,7 @@ func TestPreActionSnapshotJSONContainsResearchReplayFields(t *testing.T) {
 	}
 
 	for _, key := range []string{
-		"work_id", "node_id", "attempt_id", "run_id", "execution_context_id",
+		"work_id", "node_id", "attempt_id", "run_id", "execution_context_id", "trace_id",
 		"confidence_threshold", "verification_depth", "retry_ceiling",
 		"min_confidence", "min_verification", "min_retries",
 		"captured_at", "digest",
@@ -127,5 +127,20 @@ func TestPreActionSnapshotJSONContainsResearchReplayFields(t *testing.T) {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("missing wire field %q", key)
 		}
+	}
+}
+
+
+func TestPreActionSnapshotRequiresCanonicalExecutionCorrelationIDs(t *testing.T) {
+	input := validPreActionInput()
+	input.ExecutionContextID = "ctx-not-canonical"
+	if _, err := evidence.CapturePreActionSnapshot(input); err == nil {
+		t.Fatal("non-canonical execution_context_id must fail closed")
+	}
+
+	input = validPreActionInput()
+	input.TraceID = "trace-not-canonical"
+	if _, err := evidence.CapturePreActionSnapshot(input); err == nil {
+		t.Fatal("non-canonical trace_id must fail closed")
 	}
 }
