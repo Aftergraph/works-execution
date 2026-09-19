@@ -72,17 +72,19 @@ type recordingRevalidator struct {
 	calls    int
 	proof    AuthorityProof
 	err      error
-	actionID string
-	digest   string
+	request AuthorityRevalidationRequest
 }
 
-func (r *recordingRevalidator) Revalidate(_ context.Context, actionID, digest string) (AuthorityProof, error) {
+func (r *recordingRevalidator) Revalidate(_ context.Context, req AuthorityRevalidationRequest) (AuthorityProof, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
-	r.actionID = actionID
-	r.digest = digest
-	return r.proof, r.err
+	r.request = req
+	proof := r.proof
+	if r.err == nil && proof.DispatchDigest == "" {
+		proof.DispatchDigest = req.DispatchDigest
+	}
+	return proof, r.err
 }
 
 func (r *recordingRevalidator) callCount() int {
@@ -131,6 +133,7 @@ func TestAcceptanceService_RevalidatesBeforeFirstDurableAccept(t *testing.T) {
 	}
 	if binding == nil || binding.ActionID != governedRequest().ActionID ||
 		binding.BindingDigest != governedRequest().BindingDigest ||
+		binding.DispatchDigest == "" ||
 		binding.EvidenceRef != "aie-evidence/revalidate-001" {
 		t.Fatalf("bad persisted authority binding: %+v", binding)
 	}
@@ -223,5 +226,36 @@ func TestAcceptanceService_RejectsMalformedBindingDigest(t *testing.T) {
 	}
 	if rv.callCount() != 0 {
 		t.Fatalf("malformed identity reached external authority: calls=%d", rv.callCount())
+	}
+}
+
+func TestAcceptanceService_AuthorityProofMustBindExactDispatchEnvelope(t *testing.T) {
+	store := newGovernedMemoryStore()
+	rv := &recordingRevalidator{proof: AuthorityProof{
+		EvidenceRef:    "aie-evidence/unrelated",
+		DispatchDigest: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+	}}
+	svc := newGovernedService(t, store, rv)
+	if _, err := svc.Accept(context.Background(), governedRequest()); !errors.Is(err, ErrAuthorityBindingMismatch) {
+		t.Fatalf("expected envelope binding mismatch, got %v", err)
+	}
+	if acc, err := store.LoadByIdempotency(governedRequest().Dispatch.IdempotencyKey); err != nil {
+		t.Fatal(err)
+	} else if acc != nil {
+		t.Fatalf("unbound authority proof persisted acceptance: %+v", acc)
+	}
+}
+
+func TestAcceptanceService_RevalidationSeesExactDispatchEnvelope(t *testing.T) {
+	store := newGovernedMemoryStore()
+	rv := &recordingRevalidator{proof: AuthorityProof{EvidenceRef: "aie-evidence/bound"}}
+	svc := newGovernedService(t, store, rv)
+	req := governedRequest()
+	if _, err := svc.Accept(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if rv.request.Dispatch != req.Dispatch || rv.request.ActionID != req.ActionID ||
+		rv.request.BindingDigest != req.BindingDigest || rv.request.DispatchDigest == "" {
+		t.Fatalf("revalidator did not receive exact envelope identity: %+v", rv.request)
 	}
 }
