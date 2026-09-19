@@ -14,7 +14,8 @@ func validPreActionInput() evidence.PreActionSnapshotInput {
 		NodeID:             "node-verify",
 		AttemptID:          "att_0123456789abcdef0123456789abcdef",
 		RunID:              "run-001",
-		ExecutionContextID:  "ctx-001",
+		ExecutionContextID:  "ctx_11111111111111111111111111111111",
+		TraceID:             "trc_22222222222222222222222222222222",
 		ConfidenceThreshold: 0.92,
 		VerificationDepth:   4,
 		RetryCeiling:        3,
@@ -79,6 +80,12 @@ func TestPreActionSnapshotMissingRequiredFieldFailsClosed(t *testing.T) {
 	input.ExecutionContextID = ""
 	if _, err := evidence.CapturePreActionSnapshot(input); err == nil {
 		t.Fatal("missing execution_context_id must fail closed")
+	}
+
+	input = validPreActionInput()
+	input.TraceID = ""
+	if _, err := evidence.CapturePreActionSnapshot(input); err == nil {
+		t.Fatal("missing trace_id must fail closed")
 	}
 
 	input = validPreActionInput()
