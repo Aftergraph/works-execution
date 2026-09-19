@@ -43,7 +43,9 @@ import (
 // v12 (platform convergence V2.1): immutable work_execution_contexts bindings.
 // v13 (RFC-0008): dispatch_acceptances — durable Runtime -> WORKS acceptance
 // state, including exactly-once effect identity and verification state.
-const SchemaVersion = 13
+// v14 (#106): dispatch_authority_bindings — exact AIE action/binding/evidence
+// identity atomically paired with first governed acceptance.
+const SchemaVersion = 14
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -410,8 +412,11 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateBrain(); err != nil {
 		return fmt.Errorf("migrate brain: %w", err)
 	}
-	// Migration v12 -> v13 (RFC-0008): durable Runtime -> WORKS dispatch
-	// acceptance state. Net-new table, no backfill.
+	// Migration v12 -> v13 (RFC-0008) and v13 -> v14 (#106): durable
+	// Runtime -> WORKS acceptance plus its independently-owned authority
+	// binding. Both tables are created idempotently by the dispatch migration;
+	// v14 requires no backfill because historical v13 acceptances predate the
+	// governed action-id seam and must not be fabricated retroactively.
 	if err := s.migrateDispatchAcceptance(); err != nil {
 		return fmt.Errorf("migrate dispatch acceptance: %w", err)
 	}
