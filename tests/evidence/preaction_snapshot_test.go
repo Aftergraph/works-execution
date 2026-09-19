@@ -42,11 +42,17 @@ func TestPreActionSnapshotCaptureIsDigestBoundAndRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvidenceRecord: %v", err)
 	}
-	if record.Type != evidence.PreActionSnapshotEvidenceType {
-		t.Fatalf("record type = %q", record.Type)
+	if record.Type != "policy" {
+		t.Fatalf("record type = %q; must remain within evidence-bundle schema enum", record.Type)
 	}
-	if record.Result != snapshot.Digest {
-		t.Fatalf("record result must bind snapshot digest")
+	if record.Result != "skip" {
+		t.Fatalf("record result = %q; snapshot must never count as approved pass evidence", record.Result)
+	}
+	if got := record.Details["record_kind"]; got != evidence.PreActionSnapshotEvidenceType {
+		t.Fatalf("record_kind = %v", got)
+	}
+	if got := record.Details["digest"]; got != snapshot.Digest {
+		t.Fatalf("details digest = %v; want %s", got, snapshot.Digest)
 	}
 
 	decoded, err := evidence.DecodePreActionSnapshot(record)
@@ -149,5 +155,23 @@ func TestPreActionSnapshotRequiresCanonicalExecutionCorrelationIDs(t *testing.T)
 	input.TraceID = "trace-not-canonical"
 	if _, err := evidence.CapturePreActionSnapshot(input); err == nil {
 		t.Fatal("non-canonical trace_id must fail closed")
+	}
+}
+
+
+func TestPreActionSnapshotCannotBecomeApprovalEvidence(t *testing.T) {
+	snapshot, err := evidence.CapturePreActionSnapshot(validPreActionInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := snapshot.EvidenceRecord("evd-preaction-approval")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Result == "pass" {
+		t.Fatal("informational pre-action snapshot must not satisfy pass-based approval policy")
+	}
+	if record.Type != "policy" || record.Result != "skip" {
+		t.Fatalf("wire evidence must stay schema-compatible policy/skip, got %s/%s", record.Type, record.Result)
 	}
 }
