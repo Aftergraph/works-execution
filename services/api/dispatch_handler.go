@@ -172,6 +172,18 @@ func (s *Server) acceptDispatch(w http.ResponseWriter, r *http.Request, workID s
 		return
 	}
 
+	// Contract minimums. dispatch.acceptance/1.0 pins authority_epoch and
+	// budget_ceiling to minimum: 0, and the domain Accept does not validate
+	// either. A negative value would persist and then either make the 200
+	// response violate the frozen schema or poison every later Spend with
+	// ErrInvalidBudget, so it is rejected at the boundary instead of creating
+	// an unusable durable record.
+	if req.AuthorityEpoch < 0 || req.BudgetCeiling < 0 {
+		writeError(w, http.StatusBadRequest, "dispatch_contract_violation",
+			"authority_epoch and budget_ceiling must be >= 0 (contract:dispatch.acceptance/1.0 minimum: 0)")
+		return
+	}
+
 	// The seal is idempotency-keyed, not work-keyed, so the {id} in the route is
 	// routing scope. Validating existence keeps an accept from orphaning a
 	// dispatch against a work that was never created.
@@ -185,6 +197,16 @@ func (s *Server) acceptDispatch(w http.ResponseWriter, r *http.Request, workID s
 		return
 	}
 
+	// LATENT (authority-integration precondition): Accept applies the
+	// stale-epoch gate BEFORE it resolves an already-committed idempotency
+	// key. A replay of a lost HTTP response, arriving after authority advances
+	// from N to N+1, therefore returns 409 instead of the committed winner and
+	// its correlation pair — contradicting the seal's documented
+	// "Runtime-died-after-accept replay" guarantee. The surface is fail-closed
+	// 503 until a CurrentEpoch resolver is wired, so this cannot manifest
+	// today. The authority-integration PR MUST resolve an existing key before
+	// applying the freshness gate. Encoded here so the gap is visible, never
+	// silent.
 	acc, err := s.Dispatch.Acceptor.Accept(dispatch.Dispatch{
 		MissionID:         req.MissionID,
 		AuthorityRef:      req.AuthorityRef,

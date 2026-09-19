@@ -296,3 +296,72 @@ func TestDispatchAccept_NonPost405(t *testing.T) {
 		t.Fatalf("status: got %d want 405", resp.StatusCode)
 	}
 }
+
+// The accept route sits behind requireBearer: with AuthEnabled=true and no
+// Authorization header the mount rejects with 401 BEFORE the handler runs, so an
+// unauthenticated caller who merely knows a work ID cannot create durable
+// acceptances or preempt an idempotency key (codex finding #1). The nil-resolver
+// setup would otherwise answer 503, so a 401 proves the bearer gate is enforced
+// ahead of even the fail-closed path.
+func TestDispatchAccept_RequiresBearerWhenAuthEnabled(t *testing.T) {
+	srv, ts, workID := setupDispatchAccept(t, nil)
+	srv.AuthEnabled = true
+	resp, err := http.Post(ts.URL+"/v1/works/"+workID+"/accept", "application/json", strings.NewReader(dispatchAcceptBody()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status: got %d want 401 (accept route must be behind requireBearer)", resp.StatusCode)
+	}
+}
+
+// dispatch.acceptance/1.0 pins budget_ceiling to minimum: 0. A negative value
+// must be rejected at the boundary (400), not persisted as an unusable record
+// that poisons every later Spend with ErrInvalidBudget (codex finding #2).
+func TestDispatchAccept_NegativeBudgetCeiling400(t *testing.T) {
+	_, ts, workID := setupDispatchAccept(t, func() int64 { return 0 })
+	body := strings.Replace(dispatchAcceptBody(), `"budget_ceiling":100`, `"budget_ceiling":-1`, 1)
+	resp, err := http.Post(ts.URL+"/v1/works/"+workID+"/accept", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400", resp.StatusCode)
+	}
+	var eb struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&eb); err != nil {
+		t.Fatal(err)
+	}
+	if eb.Error != "dispatch_contract_violation" {
+		t.Fatalf("error code: got %q want dispatch_contract_violation", eb.Error)
+	}
+}
+
+// authority_epoch below zero is a contract violation too. The boundary check
+// must fire (400) before the domain staleness gate would otherwise return 409,
+// so a negative epoch is rejected as malformed, not merely stale (codex #2).
+func TestDispatchAccept_NegativeAuthorityEpoch400(t *testing.T) {
+	_, ts, workID := setupDispatchAccept(t, func() int64 { return 0 })
+	body := strings.Replace(dispatchAcceptBody(), `"authority_epoch":7`, `"authority_epoch":-1`, 1)
+	resp, err := http.Post(ts.URL+"/v1/works/"+workID+"/accept", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400 (contract minimum must precede the staleness gate)", resp.StatusCode)
+	}
+	var eb struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&eb); err != nil {
+		t.Fatal(err)
+	}
+	if eb.Error != "dispatch_contract_violation" {
+		t.Fatalf("error code: got %q want dispatch_contract_violation", eb.Error)
+	}
+}

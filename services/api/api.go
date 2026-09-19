@@ -314,10 +314,20 @@ func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
 		s.createExecutionContext(w, r, parts[0])
 		return
 	}
-	// The dispatch acceptance seam. Method is checked inside the handler so a
-	// non-POST gets 405 rather than falling through to the work-item handler.
+	// The dispatch acceptance seam. Authentication is enforced here because
+	// workPathHandler is registered WITHOUT requireBearer, and every other
+	// state-mutating surface an untrusted caller can reach sits behind it.
+	// Wrapping the accept branch keeps the Runtime → WORKS boundary
+	// authenticated before the authority-epoch resolver is ever wired, so a
+	// future live mount cannot be reached by a caller who merely knows a work
+	// ID. Method is still checked inside the handler, so with auth disabled
+	// (dev/tests) a non-POST gets 405 rather than falling through to the
+	// work-item handler.
 	if len(parts) == 2 && parts[1] == "accept" {
-		s.acceptDispatch(w, r, parts[0])
+		accept := http.HandlerFunc(func(aw http.ResponseWriter, ar *http.Request) {
+			s.acceptDispatch(aw, ar, parts[0])
+		})
+		s.requireBearer(accept).ServeHTTP(w, r)
 		return
 	}
 	s.workItemHandler(w, r)
