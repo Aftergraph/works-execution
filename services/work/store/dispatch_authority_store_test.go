@@ -16,9 +16,13 @@ type storeTestRevalidator struct {
 	err   error
 }
 
-func (r *storeTestRevalidator) Revalidate(_ context.Context, _, _ string) (dispatch.AuthorityProof, error) {
+func (r *storeTestRevalidator) Revalidate(_ context.Context, req dispatch.AuthorityRevalidationRequest) (dispatch.AuthorityProof, error) {
 	r.calls++
-	return r.proof, r.err
+	proof := r.proof
+	if r.err == nil && proof.DispatchDigest == "" {
+		proof.DispatchDigest = req.DispatchDigest
+	}
+	return proof, r.err
 }
 
 func storeTestGovernedRequest() dispatch.DispatchAuthorityRequest {
@@ -145,16 +149,16 @@ func TestGovernedDispatchAuthorityBindingIsOutsideFrozenAcceptanceJSON(t *testin
 		}
 	}
 
-	var actionID, digest, evidenceRef string
+	var actionID, digest, dispatchDigest, evidenceRef string
 	if err := st.db.QueryRow(
-		`SELECT action_id, binding_digest, evidence_ref
+		`SELECT action_id, binding_digest, dispatch_digest, evidence_ref
 		 FROM dispatch_authority_bindings WHERE idempotency_key = ?`,
 		req.Dispatch.IdempotencyKey,
-	).Scan(&actionID, &digest, &evidenceRef); err != nil {
+	).Scan(&actionID, &digest, &dispatchDigest, &evidenceRef); err != nil {
 		t.Fatal(err)
 	}
-	if actionID != req.ActionID || digest != req.BindingDigest || evidenceRef != "aie-evidence/store-json" {
-		t.Fatalf("authority binding row mismatch: %q %q %q", actionID, digest, evidenceRef)
+	if actionID != req.ActionID || digest != req.BindingDigest || dispatchDigest == "" || evidenceRef != "aie-evidence/store-json" {
+		t.Fatalf("authority binding row mismatch: %q %q %q %q", actionID, digest, dispatchDigest, evidenceRef)
 	}
 }
 
