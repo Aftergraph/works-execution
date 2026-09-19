@@ -1,9 +1,10 @@
 {
-  "work_id": "wrk:0123456789abcdef0123456789abcdef",
+  "work_id": "wrk_0123456789abcdef0123456789abcdef",
   "node_id": "node-verify",
-  "attempt_id": "att:0123456789abcdef0123456789abcdef",
+  "attempt_id": "att_0123456789abcdef0123456789abcdef",
   "run_id": "run-001",
-  "execution_context_id": "ctx-001",
+  "execution_context_id": "ctx_11111111111111111111111111111111",
+  "trace_id": "trc_22222222222222222222222222222222",
   "confidence_threshold": 0.92,
   "verification_depth": 4,
   "retry_ceiling": 3,
@@ -11,5 +12,5 @@
   "min_verification": 3,
   "min_retries": 2,
   "captured_at": "2026-09-19T12:00:00Z",
-  "digest": "sha256:58bc7ce3fa5b93aa40f8b54d5c5d117843e285095f8c0b5de572a46fa71d2748"
+  "digest": "sha256:0e66511380b5cd7ffd6607bef98b2dcdac7a84570c86fed0562fbd0ef566deca"
 }
