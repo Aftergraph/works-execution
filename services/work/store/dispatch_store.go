@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS dispatch_authority_bindings (
     idempotency_key TEXT PRIMARY KEY,
     action_id       TEXT NOT NULL,
     binding_digest  TEXT NOT NULL,
+    dispatch_digest TEXT NOT NULL,
     evidence_ref    TEXT NOT NULL,
     revalidated_at  TEXT NOT NULL
 );
@@ -208,15 +209,15 @@ func (s *dispatchAcceptanceStore) Save(accepted *dispatch.Acceptance) error {
 func (s *dispatchAcceptanceStore) LoadAuthorityBinding(idempotencyKey string) (*dispatch.AuthorityBinding, error) {
 	return loadAuthorityBinding(
 		s.db,
-		`SELECT action_id, binding_digest, evidence_ref
+		`SELECT action_id, binding_digest, dispatch_digest, evidence_ref
 		 FROM dispatch_authority_bindings WHERE idempotency_key = ?`,
 		idempotencyKey,
 	)
 }
 
 func loadAuthorityBinding(q queryRower, query, idempotencyKey string) (*dispatch.AuthorityBinding, error) {
-	var actionID, bindingDigest, evidenceRef string
-	err := q.QueryRow(query, idempotencyKey).Scan(&actionID, &bindingDigest, &evidenceRef)
+	var actionID, bindingDigest, dispatchDigest, evidenceRef string
+	err := q.QueryRow(query, idempotencyKey).Scan(&actionID, &bindingDigest, &dispatchDigest, &evidenceRef)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -224,9 +225,10 @@ func loadAuthorityBinding(q queryRower, query, idempotencyKey string) (*dispatch
 		return nil, err
 	}
 	return &dispatch.AuthorityBinding{
-		ActionID:      actionID,
-		BindingDigest: bindingDigest,
-		EvidenceRef:   evidenceRef,
+		ActionID:       actionID,
+		BindingDigest:  bindingDigest,
+		DispatchDigest: dispatchDigest,
+		EvidenceRef:    evidenceRef,
 	}, nil
 }
 
@@ -244,7 +246,7 @@ func (s *dispatchAcceptanceStore) AcceptRevalidatedIfAbsent(
 	if accepted.WorksExecutionID == "" || accepted.Dispatch.IdempotencyKey == "" || accepted.Dispatch.CausalID == "" {
 		return nil, nil, errors.New("dispatch acceptance: missing governed identity binding")
 	}
-	if binding.ActionID == "" || binding.BindingDigest == "" || binding.EvidenceRef == "" {
+	if binding.ActionID == "" || binding.BindingDigest == "" || binding.DispatchDigest == "" || binding.EvidenceRef == "" {
 		return nil, nil, errors.New("dispatch acceptance: incomplete authority binding")
 	}
 
@@ -261,12 +263,13 @@ func (s *dispatchAcceptanceStore) AcceptRevalidatedIfAbsent(
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	bindingResult, err := tx.Exec(`
 		INSERT INTO dispatch_authority_bindings
-			(idempotency_key, action_id, binding_digest, evidence_ref, revalidated_at)
-		VALUES (?, ?, ?, ?, ?)
+			(idempotency_key, action_id, binding_digest, dispatch_digest, evidence_ref, revalidated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(idempotency_key) DO NOTHING`,
 		accepted.Dispatch.IdempotencyKey,
 		binding.ActionID,
 		binding.BindingDigest,
+		binding.DispatchDigest,
 		binding.EvidenceRef,
 		now,
 	)
@@ -291,7 +294,7 @@ func (s *dispatchAcceptanceStore) AcceptRevalidatedIfAbsent(
 			return nil, nil, err
 		}
 		existingBinding, err := loadAuthorityBinding(tx,
-			`SELECT action_id, binding_digest, evidence_ref
+			`SELECT action_id, binding_digest, dispatch_digest, evidence_ref
 			 FROM dispatch_authority_bindings WHERE idempotency_key = ?`,
 			accepted.Dispatch.IdempotencyKey,
 		)
