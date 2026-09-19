@@ -1,0 +1,177 @@
+package evidence_test
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/JonasAbde/works-execution/services/evidence"
+)
+
+func validPreActionInput() evidence.PreActionSnapshotInput {
+	return evidence.PreActionSnapshotInput{
+		WorkID:             "wrk_0123456789abcdef0123456789abcdef",
+		NodeID:             "node-verify",
+		AttemptID:          "att_0123456789abcdef0123456789abcdef",
+		RunID:              "run-001",
+		ExecutionContextID:  "ctx_11111111111111111111111111111111",
+		TraceID:             "trc_22222222222222222222222222222222",
+		ConfidenceThreshold: 0.92,
+		VerificationDepth:   4,
+		RetryCeiling:        3,
+		MinConfidence:       0.86,
+		MinVerification:     3,
+		MinRetries:          2,
+		CapturedAt:          time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC),
+	}
+}
+
+func TestPreActionSnapshotCaptureIsDigestBoundAndRoundTrips(t *testing.T) {
+	snapshot, err := evidence.CapturePreActionSnapshot(validPreActionInput())
+	if err != nil {
+		t.Fatalf("CapturePreActionSnapshot: %v", err)
+	}
+	if snapshot.Digest == "" {
+		t.Fatal("snapshot digest missing")
+	}
+	if !evidence.VerifyPreActionSnapshot(snapshot) {
+		t.Fatal("fresh snapshot must verify")
+	}
+
+	record, err := snapshot.EvidenceRecord("evd-preaction-1")
+	if err != nil {
+		t.Fatalf("EvidenceRecord: %v", err)
+	}
+	if record.Type != "policy" {
+		t.Fatalf("record type = %q; must remain within evidence-bundle schema enum", record.Type)
+	}
+	if record.Result != "skip" {
+		t.Fatalf("record result = %q; snapshot must never count as approved pass evidence", record.Result)
+	}
+	if got := record.Details["record_kind"]; got != evidence.PreActionSnapshotEvidenceType {
+		t.Fatalf("record_kind = %v", got)
+	}
+	if got := record.Details["digest"]; got != snapshot.Digest {
+		t.Fatalf("details digest = %v; want %s", got, snapshot.Digest)
+	}
+
+	decoded, err := evidence.DecodePreActionSnapshot(record)
+	if err != nil {
+		t.Fatalf("DecodePreActionSnapshot: %v", err)
+	}
+	if decoded != snapshot {
+		t.Fatalf("round trip mismatch:\n got %#v\nwant %#v", decoded, snapshot)
+	}
+}
+
+func TestPreActionSnapshotTamperFailsClosed(t *testing.T) {
+	snapshot, err := evidence.CapturePreActionSnapshot(validPreActionInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	record, err := snapshot.EvidenceRecord("evd-preaction-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Details["confidence_threshold"] = 0.10
+
+	if _, err := evidence.DecodePreActionSnapshot(record); err == nil {
+		t.Fatal("tampered snapshot must fail closed")
+	}
+}
+
+func TestPreActionSnapshotMissingRequiredFieldFailsClosed(t *testing.T) {
+	input := validPreActionInput()
+	input.ExecutionContextID = ""
+	if _, err := evidence.CapturePreActionSnapshot(input); err == nil {
+		t.Fatal("missing execution_context_id must fail closed")
+	}
+
+	input = validPreActionInput()
+	input.TraceID = ""
+	if _, err := evidence.CapturePreActionSnapshot(input); err == nil {
+		t.Fatal("missing trace_id must fail closed")
+	}
+
+	input = validPreActionInput()
+	input.VerificationDepth = -1
+	if _, err := evidence.CapturePreActionSnapshot(input); err == nil {
+		t.Fatal("negative verification depth must fail closed")
+	}
+}
+
+func TestPreActionSnapshotConsumerCannotInferMissingFields(t *testing.T) {
+	snapshot, err := evidence.CapturePreActionSnapshot(validPreActionInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := snapshot.EvidenceRecord("evd-preaction-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(record.Details, "retry_ceiling")
+
+	if _, err := evidence.DecodePreActionSnapshot(record); err == nil {
+		t.Fatal("consumer must reject incomplete snapshot instead of inferring retry_ceiling")
+	}
+}
+
+func TestPreActionSnapshotJSONContainsResearchReplayFields(t *testing.T) {
+	snapshot, err := evidence.CapturePreActionSnapshot(validPreActionInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []string{
+		"work_id", "node_id", "attempt_id", "run_id", "execution_context_id", "trace_id",
+		"confidence_threshold", "verification_depth", "retry_ceiling",
+		"min_confidence", "min_verification", "min_retries",
+		"captured_at", "digest",
+	} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("missing wire field %q", key)
+		}
+	}
+}
+
+
+func TestPreActionSnapshotRequiresCanonicalExecutionCorrelationIDs(t *testing.T) {
+	input := validPreActionInput()
+	input.ExecutionContextID = "ctx-not-canonical"
+	if _, err := evidence.CapturePreActionSnapshot(input); err == nil {
+		t.Fatal("non-canonical execution_context_id must fail closed")
+	}
+
+	input = validPreActionInput()
+	input.TraceID = "trace-not-canonical"
+	if _, err := evidence.CapturePreActionSnapshot(input); err == nil {
+		t.Fatal("non-canonical trace_id must fail closed")
+	}
+}
+
+
+func TestPreActionSnapshotCannotBecomeApprovalEvidence(t *testing.T) {
+	snapshot, err := evidence.CapturePreActionSnapshot(validPreActionInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := snapshot.EvidenceRecord("evd-preaction-approval")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Result == "pass" {
+		t.Fatal("informational pre-action snapshot must not satisfy pass-based approval policy")
+	}
+	if record.Type != "policy" || record.Result != "skip" {
+		t.Fatalf("wire evidence must stay schema-compatible policy/skip, got %s/%s", record.Type, record.Result)
+	}
+}
