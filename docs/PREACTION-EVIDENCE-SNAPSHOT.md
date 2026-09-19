@@ -17,10 +17,19 @@ The record is intentionally narrow. It does not grant authority, select a policy
 
 ## Wire identity
 
-Evidence type:
+The WORKS evidence record stays inside the `evidence.schema/1.1` enum:
 
 ```text
-pre_action_snapshot
+type   = policy
+result = skip
+```
+
+`skip` is deliberate: a pre-action snapshot is informational and must never
+satisfy a pass-based approval policy. The logical record kind rides in the
+sealed details map:
+
+```text
+details["record_kind"] = pre_action_snapshot
 ```
 
 The content-addressed snapshot contains:
@@ -49,11 +58,14 @@ The execution correlation ids follow `execution-context/1.0`: `execution_context
 
 The digest is SHA-256 over the canonical Go JSON encoding of every field above except `digest`.
 
-The WORKS evidence record stores the digest in the sealed `result` field and the snapshot in `details`. Therefore:
+The WORKS evidence record stores the snapshot fields and its content digest in
+the sealed `details` map (`details["digest"]`); the `result` field stays `skip`.
+Because the existing sealed Evidence hash covers `details`, any mutation is
+caught transitively. Therefore:
 
 ```text
 details mutation
-→ recomputed snapshot digest differs from sealed result
+→ recomputed snapshot digest differs from details["digest"]
 → DecodePreActionSnapshot fails closed
 ```
 
@@ -77,10 +89,11 @@ Consumers requiring Headroom/research replay must reject a snapshot when:
 - `captured_at` is absent;
 - confidence values are outside [0,1];
 - verification/retry values are negative;
-- evidence type is not `pre_action_snapshot`;
+- wire type/result is not `policy`/`skip`;
+- `details["record_kind"]` is not `pre_action_snapshot`;
 - evidence identity differs from snapshot identity;
 - the evidence seal is tampered;
-- any snapshot field is missing or changed such that the content digest no longer equals the sealed result.
+- any snapshot field is missing or changed such that the content digest no longer equals `details["digest"]`.
 
 Consumers may not infer a missing field from condition names, model/provider identity, outcome values, or later configuration.
 
