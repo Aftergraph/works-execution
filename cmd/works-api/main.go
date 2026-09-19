@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/JonasAbde/works-execution/internal/dispatch"
 	"github.com/JonasAbde/works-execution/packages/cache"
 	"github.com/JonasAbde/works-execution/services/api"
 	"github.com/JonasAbde/works-execution/services/publisher"
@@ -150,6 +151,21 @@ func main() {
 	} else {
 		logger.Printf("Brain surface mounted but unavailable")
 	}
+	// Runtime → WORKS dispatch acceptance seam (contract:dispatch.acceptance/1.0).
+	// The Acceptor is backed by the shared WORKS database (DispatchAcceptanceStore)
+	// so acceptance and the WORKS-minted correlation identity survive restart; it
+	// never creates an independent source of execution truth. CurrentEpoch is left
+	// nil ON PURPOSE: WORKS has no authority-epoch resolver today, and defaulting
+	// it (for example to the client's own asserted epoch) would turn Accept's
+	// staleness guard into a silent no-op. Mounting the seam with a nil resolver
+	// keeps it additive and visible — every route answers 503
+	// dispatch_accept_unavailable until authority integration wires a real
+	// resolver here ("visible, never silent").
+	srv.Dispatch = &api.DispatchConfig{
+		Acceptor: dispatch.NewAcceptor(st.DispatchAcceptanceStore(), nil),
+		// CurrentEpoch intentionally nil — see the comment above.
+	}
+	logger.Printf("dispatch acceptance surface mounted but unavailable (no authority-epoch resolver; POST /v1/works/{id}/accept → 503 until authority integration)")
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Routes(),
