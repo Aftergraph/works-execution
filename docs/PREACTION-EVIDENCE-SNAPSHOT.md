@@ -31,6 +31,7 @@ node_id
 attempt_id
 run_id
 execution_context_id
+trace_id
 
 confidence_threshold
 verification_depth
@@ -44,7 +45,9 @@ captured_at
 digest
 ```
 
-The execution correlation ids follow `execution-context/1.0`: `execution_context_id = ctx_<32hex>` and `trace_id = trc_<32hex>`.\n\nThe digest is SHA-256 over the canonical Go JSON encoding of every field above except `digest`.
+The execution correlation ids follow `execution-context/1.0`: `execution_context_id = ctx_<32hex>` and `trace_id = trc_<32hex>`.
+
+The digest is SHA-256 over the canonical Go JSON encoding of every field above except `digest`.
 
 The WORKS evidence record stores the digest in the sealed `result` field and the snapshot in `details`. Therefore:
 
