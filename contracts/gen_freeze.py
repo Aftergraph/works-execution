@@ -319,8 +319,10 @@ SCHEMAS = {
                 "budget_ceiling": {"type": "integer", "minimum": 0},
                 "checkpoint_id": {"type": "string"},
                 "evidence_root": {"type": "string"},
+                "execution_context_id": {"pattern": "^ctx_[a-f0-9]{32}$", "type": "string"},
                 "verification_subject": {"type": "string"},
                 "causal_id": {"type": "string"},
+                "trace_id": {"pattern": "^trc_[a-f0-9]{32}$", "type": "string"},
                 "outcome": {"enum": ["ACCEPTED", "SUCCEEDED", "FAILED", "INDETERMINATE"]},
                 "verified": {"type": "boolean"},
                 "verifier_id": {"type": "string"},
@@ -418,7 +420,7 @@ def main():
     entries = []
     for name, spec in SCHEMAS.items():
         path = os.path.join(OUT, name + ".schema.json")
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(spec["schema"], f, indent=2, sort_keys=True)
             f.write("\n")
         digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
@@ -439,11 +441,11 @@ def main():
         "entry_count": len(entries),
         "contracts": entries,
     }
-    with open(os.path.join(os.path.dirname(OUT), "manifest.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(os.path.dirname(OUT), "manifest.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(manifest, f, indent=2, sort_keys=True)
         f.write("\n")
     self_hash = hashlib.sha256(open(os.path.join(os.path.dirname(OUT), "manifest.json"), "rb").read()).hexdigest()
-    with open(os.path.join(os.path.dirname(OUT), "manifest.sha256"), "w") as f:
+    with open(os.path.join(os.path.dirname(OUT), "manifest.sha256"), "w", newline="\n") as f:
         f.write(self_hash + "\n")
     print(f"manifest entries={len(entries)} manifest_sha256={self_hash}")
 
