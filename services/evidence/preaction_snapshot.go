@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
@@ -14,8 +15,43 @@ import (
 const PreActionSnapshotEvidenceType = "pre_action_snapshot"
 
 var (
-	ErrInvalidPreActionSnapshot = errors.New("evidence: invalid pre-action snapshot")
+	ErrInvalidPreActionSnapshot  = errors.New("evidence: invalid pre-action snapshot")
 	ErrPreActionSnapshotTampered = errors.New("evidence: pre-action snapshot digest mismatch")
+
+	executionContextIDPattern = regexp.MustCompile(`^ctx_[a-f0-9]{32}package evidence
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+	"time"
+
+	"github.com/JonasAbde/works-execution/packages/workgraph"
+)
+
+const PreActionSnapshotEvidenceType = "pre_action_snapshot"
+
+)
+	traceIDPattern            = regexp.MustCompile(`^trc_[a-f0-9]{32}package evidence
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+	"time"
+
+	"github.com/JonasAbde/works-execution/packages/workgraph"
+)
+
+const PreActionSnapshotEvidenceType = "pre_action_snapshot"
+
+)
 )
 
 // PreActionSnapshotInput is the immutable set of policy and context values that
@@ -52,6 +88,12 @@ func validatePreActionInput(in PreActionSnapshotInput) error {
 	if in.WorkID == "" || in.NodeID == "" || in.AttemptID == "" ||
 		in.RunID == "" || in.ExecutionContextID == "" || in.TraceID == "" {
 		return fmt.Errorf("%w: execution identity fields are required", ErrInvalidPreActionSnapshot)
+	}
+	if !executionContextIDPattern.MatchString(in.ExecutionContextID) {
+		return fmt.Errorf("%w: execution_context_id must match execution-context/1.0", ErrInvalidPreActionSnapshot)
+	}
+	if !traceIDPattern.MatchString(in.TraceID) {
+		return fmt.Errorf("%w: trace_id must match execution-context/1.0", ErrInvalidPreActionSnapshot)
 	}
 	if in.CapturedAt.IsZero() {
 		return fmt.Errorf("%w: captured_at is required", ErrInvalidPreActionSnapshot)
