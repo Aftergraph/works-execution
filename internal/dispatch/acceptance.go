@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/JonasAbde/works-execution/packages/executioncontext"
 )
 
 // Sentinel failures. All are fail-closed: callers must not proceed with
@@ -78,6 +80,13 @@ type Acceptance struct {
 	Verified         bool
 	VerifierID       string
 	Verdict          *VerificationVerdict
+	// ExecutionContextID and TraceID are WORKS-minted correlation identities
+	// bound at accept time (execution-context/1.0). They never arrive on the
+	// Runtime Dispatch envelope — clients cannot choose either field — and are
+	// stable across duplicate/retry of the same idempotency key because only the
+	// winning AcceptIfAbsent insert persists; every replay returns the winner's.
+	ExecutionContextID string
+	TraceID            string
 }
 
 // Store is the durability seam. Production uses SQLite; tests use memory.
@@ -119,12 +128,18 @@ func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
 	if d.AuthorityEpoch < currentEpoch {
 		return nil, fmt.Errorf("%w: dispatch epoch %d < current %d", ErrStaleAuthority, d.AuthorityEpoch, currentEpoch)
 	}
+	// WORKS mints the correlation identity here. On a duplicate/retry the store
+	// returns the existing winner and these freshly-minted IDs are discarded, so
+	// the execution context stays stable across replay rather than being reminted.
+	ctxID, trcID := executioncontext.MintCorrelationIDs()
 	acc := &Acceptance{
-		WorksExecutionID: "wexec/" + d.IdempotencyKey,
-		Dispatch:         d,
-		AcceptedAt:       a.clock(),
-		AuthorityEpochAt: d.AuthorityEpoch,
-		Outcome:          "ACCEPTED",
+		WorksExecutionID:   "wexec/" + d.IdempotencyKey,
+		Dispatch:           d,
+		AcceptedAt:         a.clock(),
+		AuthorityEpochAt:   d.AuthorityEpoch,
+		Outcome:            "ACCEPTED",
+		ExecutionContextID: ctxID,
+		TraceID:            trcID,
 	}
 	// The persistence adapter owns the atomic insert/unique-key race. A
 	// load-then-save sequence is not sufficient: two Runtime retries can pass

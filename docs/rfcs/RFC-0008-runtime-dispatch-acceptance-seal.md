@@ -22,6 +22,7 @@ Runtime dispatches an envelope; WORKS accepts durably and returns a
 - `budget_ref`, `budget_ceiling`
 - `checkpoint_id`, `evidence_root`
 - `verification_subject`
+- `execution_context_id`, `trace_id` (optional; WORKS-minted at accept, execution-context/1.0 correlation — clients cannot supply them)
 - outcome ∈ `ACCEPTED | SUCCEEDED | FAILED | INDETERMINATE`
 - `verified` (independent verdict only), `verifier_id`
 - `verdict.result`, `verdict.subject`, `verdict.evidence_ref`, `verdict.recorded_at`
@@ -50,6 +51,11 @@ Runtime dispatches an envelope; WORKS accepts durably and returns a
    accepted subject, a normalized `ACCEPT`/`REJECT` result, and a non-empty
    evidence reference recorded with timestamp. Pre-terminal, stale-subject,
    unavailable-verifier, or missing-evidence calls fail closed.
+7. **Correlation minting at accept.** WORKS mints `execution_context_id` and
+   `trace_id` (execution-context/1.0) when a fresh dispatch wins the
+   `AcceptIfAbsent` insert. Duplicate or retried dispatches of the same
+   idempotency key return the winner's IDs unchanged; a replay never remints.
+   These fields are optional on the wire for backward compatibility.
 
 ## Adversarial coverage
 

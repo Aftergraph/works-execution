@@ -30,6 +30,10 @@
     "evidence_root": {
       "type": "string"
     },
+    "execution_context_id": {
+      "pattern": "^ctx_[a-f0-9]{32}$",
+      "type": "string"
+    },
     "idempotency_key": {
       "type": "string"
     },
@@ -45,6 +49,10 @@
       ]
     },
     "runtime_dispatch_id": {
+      "type": "string"
+    },
+    "trace_id": {
+      "pattern": "^trc_[a-f0-9]{32}$",
       "type": "string"
     },
     "verdict": {
