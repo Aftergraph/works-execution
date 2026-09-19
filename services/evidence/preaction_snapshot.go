@@ -26,7 +26,8 @@ type PreActionSnapshotInput struct {
 	NodeID             string    `json:"node_id"`
 	AttemptID          string    `json:"attempt_id"`
 	RunID              string    `json:"run_id"`
-	ExecutionContextID string    `json:"execution_context_id"`\n\tTraceID            string    `json:"trace_id"`
+	ExecutionContextID string    `json:"execution_context_id"`
+	TraceID            string    `json:"trace_id"`
 
 	ConfidenceThreshold float64 `json:"confidence_threshold"`
 	VerificationDepth   int     `json:"verification_depth"`
