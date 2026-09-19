@@ -96,3 +96,60 @@ func TestAcceptanceSchema_RoundTrip(t *testing.T) {
 		t.Fatal("verdict without evidence_ref must be rejected")
 	}
 }
+
+// The correlation extension is additive-optional: a record carrying valid
+// WORKS-minted IDs validates, a record without them still validates (backward
+// compatibility with every existing consumer and the 15 adversarial cases), and
+// a malformed ID fails closed at the schema boundary.
+func TestAcceptanceSchema_CorrelationOptionalAndPatternEnforced(t *testing.T) {
+	schema := compileAcceptanceSchema(t)
+	base := map[string]any{
+		"mission_id":           "mission/golden-001",
+		"authority_ref":        "a/value",
+		"authority_epoch":      7,
+		"runtime_dispatch_id":  "rdisp/1",
+		"works_execution_id":   "wexec/idem/1",
+		"attempt_id":           "attempt/1",
+		"effect_id":            "effect/1",
+		"idempotency_key":      "idem/1",
+		"budget_ref":           "budget/1",
+		"budget_ceiling":       100,
+		"checkpoint_id":        "checkpoint/1",
+		"evidence_root":        "evidence/1",
+		"verification_subject": "subject/1",
+		"causal_id":            "causal/1",
+		"outcome":              "ACCEPTED",
+		"verified":             false,
+	}
+	if err := schema.Validate(base); err != nil {
+		t.Fatalf("record without correlation must still validate: %v", err)
+	}
+
+	withCorr := map[string]any{}
+	for k, v := range base {
+		withCorr[k] = v
+	}
+	withCorr["execution_context_id"] = "ctx_11111111111111111111111111111111"
+	withCorr["trace_id"] = "trc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := schema.Validate(withCorr); err != nil {
+		t.Fatalf("valid correlation rejected: %v", err)
+	}
+
+	badCtx := map[string]any{}
+	for k, v := range withCorr {
+		badCtx[k] = v
+	}
+	badCtx["execution_context_id"] = "ctx_short"
+	if err := schema.Validate(badCtx); err == nil {
+		t.Fatal("malformed execution_context_id must be rejected")
+	}
+
+	badTrc := map[string]any{}
+	for k, v := range withCorr {
+		badTrc[k] = v
+	}
+	badTrc["trace_id"] = "wrk_11111111111111111111111111111111"
+	if err := schema.Validate(badTrc); err == nil {
+		t.Fatal("wrong-prefix trace_id must be rejected")
+	}
+}

@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"errors"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -328,5 +329,49 @@ func TestAccept_RestartPreservesAuthorityBounds(t *testing.T) {
 	}
 	if _, err := restarted.Accept(testDispatch(), 9); !errors.Is(err, ErrStaleAuthority) {
 		t.Fatalf("restart must not erase epoch, got %v", err)
+	}
+}
+
+var (
+	correlationCtxPattern = regexp.MustCompile(`^ctx_[a-f0-9]{32}$`)
+	correlationTrcPattern = regexp.MustCompile(`^trc_[a-f0-9]{32}$`)
+)
+
+// WORKS mints the execution-context/1.0 correlation at accept time. The minted
+// IDs must be contract-shaped, distinct across executions, and — critically —
+// stable across duplicate/retry of the same idempotency key: the winning
+// AcceptIfAbsent insert's IDs prevail and a replay never remints.
+func TestAccept_MintsCorrelationStableAcrossReplay(t *testing.T) {
+	a := newAcceptor()
+	d := testDispatch()
+	first, err := a.Accept(d, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !correlationCtxPattern.MatchString(first.ExecutionContextID) {
+		t.Fatalf("execution context id malformed: %q", first.ExecutionContextID)
+	}
+	if !correlationTrcPattern.MatchString(first.TraceID) {
+		t.Fatalf("trace id malformed: %q", first.TraceID)
+	}
+
+	second, err := a.Accept(d, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ExecutionContextID != first.ExecutionContextID || second.TraceID != first.TraceID {
+		t.Fatalf("replay reminted correlation: first %s/%s second %s/%s",
+			first.ExecutionContextID, first.TraceID, second.ExecutionContextID, second.TraceID)
+	}
+
+	other := testDispatch()
+	other.IdempotencyKey = "idem/other"
+	other.CausalID = "causal/other"
+	third, err := a.Accept(other, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.ExecutionContextID == first.ExecutionContextID || third.TraceID == first.TraceID {
+		t.Fatal("distinct executions must not share minted correlation")
 	}
 }
