@@ -2,6 +2,7 @@ package evidence_test
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -26,6 +27,7 @@ import (
 
 const (
 	testKeyID = "test-key-v1"
+	testBridgeSecret = "works-platform-bridge-test-secret-0123456789"
 )
 
 func testKey() []byte {
@@ -136,6 +138,12 @@ func seedV21Context(t *testing.T, st store.Store, w *workgraph.Work) *executionc
 	return c
 }
 
+func testExecutionPDRMAC(workID, contextID, pdrID string) string {
+	mac := hmac.New(sha256.New, []byte(testBridgeSecret))
+	_, _ = mac.Write([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
 func appendExecutionPDR(t *testing.T, st store.Store, w *workgraph.Work, contextID, pdrID string) {
 	t.Helper()
 	_, err := st.AppendEvidence(context.Background(), w.ID, workgraph.Evidence{
@@ -149,6 +157,7 @@ func appendExecutionPDR(t *testing.T, st store.Store, w *workgraph.Work, context
 			"record_kind":          "execution_policy_decision",
 			"execution_context_id": contextID,
 			"execution_pdr_id":     pdrID,
+			"binding_hmac":         testExecutionPDRMAC(w.ID, contextID, pdrID),
 		},
 	})
 	if err != nil {
@@ -166,7 +175,7 @@ func TestProduce_V21IdentityChainRequiresActionTimePDRCorrelation(t *testing.T) 
 	appendExecutionPDR(t, st, w, ctx.ID, "pdr_77777777777777777777777777777777")
 
 	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 	})
 	if err != nil { t.Fatalf("Produce: %v", err) }
 	if b.PlatformVerification == nil || b.PlatformVerification.Status != "correlated" {
@@ -197,7 +206,7 @@ func TestProduce_V21MissingActionTimePDRIsExplicitProvenanceGap(t *testing.T) {
 	ctx := seedV21Context(t, st, w)
 
 	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 	})
 	if err != nil { t.Fatalf("Produce: %v", err) }
 	if b.IdentityChain["execution_context_id"] != ctx.ID {
@@ -213,6 +222,33 @@ func TestProduce_V21MissingActionTimePDRIsExplicitProvenanceGap(t *testing.T) {
 	}
 }
 
+
+func TestProduce_V21WorkerForgedPDRWithoutBridgeMACDoesNotCloseGap(t *testing.T) {
+	st := newTestStore(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+	_, err := st.AppendEvidence(context.Background(), w.ID, workgraph.Evidence{
+		ID: workgraph.NewID("evd"), NodeID: "a", AttemptID: w.Attempts[0].ID,
+		Type: "policy", Result: "pass", RecordedAt: time.Now().UTC(),
+		Signer: "trust-gateway",
+		Details: map[string]any{
+			"record_kind": "execution_policy_decision",
+			"execution_context_id": ctx.ID,
+			"execution_pdr_id": "pdr_77777777777777777777777777777777",
+		},
+	})
+	if err != nil { t.Fatal(err) }
+
+	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
+		KeyID: testKeyID, HMACKey: testKey(),
+		PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
+	})
+	if err != nil { t.Fatal(err) }
+	if b.PlatformVerification == nil || b.PlatformVerification.Status != "provenance_gap" {
+		t.Fatalf("worker-forged PDR closed provenance gap: %#v", b.PlatformVerification)
+	}
+}
+
 func TestProduce_V21PDRForDifferentContextDoesNotCloseGap(t *testing.T) {
 	st := newTestStore(t)
 	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
@@ -220,7 +256,7 @@ func TestProduce_V21PDRForDifferentContextDoesNotCloseGap(t *testing.T) {
 	appendExecutionPDR(t, st, w, "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pdr_77777777777777777777777777777777")
 
 	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 	})
 	if err != nil { t.Fatalf("Produce: %v", err) }
 	if b.PlatformVerification == nil || b.PlatformVerification.Status != "provenance_gap" {
@@ -233,7 +269,7 @@ func TestProduce_HappyPath_Succeeded(t *testing.T) {
 	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
 
 	cfg := evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 		Now: func() time.Time { return time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC) },
 	}
 	b, err := evidence.Produce(context.Background(), st, w.ID, cfg)
@@ -332,7 +368,7 @@ func TestProduce_RejectsNonTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 	})
 	if !errors.Is(err, evidence.ErrWorkNotTerminal) {
 		t.Errorf("got %v, want ErrWorkNotTerminal", err)
@@ -342,7 +378,7 @@ func TestProduce_RejectsNonTerminal(t *testing.T) {
 func TestProduce_NotFound(t *testing.T) {
 	st := newTestStore(t)
 	_, err := evidence.Produce(context.Background(), st, "wrk_does_not_exist", evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 	})
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)
@@ -399,7 +435,7 @@ func TestProduce_TamperDetected(t *testing.T) {
 	st := newTestStore(t)
 	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
 	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 	})
 	if err != nil {
 		t.Fatalf("Produce: %v", err)
@@ -418,6 +454,7 @@ func TestProduce_TamperDetected(t *testing.T) {
 
 func newTestAPIServer(t *testing.T) (*api.Server, *httptest.Server, store.Store) {
 	t.Helper()
+	t.Setenv("WORKS_PLATFORM_BRIDGE_SECRET", testBridgeSecret)
 	st := newTestStore(t)
 	srv := &api.Server{
 		Store: st,
@@ -437,7 +474,11 @@ func newTestAPIServer(t *testing.T) (*api.Server, *httptest.Server, store.Store)
 func postExecutionPDR(t *testing.T, base, workID, contextID, pdrID string) (int, map[string]any) {
 	t.Helper()
 	body := strings.NewReader(fmt.Sprintf(`{"execution_context_id":%q,"execution_pdr_id":%q}`, contextID, pdrID))
-	resp, err := http.Post(base+"/v1/works/"+workID+"/evidence", "application/json", body)
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/works/"+workID+"/evidence", body)
+	if err != nil { t.Fatal(err) }
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Works-Platform-Bridge", testBridgeSecret)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil { t.Fatal(err) }
 	defer resp.Body.Close()
 	var out map[string]any
