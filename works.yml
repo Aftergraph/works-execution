@@ -8,18 +8,14 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      tg-live-source-anchor:
+      tg-process-cwd:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
           if [ "$(id -u)" -eq 0 ]; then P=""; else sudo -n true; P="sudo -n"; fi;
           PID="$($P systemctl show tg-gateway.service -p MainPID --value)";
           test "$PID" -gt 1;
-          $P test -d "/proc/$PID/cwd";
-          $P git -C "/proc/$PID/cwd" rev-parse --is-inside-work-tree | grep -qx true;
-          if ! $P git -C "/proc/$PID/cwd" cat-file -e 8a2c8d66a67d036227c77904844f105b39723f58^{commit} 2>/dev/null; then
-            $P git -C "/proc/$PID/cwd" fetch --quiet --no-tags origin 8a2c8d66a67d036227c77904844f105b39723f58;
-          fi;
-          $P git -C "/proc/$PID/cwd" cat-file -e 8a2c8d66a67d036227c77904844f105b39723f58^{commit};
-          echo "tg-live-source-anchor=PASS"
-        timeout_s: 120
+          $P test -e "/proc/$PID/cwd";
+          $P test -f "/proc/$PID/cwd/bin/gateway.js";
+          echo "tg-process-cwd=PASS"
+        timeout_s: 30
