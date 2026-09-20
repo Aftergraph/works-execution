@@ -13,7 +13,18 @@ work:
       host-identity:
         run: >-
           set -eu;
-          echo "host=$(hostname -s)";
           test "$(hostname -s)" = "vmi3517816";
-          echo "v21-host-identity=PASS"
+          echo "host=vmi3517816"
+        timeout_s: 30
+      privilege:
+        needs: [host-identity]
+        run: >-
+          set -eu;
+          echo "uid=$(id -u)";
+          if [ "$(id -u)" -eq 0 ]; then
+            echo "privilege=root";
+          else
+            sudo -n true;
+            echo "privilege=passwordless-sudo";
+          fi
         timeout_s: 30
