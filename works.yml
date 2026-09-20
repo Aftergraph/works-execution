@@ -8,14 +8,12 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      provision-dry-run:
+      tg-envfile-property:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
-          chmod +x scripts/provision-v21-bridge.sh;
-          if [ "$(id -u)" -eq 0 ]; then
-            PROVISION_DRY_RUN=1 EXPECTED_VDS_HOST=vmi3517816 ./scripts/provision-v21-bridge.sh;
-          else
-            sudo -n env PROVISION_DRY_RUN=1 EXPECTED_VDS_HOST=vmi3517816 ./scripts/provision-v21-bridge.sh;
-          fi
-        timeout_s: 60
+          if [ "$(id -u)" -eq 0 ]; then P=""; else sudo -n true; P="sudo -n"; fi;
+          RAW="$($P systemctl show tg-gateway.service -p EnvironmentFiles --value | head -n1)";
+          test -n "$RAW";
+          echo "tg-envfile-property=PASS"
+        timeout_s: 30
