@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -147,22 +148,24 @@ func testExecutionPDRMAC(workID, contextID, pdrID string) string {
 
 func appendExecutionPDR(t *testing.T, st store.Store, w *workgraph.Work, contextID, pdrID string) {
 	t.Helper()
-	_, err := st.AppendEvidence(context.Background(), w.ID, workgraph.Evidence{
-		ID:         workgraph.NewID("evd"),
-		NodeID:     "a",
-		AttemptID:  w.Attempts[0].ID,
-		Type:       "policy",
-		Result:     "pass",
-		RecordedAt: time.Now().UTC(),
-		Details: map[string]any{
-			"record_kind":          "execution_policy_decision",
-			"execution_context_id": contextID,
-			"execution_pdr_id":     pdrID,
-			"binding_hmac":         testExecutionPDRMAC(w.ID, contextID, pdrID),
-		},
+	type recorder interface {
+		RecordExecutionPolicyCorrelation(
+			context.Context,
+			store.ExecutionPolicyCorrelation,
+		) (*store.ExecutionPolicyCorrelation, bool, error)
+	}
+	rd, ok := st.(recorder)
+	if !ok {
+		t.Fatalf("store does not implement RecordExecutionPolicyCorrelation: %T", st)
+	}
+	_, _, err := rd.RecordExecutionPolicyCorrelation(context.Background(), store.ExecutionPolicyCorrelation{
+		WorkID:             w.ID,
+		ExecutionContextID: contextID,
+		ExecutionPDRID:     pdrID,
+		BindingHMAC:        testExecutionPDRMAC(w.ID, contextID, pdrID),
 	})
 	if err != nil {
-		t.Fatalf("AppendEvidence execution PDR: %v", err)
+		t.Fatalf("RecordExecutionPolicyCorrelation: %v", err)
 	}
 }
 
@@ -250,18 +253,28 @@ func TestProduce_V21WorkerForgedPDRWithoutBridgeMACDoesNotCloseGap(t *testing.T)
 	}
 }
 
-func TestProduce_V21PDRForDifferentContextDoesNotCloseGap(t *testing.T) {
+func TestProduce_V21WorkerEvidenceForDifferentContextDoesNotCloseGap(t *testing.T) {
 	st := newTestStore(t)
 	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
 	_ = seedV21Context(t, st, w)
-	appendExecutionPDR(t, st, w, "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pdr_77777777777777777777777777777777")
+	_, err := st.AppendEvidence(context.Background(), w.ID, workgraph.Evidence{
+		ID: workgraph.NewID("evd"), NodeID: "a", AttemptID: w.Attempts[0].ID,
+		Type: "policy", Result: "pass", RecordedAt: time.Now().UTC(),
+		Details: map[string]any{
+			"record_kind": "execution_policy_decision",
+			"execution_context_id": "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"execution_pdr_id": "pdr_77777777777777777777777777777777",
+			"binding_hmac": strings.Repeat("0", 64),
+		},
+	})
+	if err != nil { t.Fatal(err) }
 
 	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
 		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 	})
 	if err != nil { t.Fatalf("Produce: %v", err) }
 	if b.PlatformVerification == nil || b.PlatformVerification.Status != "provenance_gap" {
-		t.Fatalf("mismatched PDR closed provenance gap: %#v", b.PlatformVerification)
+		t.Fatalf("worker evidence closed provenance gap: %#v", b.PlatformVerification)
 	}
 }
 
@@ -545,13 +558,85 @@ func TestExecutionPDRCorrelationIngest_IdempotentAndConflictSafe(t *testing.T) {
 	if status != http.StatusOK || replay["status"] != "already_recorded" {
 		t.Fatalf("replay status=%d body=%#v", status, replay)
 	}
-	if first["evidence_id"] != replay["evidence_id"] {
-		t.Fatalf("idempotent replay changed evidence id: %#v %#v", first, replay)
+	if first["execution_context_id"] != replay["execution_context_id"] ||
+		first["execution_pdr_id"] != replay["execution_pdr_id"] {
+		t.Fatalf("idempotent replay changed correlation identity: %#v %#v", first, replay)
 	}
 
 	status, conflict := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, "pdr_88888888888888888888888888888888")
 	if status != http.StatusConflict || conflict["error"] != "execution_pdr_conflict" {
 		t.Fatalf("conflict status=%d body=%#v", status, conflict)
+	}
+}
+
+func TestExecutionPDRCorrelationIngest_WorkerPreseedCannotBlockAuthoritativeWrite(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	_, err := st.AppendEvidence(context.Background(), w.ID, workgraph.Evidence{
+		ID: workgraph.NewID("evd"), NodeID: "a", AttemptID: w.Attempts[0].ID,
+		Type: "policy", Result: "pass", RecordedAt: time.Now().UTC(),
+		Details: map[string]any{
+			"record_kind": "execution_policy_decision",
+			"execution_context_id": ctx.ID,
+			"execution_pdr_id": "pdr_88888888888888888888888888888888",
+			"binding_hmac": strings.Repeat("0", 64),
+		},
+	})
+	if err != nil { t.Fatal(err) }
+
+	status, out := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, "pdr_77777777777777777777777777777777")
+	if status != http.StatusCreated || out["status"] != "recorded" {
+		t.Fatalf("worker preseed blocked authoritative correlation: status=%d body=%#v", status, out)
+	}
+}
+
+func TestExecutionPDRCorrelationIngest_ConcurrentDifferentPDRsHaveSingleWinner(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	type result struct {
+		status int
+		body map[string]any
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, pdr := range []string{
+		"pdr_77777777777777777777777777777777",
+		"pdr_88888888888888888888888888888888",
+	} {
+		pdr := pdr
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			status, body := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, pdr)
+			results <- result{status: status, body: body}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	created, conflicts := 0, 0
+	for got := range results {
+		switch got.status {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			if got.body["error"] != "execution_pdr_conflict" {
+				t.Fatalf("unexpected conflict body: %#v", got.body)
+			}
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent status=%d body=%#v", got.status, got.body)
+		}
+	}
+	if created != 1 || conflicts != 1 {
+		t.Fatalf("atomic single-winner law violated: created=%d conflicts=%d", created, conflicts)
 	}
 }
 
