@@ -15,7 +15,7 @@ type ExecutionPolicyCorrelation struct {
 	WorkID             string
 	ExecutionContextID string
 	ExecutionPDRID     string
-	BindingHMAC        string
+	BindingDigest        string
 	RecordedAt         time.Time
 }
 
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS work_execution_policy_correlations (
     execution_context_id TEXT PRIMARY KEY,
     work_id              TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
     execution_pdr_id     TEXT NOT NULL,
-    binding_hmac         TEXT NOT NULL,
+    binding_digest         TEXT NOT NULL,
     recorded_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_execution_policy_correlations_work
@@ -44,7 +44,7 @@ func (s *SQLiteStore) RecordExecutionPolicyCorrelation(
 	if err := s.EnsureExecutionPolicyCorrelationsTable(); err != nil {
 		return nil, false, err
 	}
-	if in.WorkID == "" || in.ExecutionContextID == "" || in.ExecutionPDRID == "" || in.BindingHMAC == "" {
+	if in.WorkID == "" || in.ExecutionContextID == "" || in.ExecutionPDRID == "" || in.BindingDigest == "" {
 		return nil, false, errors.New("execution policy correlation: incomplete record")
 	}
 
@@ -72,14 +72,14 @@ func (s *SQLiteStore) RecordExecutionPolicyCorrelation(
 	now := time.Now().UTC()
 	res, err := tx.ExecContext(ctx, `
         INSERT INTO work_execution_policy_correlations
-            (execution_context_id, work_id, execution_pdr_id, binding_hmac, recorded_at)
+            (execution_context_id, work_id, execution_pdr_id, binding_digest, recorded_at)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(execution_context_id) DO NOTHING
     `,
 		in.ExecutionContextID,
 		in.WorkID,
 		in.ExecutionPDRID,
-		in.BindingHMAC,
+		in.BindingDigest,
 		now.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -99,7 +99,7 @@ func (s *SQLiteStore) RecordExecutionPolicyCorrelation(
 	}
 	if out.WorkID != in.WorkID ||
 		out.ExecutionPDRID != in.ExecutionPDRID ||
-		out.BindingHMAC != in.BindingHMAC {
+		out.BindingDigest != in.BindingDigest {
 		return nil, false, ErrExecutionPolicyCorrelationConflict
 	}
 	if err := tx.Commit(); err != nil {
@@ -130,14 +130,14 @@ func loadExecutionPolicyCorrelation(
 	var rec ExecutionPolicyCorrelation
 	var recorded string
 	err := q.QueryRowContext(ctx, `
-        SELECT work_id, execution_context_id, execution_pdr_id, binding_hmac, recorded_at
+        SELECT work_id, execution_context_id, execution_pdr_id, binding_digest, recorded_at
         FROM work_execution_policy_correlations
         WHERE execution_context_id = ?
     `, executionContextID).Scan(
 		&rec.WorkID,
 		&rec.ExecutionContextID,
 		&rec.ExecutionPDRID,
-		&rec.BindingHMAC,
+		&rec.BindingDigest,
 		&recorded,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
