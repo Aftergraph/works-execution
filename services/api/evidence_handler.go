@@ -50,6 +50,36 @@ type outcomeVerificationProjection struct {
 	VerifiedAt  string `json:"verified_at,omitempty"`
 }
 
+type platformVerificationProjection struct {
+	Status        string `json:"status"`
+	Reason        string `json:"reason,omitempty"`
+	OutcomeStatus string `json:"outcome_status,omitempty"`
+}
+
+func projectPlatformVerification(bundle *evidence.Bundle, outcome outcomeVerificationProjection) *platformVerificationProjection {
+	if bundle == nil || bundle.PlatformVerification == nil {
+		return nil
+	}
+	if bundle.PlatformVerification.Status == "provenance_gap" {
+		return &platformVerificationProjection{
+			Status:        "provenance_gap",
+			Reason:        bundle.PlatformVerification.Reason,
+			OutcomeStatus: outcome.Status,
+		}
+	}
+	if bundle.PlatformVerification.Status != "correlated" {
+		return &platformVerificationProjection{Status: "provenance_gap", Reason: "invalid_platform_correlation"}
+	}
+	switch outcome.Status {
+	case "passed":
+		return &platformVerificationProjection{Status: "verified", OutcomeStatus: outcome.Status}
+	case "failed":
+		return &platformVerificationProjection{Status: "failed", OutcomeStatus: outcome.Status}
+	default:
+		return &platformVerificationProjection{Status: "pending", OutcomeStatus: outcome.Status}
+	}
+}
+
 // workEvidenceHandler implements GET /v1/works/{id}/evidence.
 //
 // It produces an evidence.Bundle from the durable Work state and returns
@@ -137,5 +167,8 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out["outcome_verification"] = ov
+	if pv := projectPlatformVerification(bundle, ov); pv != nil {
+		out["platform_verification"] = pv
+	}
 	writeJSON(w, http.StatusOK, out)
 }
