@@ -12,8 +12,5 @@ work:
         run: >-
           set -eu;
           stage="$(cat /tmp/aftergraph-v21-activation-stage 2>/dev/null || true)";
-          case "$stage" in
-            preflight|works-build) exit 0 ;;
-            *) exit 1 ;;
-          esac
+          test "$stage" = "preflight"
         timeout_s: 30
