@@ -8,14 +8,14 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      stage-v21-credentials:
+      live-service-health:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
-          chmod +x scripts/provision-v21-bridge.sh;
-          if [ "$(id -u)" -eq 0 ]; then
-            PROVISION_RESTART=0 EXPECTED_VDS_HOST=vmi3517816 ./scripts/provision-v21-bridge.sh;
-          else
-            sudo -n env PROVISION_RESTART=0 EXPECTED_VDS_HOST=vmi3517816 ./scripts/provision-v21-bridge.sh;
-          fi
-        timeout_s: 90
+          if [ "$(id -u)" -eq 0 ]; then P=""; else sudo -n true; P="sudo -n"; fi;
+          test "$($P systemctl is-active works-api.service)" = "active";
+          curl -fsS --max-time 2 http://127.0.0.1:18191/healthz >/dev/null;
+          test "$($P systemctl is-active tg-gateway.service)" = "active";
+          curl -fsS --max-time 2 http://127.0.0.1:8800/healthz >/dev/null;
+          echo "live-service-health=PASS"
+        timeout_s: 30
