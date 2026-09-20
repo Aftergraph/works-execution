@@ -59,118 +59,8 @@ type platformVerificationProjection struct {
 	OutcomeStatus string `json:"outcome_status,omitempty"`
 }
 
-var executionContextIDRE = regexp.MustCompile(`^ctx_[a-f0-9]{32}package api
-
-import (
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"net/http"
-	"regexp"
-	"strings"
-	"time"
-
-	"github.com/JonasAbde/works-execution/packages/workgraph"
-	"github.com/JonasAbde/works-execution/services/evidence"
-	"github.com/JonasAbde/works-execution/services/work/store"
-)
-
-// projectOutcomeVerification returns pending only when the lookup yields no
-// record; otherwise it projects the stored verifier record with its
-// provenance. A lookup error fails closed to evidence_failed — a store fault
-// is not a verdict. The lookup is injected (production: Store method value)
-// so the error path stays unit-testable without stubbing the whole Store.
-func projectOutcomeVerification(
-	ctx context.Context,
-	lookup func(context.Context, string) (*store.VerificationVerdict, error),
-	workID string,
-) (outcomeVerificationProjection, error) {
-	v, err := lookup(ctx, workID)
-	if err != nil {
-		return outcomeVerificationProjection{}, err
-	}
-	if v == nil {
-		return outcomeVerificationProjection{Status: "pending"}, nil
-	}
-	return outcomeVerificationProjection{
-		Status:      v.Result,
-		VerifierID:  v.VerifierID,
-		EvidenceRef: v.EvidenceRef,
-		VerifiedAt:  v.VerifiedAt.UTC().Format(time.RFC3339Nano),
-	}, nil
-}
-
-// outcomeVerificationProjection is deliberately separate from the evidence
-// integrity verdicts returned by workgraph.VerifyEvidence. Executor state and
-// hash-valid evidence are inputs to a verifier, not a verifier decision.
-// Until a durable independent verdict exists, the only truthful projection is
-// pending. Optional provenance fields are omitted rather than invented.
-type outcomeVerificationProjection struct {
-	Status      string `json:"status"`
-	VerifierID  string `json:"verifier_id,omitempty"`
-	EvidenceRef string `json:"evidence_ref,omitempty"`
-	VerifiedAt  string `json:"verified_at,omitempty"`
-}
-
-)
-var executionPDRIDRE = regexp.MustCompile(`^pdr_[a-f0-9]{32}package api
-
-import (
-	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"net/http"
-	"regexp"
-	"strings"
-	"time"
-
-	"github.com/JonasAbde/works-execution/packages/workgraph"
-	"github.com/JonasAbde/works-execution/services/evidence"
-	"github.com/JonasAbde/works-execution/services/work/store"
-)
-
-// projectOutcomeVerification returns pending only when the lookup yields no
-// record; otherwise it projects the stored verifier record with its
-// provenance. A lookup error fails closed to evidence_failed — a store fault
-// is not a verdict. The lookup is injected (production: Store method value)
-// so the error path stays unit-testable without stubbing the whole Store.
-func projectOutcomeVerification(
-	ctx context.Context,
-	lookup func(context.Context, string) (*store.VerificationVerdict, error),
-	workID string,
-) (outcomeVerificationProjection, error) {
-	v, err := lookup(ctx, workID)
-	if err != nil {
-		return outcomeVerificationProjection{}, err
-	}
-	if v == nil {
-		return outcomeVerificationProjection{Status: "pending"}, nil
-	}
-	return outcomeVerificationProjection{
-		Status:      v.Result,
-		VerifierID:  v.VerifierID,
-		EvidenceRef: v.EvidenceRef,
-		VerifiedAt:  v.VerifiedAt.UTC().Format(time.RFC3339Nano),
-	}, nil
-}
-
-// outcomeVerificationProjection is deliberately separate from the evidence
-// integrity verdicts returned by workgraph.VerifyEvidence. Executor state and
-// hash-valid evidence are inputs to a verifier, not a verifier decision.
-// Until a durable independent verdict exists, the only truthful projection is
-// pending. Optional provenance fields are omitted rather than invented.
-type outcomeVerificationProjection struct {
-	Status      string `json:"status"`
-	VerifierID  string `json:"verifier_id,omitempty"`
-	EvidenceRef string `json:"evidence_ref,omitempty"`
-	VerifiedAt  string `json:"verified_at,omitempty"`
-}
-
-)
+var executionContextIDRE = regexp.MustCompile("^ctx_[a-f0-9]{32}$")
+var executionPDRIDRE = regexp.MustCompile("^pdr_[a-f0-9]{32}$")
 
 type executionPolicyDecisionRef struct {
 	ExecutionContextID string `json:"execution_context_id"`
@@ -194,6 +84,7 @@ func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid_platform_reference", "canonical execution context and PDR ids required")
 		return
 	}
+
 	ctxRecord, err := s.Store.GetExecutionContext(r.Context(), body.ExecutionContextID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -207,6 +98,7 @@ func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusConflict, "execution_context_work_mismatch", "execution context belongs to another work")
 		return
 	}
+
 	wk, err := s.Store.GetWork(r.Context(), workID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -237,6 +129,7 @@ func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
+
 	ev := workgraph.Evidence{
 		ID:         executionPolicyEvidenceID(workID, body.ExecutionContextID, body.ExecutionPDRID),
 		Type:       "policy",
@@ -267,8 +160,8 @@ func projectPlatformVerification(bundle *evidence.Bundle, outcome outcomeVerific
 	}
 	if bundle.PlatformVerification.Status == "provenance_gap" {
 		return &platformVerificationProjection{
-			Status:        "provenance_gap",
-			Reason:        bundle.PlatformVerification.Reason,
+			Status: "provenance_gap",
+			Reason: bundle.PlatformVerification.Reason,
 			OutcomeStatus: outcome.Status,
 		}
 	}
