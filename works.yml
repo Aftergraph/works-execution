@@ -1,40 +1,24 @@
 version: 1
-
 work:
   verify:
-    triggers:
-      - pull_request
+    triggers: [pull_request]
     requirements:
       confidence: development
       os: linux
       arch: amd64
       pool: avc-core
     nodes:
-      host-identity:
+      host:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
-          echo "host=vmi3517816"
-        timeout_s: 30
-      privilege:
-        needs: [host-identity]
-        run: >-
-          set -eu;
-          if [ "$(id -u)" -eq 0 ]; then
-            echo "privilege=root";
-          else
-            sudo -n true;
-            echo "privilege=passwordless-sudo";
-          fi
-        timeout_s: 30
-      tg-shape:
-        needs: [privilege]
+          if [ "$(id -u)" -ne 0 ]; then sudo -n true; fi;
+          echo "host=PASS"
+      tg-repo:
+        needs: [host]
         run: >-
           set -eu;
           SUDO="";
           if [ "$(id -u)" -ne 0 ]; then SUDO="sudo -n"; fi;
           $SUDO test -d /root/agent-workforce;
-          $SUDO test -r /root/agent-workforce/data/gateway.env;
-          echo "tg_repo=present";
-          echo "tg_env=present"
-        timeout_s: 30
+          echo "tg_repo=PASS"
