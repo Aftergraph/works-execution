@@ -1,11 +1,14 @@
 package evidence_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
+	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
 // Complete != Verified: a successful executor state is not an independent
@@ -95,5 +98,62 @@ func TestEvidenceIntegrityOKDoesNotImplyOutcomeVerified(t *testing.T) {
 	ov, ok := got["outcome_verification"].(map[string]any)
 	if !ok || ov["status"] != "pending" {
 		t.Fatalf("integrity verdict leaked into outcome semantics: %#v", ov)
+	}
+}
+
+
+func TestPlatformVerification_PassedOutcomeStillFailsClosedOnProvenanceGap(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	_ = seedV21Context(t, st, w)
+	if err := st.SaveVerificationVerdict(context.Background(), store.VerificationVerdict{
+		WorkID: w.ID, Result: "passed", VerifierID: "verifier-independent",
+		EvidenceRef: "verdict://passed-gap", VerifiedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveVerificationVerdict: %v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/v1/works/" + w.ID + "/evidence")
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil { t.Fatal(err) }
+
+	ov := got["outcome_verification"].(map[string]any)
+	if ov["status"] != "passed" {
+		t.Fatalf("independent verifier projection changed: %#v", ov)
+	}
+	pv := got["platform_verification"].(map[string]any)
+	if pv["status"] != "provenance_gap" || pv["outcome_status"] != "passed" {
+		t.Fatalf("passed outcome bypassed provenance gate: %#v", pv)
+	}
+}
+
+func TestPlatformVerification_CompleteCorrelationAndPassedOutcomeProjectsVerified(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+	appendExecutionPDR(t, st, w, ctx.ID, "pdr_77777777777777777777777777777777")
+	if err := st.SaveVerificationVerdict(context.Background(), store.VerificationVerdict{
+		WorkID: w.ID, Result: "passed", VerifierID: "verifier-independent",
+		EvidenceRef: "verdict://passed-complete", VerifiedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveVerificationVerdict: %v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/v1/works/" + w.ID + "/evidence")
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil { t.Fatal(err) }
+
+	pv := got["platform_verification"].(map[string]any)
+	if pv["status"] != "verified" || pv["outcome_status"] != "passed" {
+		t.Fatalf("complete V2.1 provenance not projected verified: %#v", pv)
+	}
+	chain := got["identity_chain"].(map[string]any)
+	if chain["execution_context_id"] != ctx.ID ||
+		chain["execution_policy_decision_id"] != "pdr_77777777777777777777777777777777" {
+		t.Fatalf("identity chain incomplete: %#v", chain)
 	}
 }
