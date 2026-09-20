@@ -290,7 +290,7 @@ func (s *Server) workersAuthHandler(w http.ResponseWriter, r *http.Request) {
 //
 //	/v1/works/{id}                       -> GET workItemHandler
 //	/v1/works/{id}/cancel|queue          -> POST workItemHandler
-//	/v1/works/{id}/evidence              -> GET workEvidenceHandler
+//	/v1/works/{id}/evidence              -> GET bundle, POST V2.1 execution-PDR correlation
 //	/v1/works/{id}/provenance            -> GET workProvenanceHandler
 //	/v1/works/{id}/accept                -> POST acceptDispatch (dispatch acceptance seam)
 //	/v1/works/{id}/nodes/{n}/logs        -> GET workLogsHandler
@@ -303,7 +303,11 @@ func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "evidence" {
-		s.workEvidenceHandler(w, r)
+		if r.Method == http.MethodPost {
+			s.requireBearer(http.HandlerFunc(s.workEvidenceHandler)).ServeHTTP(w, r)
+		} else {
+			s.workEvidenceHandler(w, r)
+		}
 		return
 	}
 	if len(parts) == 2 && parts[1] == "provenance" {
