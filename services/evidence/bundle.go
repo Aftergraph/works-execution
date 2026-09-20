@@ -174,6 +174,9 @@ type ProducerConfig struct {
 	KeyID string
 	// HMACKey is the symmetric key used to sign the bundle. Required.
 	HMACKey []byte
+	// PlatformBridgeSecret verifies TG-owned execution-PDR correlation records.
+	// It is verifier input only; it is never serialized into the bundle.
+	PlatformBridgeSecret []byte
 	// Runner describes the executor. Required.
 	Runner Runner
 	// Now overrides time.Now for tests. Defaults to time.Now().UTC().
@@ -325,7 +328,7 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 			"admission_decision_id": platformCtx.AdmissionDecisionID,
 			"trace_id":              platformCtx.TraceID,
 		}
-		executionPDRID := executionPDRForContext(w.Evidence, platformCtx.ID)
+		executionPDRID := executionPDRForContext(w.Evidence, workID, platformCtx.ID, cfg.PlatformBridgeSecret)
 		if executionPDRID == "" {
 			b.IdentityChain = identity
 			b.PlatformVerification = &PlatformVerification{
@@ -387,7 +390,16 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 
 var executionPDRIDPattern = regexp.MustCompile("^pdr_[a-f0-9]{32}$")
 
-func executionPDRForContext(records []workgraph.Evidence, executionContextID string) string {
+func executionPDRBindingMAC(secret []byte, workID, contextID, pdrID string) []byte {
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
+	return mac.Sum(nil)
+}
+
+func executionPDRForContext(records []workgraph.Evidence, workID, executionContextID string, bridgeSecret []byte) string {
+	if len(bridgeSecret) < 32 {
+		return ""
+	}
 	for i := len(records) - 1; i >= 0; i-- {
 		e := records[i]
 		if e.Type != "policy" || e.Result != "pass" || e.Details == nil {
@@ -396,8 +408,16 @@ func executionPDRForContext(records []workgraph.Evidence, executionContextID str
 		kind, _ := e.Details["record_kind"].(string)
 		ctxID, _ := e.Details["execution_context_id"].(string)
 		pdrID, _ := e.Details["execution_pdr_id"].(string)
-		if kind == "execution_policy_decision" && ctxID == executionContextID &&
-			executionPDRIDPattern.MatchString(pdrID) {
+		bindingHex, _ := e.Details["binding_hmac"].(string)
+		if kind != "execution_policy_decision" || ctxID != executionContextID ||
+			!executionPDRIDPattern.MatchString(pdrID) || len(bindingHex) != 64 {
+			continue
+		}
+		got, err := hex.DecodeString(bindingHex)
+		if err != nil {
+			continue
+		}
+		if hmac.Equal(got, executionPDRBindingMAC(bridgeSecret, workID, executionContextID, pdrID)) {
 			return pdrID
 		}
 	}
