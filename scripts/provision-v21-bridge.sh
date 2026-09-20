@@ -5,164 +5,145 @@ umask 077
 EXPECTED_HOST="${EXPECTED_VDS_HOST:-vmi3517816}"
 TG_UNIT="tg-gateway.service"
 WORKS_UNIT="works-api.service"
+SHARED_DIR="${AFTERGRAPH_ENV_DIR:-/etc/aftergraph}"
+SHARED_ENV="${SHARED_DIR}/v21-bridge.env"
+TG_DROPIN="/etc/systemd/system/${TG_UNIT}.d/90-aftergraph-v21-bridge.conf"
+WORKS_DROPIN="/etc/systemd/system/${WORKS_UNIT}.d/90-aftergraph-v21-bridge.conf"
+EVIDENCE_DIR="${EVIDENCE_DIR_OVERRIDE:-/var/lib/aftergraph/ops}"
 TG_BASE="http://127.0.0.1:8800"
 WORKS_BASE="http://127.0.0.1:18191"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-APPLIED=0
+MUTATED=0
 
-short_host="$(hostname -s)"
-if [[ "${short_host}" != "${EXPECTED_HOST}" ]]; then
-  echo "provision: host mismatch (${short_host}); expected ${EXPECTED_HOST}" >&2
+host="$(hostname -s)"
+[[ "${host}" == "${EXPECTED_HOST}" ]] || {
+  echo "provision: host mismatch (${host}); expected ${EXPECTED_HOST}" >&2
   exit 10
-fi
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "provision: must run as root" >&2
-  exit 11
-fi
+}
+[[ "$(id -u)" -eq 0 ]] || { echo "provision: must run as root" >&2; exit 11; }
+
 for unit in "${TG_UNIT}" "${WORKS_UNIT}"; do
   systemctl cat "${unit}" >/dev/null 2>&1 || {
     echo "provision: required unit missing: ${unit}" >&2
     exit 13
   }
 done
-
-unit_envfile() {
-  local raw
-  raw="$(systemctl show "$1" -p EnvironmentFiles --value | head -n1)"
-  raw="${raw#-}"
-  printf '%s' "${raw%% *}"
-}
-
-TG_ENV="${TG_ENV_OVERRIDE:-$(unit_envfile "${TG_UNIT}")}"
-WORKS_ENV="${WORKS_ENV_OVERRIDE:-$(unit_envfile "${WORKS_UNIT}")}"
-EVIDENCE_DIR="${EVIDENCE_DIR_OVERRIDE:-/var/lib/aftergraph/ops}"
-
-for p in "${TG_ENV}" "${WORKS_ENV}"; do
-  [[ -n "${p}" && -f "${p}" && -r "${p}" ]] || {
-    echo "provision: required systemd EnvironmentFile missing/unreadable: ${p:-<unset>}" >&2
-    exit 12
-  }
-done
-
-# Verify the named units are the expected local services without depending on
-# any stale checkout path.
-tg_exec="$(systemctl show "${TG_UNIT}" -p ExecStart --value)"
-works_exec="$(systemctl show "${WORKS_UNIT}" -p ExecStart --value)"
-[[ "${tg_exec}" == *gateway* ]] || { echo "provision: unexpected TG ExecStart" >&2; exit 15; }
-[[ "${works_exec}" == *works-api* ]] || { echo "provision: unexpected WORKS ExecStart" >&2; exit 15; }
-
 command -v openssl >/dev/null || { echo "provision: openssl missing" >&2; exit 14; }
 command -v curl >/dev/null || { echo "provision: curl missing" >&2; exit 14; }
 
 if [[ "${PROVISION_DRY_RUN:-0}" == "1" ]]; then
-  echo "provision: DRY-RUN PASS host=${short_host}"
-  echo "provision: systemd EnvironmentFiles and service identities verified"
+  test -w /etc/systemd/system
+  mkdir -p "${SHARED_DIR}" "${EVIDENCE_DIR}"
+  test -w "${SHARED_DIR}"
+  echo "provision: DRY-RUN PASS host=${host}"
+  echo "provision: dedicated shared env + systemd drop-in boundary is writable"
   exit 0
 fi
 
 read_env() {
   local file="$1" key="$2"
+  [[ -f "${file}" ]] || return 0
   awk -v k="${key}" 'index($0,k"=")==1 { print substr($0,length(k)+2) }' "${file}" | tail -n1
 }
 
-choose_shared() {
-  local key="$1" left="$2" right="$3"
-  if [[ -n "${left}" && ${#left} -lt 32 ]]; then
-    echo "provision: ${key} in TG env is shorter than 32 bytes; refusing silent rotation" >&2
-    exit 20
-  fi
-  if [[ -n "${right}" && ${#right} -lt 32 ]]; then
-    echo "provision: ${key} in WORKS env is shorter than 32 bytes; refusing silent rotation" >&2
-    exit 20
-  fi
-  if [[ -n "${left}" && -n "${right}" && "${left}" != "${right}" ]]; then
-    echo "provision: ${key} differs across TG and WORKS; refusing destructive rotation" >&2
-    exit 21
-  fi
-  if [[ -n "${left}" ]]; then printf '%s' "${left}"; return; fi
-  if [[ -n "${right}" ]]; then printf '%s' "${right}"; return; fi
-  openssl rand -hex 32
-}
+existing_token="$(read_env "${SHARED_ENV}" WORKS_API_TOKEN)"
+existing_bridge="$(read_env "${SHARED_ENV}" WORKS_PLATFORM_BRIDGE_SECRET)"
+if [[ -n "${existing_token}" && ${#existing_token} -lt 32 ]]; then
+  echo "provision: existing WORKS_API_TOKEN is shorter than 32 bytes; refusing silent rotation" >&2
+  exit 20
+fi
+if [[ -n "${existing_bridge}" && ${#existing_bridge} -lt 32 ]]; then
+  echo "provision: existing WORKS_PLATFORM_BRIDGE_SECRET is shorter than 32 bytes; refusing silent rotation" >&2
+  exit 20
+fi
 
-upsert_env() {
-  local file="$1" key="$2" value="$3" tmp uid gid
-  tmp="$(mktemp "${file}.tmp.XXXXXX")"
-  uid="$(stat -c '%u' "${file}")"
-  gid="$(stat -c '%g' "${file}")"
-  awk -v k="${key}" 'index($0,k"=")!=1 { print }' "${file}" >"${tmp}"
-  printf '%s=%s\n' "${key}" "${value}" >>"${tmp}"
-  chown "${uid}:${gid}" "${tmp}"
-  chmod 600 "${tmp}"
-  mv -f "${tmp}" "${file}"
-}
+platform_token="${existing_token:-$(openssl rand -hex 32)}"
+bridge_secret="${existing_bridge:-$(openssl rand -hex 32)}"
 
-TG_BACKUP="${TG_ENV}.bak.${STAMP}"
-WORKS_BACKUP="${WORKS_ENV}.bak.${STAMP}"
-cp -a "${TG_ENV}" "${TG_BACKUP}"
-cp -a "${WORKS_ENV}" "${WORKS_BACKUP}"
+mkdir -p "${SHARED_DIR}" "$(dirname "${TG_DROPIN}")" "$(dirname "${WORKS_DROPIN}")" "${EVIDENCE_DIR}"
+
+ENV_BACKUP=""
+TG_BACKUP=""
+WORKS_BACKUP=""
+[[ -f "${SHARED_ENV}" ]] && { ENV_BACKUP="${SHARED_ENV}.bak.${STAMP}"; cp -a "${SHARED_ENV}" "${ENV_BACKUP}"; }
+[[ -f "${TG_DROPIN}" ]] && { TG_BACKUP="${TG_DROPIN}.bak.${STAMP}"; cp -a "${TG_DROPIN}" "${TG_BACKUP}"; }
+[[ -f "${WORKS_DROPIN}" ]] && { WORKS_BACKUP="${WORKS_DROPIN}.bak.${STAMP}"; cp -a "${WORKS_DROPIN}" "${WORKS_BACKUP}"; }
 
 rollback() {
   local rc="$?"
-  if [[ "${APPLIED}" -eq 1 ]]; then
-    echo "provision: failure after mutation; restoring env backups" >&2
-    cp -a "${TG_BACKUP}" "${TG_ENV}" || true
-    cp -a "${WORKS_BACKUP}" "${WORKS_ENV}" || true
-    systemctl restart "${WORKS_UNIT}" >/dev/null 2>&1 || true
-    systemctl restart "${TG_UNIT}" >/dev/null 2>&1 || true
+  if [[ "${MUTATED}" -eq 1 ]]; then
+    if [[ -n "${ENV_BACKUP}" ]]; then cp -a "${ENV_BACKUP}" "${SHARED_ENV}"; else rm -f "${SHARED_ENV}"; fi
+    if [[ -n "${TG_BACKUP}" ]]; then cp -a "${TG_BACKUP}" "${TG_DROPIN}"; else rm -f "${TG_DROPIN}"; fi
+    if [[ -n "${WORKS_BACKUP}" ]]; then cp -a "${WORKS_BACKUP}" "${WORKS_DROPIN}"; else rm -f "${WORKS_DROPIN}"; fi
+    systemctl daemon-reload || true
   fi
   exit "${rc}"
 }
 trap rollback ERR
 
-tg_token="$(read_env "${TG_ENV}" WORKS_API_TOKEN)"
-works_token="$(read_env "${WORKS_ENV}" WORKS_API_TOKEN)"
-tg_bridge="$(read_env "${TG_ENV}" WORKS_PLATFORM_BRIDGE_SECRET)"
-works_bridge="$(read_env "${WORKS_ENV}" WORKS_PLATFORM_BRIDGE_SECRET)"
+tmp="$(mktemp "${SHARED_DIR}/v21-bridge.env.tmp.XXXXXX")"
+cat >"${tmp}" <<EOF
+WORKS_API_URL=${WORKS_BASE}
+WORKS_API_TOKEN=${platform_token}
+WORKS_PLATFORM_BRIDGE_SECRET=${bridge_secret}
+EOF
+chmod 600 "${tmp}"
+chown root:root "${tmp}"
+mv -f "${tmp}" "${SHARED_ENV}"
 
-platform_token="$(choose_shared WORKS_API_TOKEN "${tg_token}" "${works_token}")"
-bridge_secret="$(choose_shared WORKS_PLATFORM_BRIDGE_SECRET "${tg_bridge}" "${works_bridge}")"
+dropin_tmp="$(mktemp)"
+cat >"${dropin_tmp}" <<EOF
+[Service]
+EnvironmentFile=${SHARED_ENV}
+EOF
+chmod 644 "${dropin_tmp}"
+cp -f "${dropin_tmp}" "${TG_DROPIN}"
+cp -f "${dropin_tmp}" "${WORKS_DROPIN}"
+rm -f "${dropin_tmp}"
+MUTATED=1
 
-upsert_env "${WORKS_ENV}" WORKS_API_TOKEN "${platform_token}"
-upsert_env "${WORKS_ENV}" WORKS_PLATFORM_BRIDGE_SECRET "${bridge_secret}"
-upsert_env "${TG_ENV}" WORKS_API_URL "${WORKS_BASE}"
-upsert_env "${TG_ENV}" WORKS_API_TOKEN "${platform_token}"
-upsert_env "${TG_ENV}" WORKS_PLATFORM_BRIDGE_SECRET "${bridge_secret}"
-APPLIED=1
+systemctl daemon-reload
 
-systemctl restart "${WORKS_UNIT}"
-for _ in $(seq 1 20); do
-  curl -fsS --max-time 2 "${WORKS_BASE}/healthz" >/dev/null 2>&1 && break
-  sleep 1
-done
-curl -fsS --max-time 2 "${WORKS_BASE}/healthz" >/dev/null
+# Verify systemd sees the dedicated file without printing environment values.
+systemctl cat "${TG_UNIT}" | grep -Fq "EnvironmentFile=${SHARED_ENV}"
+systemctl cat "${WORKS_UNIT}" | grep -Fq "EnvironmentFile=${SHARED_ENV}"
 
-systemctl restart "${TG_UNIT}"
-for _ in $(seq 1 20); do
-  curl -fsS --max-time 2 "${TG_BASE}/healthz" >/dev/null 2>&1 && break
-  sleep 1
-done
-curl -fsS --max-time 2 "${TG_BASE}/healthz" >/dev/null
+if [[ "${PROVISION_RESTART:-0}" == "1" ]]; then
+  systemctl restart "${WORKS_UNIT}"
+  for _ in $(seq 1 20); do
+    curl -fsS --max-time 2 "${WORKS_BASE}/healthz" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  curl -fsS --max-time 2 "${WORKS_BASE}/healthz" >/dev/null
 
-mkdir -p "${EVIDENCE_DIR}"
+  systemctl restart "${TG_UNIT}"
+  for _ in $(seq 1 20); do
+    curl -fsS --max-time 2 "${TG_BASE}/healthz" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  curl -fsS --max-time 2 "${TG_BASE}/healthz" >/dev/null
+fi
+
 token_fp="$(printf '%s' "${platform_token}" | sha256sum | awk '{print substr($1,1,16)}')"
 bridge_fp="$(printf '%s' "${bridge_secret}" | sha256sum | awk '{print substr($1,1,16)}')"
 cat >"${EVIDENCE_DIR}/v21-bridge-provision.json" <<EOF
 {
   "schema": "aftergraph.v21.bridge-provision/1.0",
-  "host": "${short_host}",
+  "host": "${host}",
   "provisioned_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "shared_environment_file": "${SHARED_ENV}",
   "works_api_url": "${WORKS_BASE}",
   "platform_token_sha256_prefix": "${token_fp}",
   "bridge_secret_sha256_prefix": "${bridge_fp}",
-  "works_health": "pass",
-  "trust_gateway_health": "pass",
+  "systemd_dropins": "pass",
+  "services_restarted": "${PROVISION_RESTART:-0}",
   "secrets_exposed": false
 }
 EOF
 chmod 600 "${EVIDENCE_DIR}/v21-bridge-provision.json"
-APPLIED=0
-trap - ERR
 
-echo "provision: PASS host=${short_host} works=:18191 tg=:8800"
-echo "provision: credentials synchronized without printing secret material"
+MUTATED=0
+trap - ERR
+echo "provision: PASS host=${host} shared-env=${SHARED_ENV}"
+echo "provision: credentials staged without printing secret material"
 echo "provision: evidence=${EVIDENCE_DIR}/v21-bridge-provision.json"
