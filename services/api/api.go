@@ -139,6 +139,10 @@ type Server struct {
 	// VerifierToken authenticates Sentinel-owned semantic verification ingest.
 	// It is distinct from worker enrollment bearer tokens and must be at least 32 bytes.
 	VerifierToken []byte
+	// PlatformAPIToken authenticates server-to-server platform bridge calls
+	// such as TG execution-PDR correlation. It is intentionally distinct from
+	// worker enrollment JWTs and must be at least 32 bytes when configured.
+	PlatformAPIToken []byte
 	// publisherWG tracks in-flight publish goroutines fired by
 	// maybePublishOnTerminal (k-068). Zero value = unbounded
 	// fire-and-forget, identical to pre-k-068 behavior for any Server
@@ -303,11 +307,11 @@ func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "evidence" {
-		if r.Method == http.MethodPost {
-			s.requireBearer(http.HandlerFunc(s.workEvidenceHandler)).ServeHTTP(w, r)
-		} else {
-			s.workEvidenceHandler(w, r)
-		}
+		// GET stays the existing read surface. POST is a platform-to-platform
+		// correlation write and authenticates with the dedicated static
+		// PlatformAPIToken inside the handler; worker enrollment JWTs are not
+		// accepted as a substitute.
+		s.workEvidenceHandler(w, r)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "provenance" {
