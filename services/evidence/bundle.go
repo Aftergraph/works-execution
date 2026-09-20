@@ -174,8 +174,10 @@ type ProducerConfig struct {
 	KeyID string
 	// HMACKey is the symmetric key used to sign the bundle. Required.
 	HMACKey []byte
-	// PlatformBridgeSecret verifies TG-owned execution-PDR correlation records.
-	// It is verifier input only; it is never serialized into the bundle.
+	// PlatformBridgeSecret is retained for N-1 configuration compatibility.
+	// Platform-only correlations no longer derive integrity from this rotatable
+	// transport secret; authority comes from the authenticated write boundary
+	// and the durable platform-owned correlation row.
 	PlatformBridgeSecret []byte
 	// Runner describes the executor. Required.
 	Runner Runner
@@ -328,7 +330,7 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 			"admission_decision_id": platformCtx.AdmissionDecisionID,
 			"trace_id":              platformCtx.TraceID,
 		}
-		executionPDRID, corrErr := executionPDRForContext(ctx, st, workID, platformCtx.ID, cfg.PlatformBridgeSecret)
+		executionPDRID, corrErr := executionPDRForContext(ctx, st, workID, platformCtx.ID)
 		if corrErr != nil {
 			return nil, fmt.Errorf("evidence: load execution policy correlation: %w", corrErr)
 		}
@@ -393,21 +395,16 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 
 var executionPDRIDPattern = regexp.MustCompile("^pdr_[a-f0-9]{32}$")
 
-func executionPDRBindingMAC(secret []byte, workID, contextID, pdrID string) []byte {
-	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
-	return mac.Sum(nil)
+func executionPDRBindingDigest(workID, contextID, pdrID string) string {
+	sum := sha256.Sum256([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
+	return hex.EncodeToString(sum[:])
 }
 
 func executionPDRForContext(
 	ctx context.Context,
 	st store.Store,
 	workID, executionContextID string,
-	bridgeSecret []byte,
 ) (string, error) {
-	if len(bridgeSecret) < 32 {
-		return "", nil
-	}
 	type correlationReader interface {
 		GetExecutionPolicyCorrelation(context.Context, string) (*store.ExecutionPolicyCorrelation, error)
 	}
@@ -423,19 +420,7 @@ func executionPDRForContext(
 		rec.WorkID != workID ||
 		rec.ExecutionContextID != executionContextID ||
 		!executionPDRIDPattern.MatchString(rec.ExecutionPDRID) ||
-		len(rec.BindingHMAC) != 64 {
-		return "", nil
-	}
-	got, err := hex.DecodeString(rec.BindingHMAC)
-	if err != nil {
-		return "", nil
-	}
-	if !hmac.Equal(got, executionPDRBindingMAC(
-		bridgeSecret,
-		workID,
-		executionContextID,
-		rec.ExecutionPDRID,
-	)) {
+		rec.BindingDigest != executionPDRBindingDigest(workID, executionContextID, rec.ExecutionPDRID) {
 		return "", nil
 	}
 	return rec.ExecutionPDRID, nil
