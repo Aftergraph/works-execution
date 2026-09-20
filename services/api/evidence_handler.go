@@ -69,11 +69,6 @@ type executionPolicyDecisionRef struct {
 	ExecutionPDRID     string `json:"execution_pdr_id"`
 }
 
-func executionPolicyEvidenceID(workID, contextID, pdrID string) string {
-	sum := sha256.Sum256([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
-	return "evd_" + hex.EncodeToString(sum[:])[:32]
-}
-
 func executionPolicyBindingMAC(secret, workID, contextID, pdrID string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
@@ -120,74 +115,58 @@ func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	ctxRecord, err := s.Store.GetExecutionContext(r.Context(), body.ExecutionContextID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "execution_context_not_found", body.ExecutionContextID)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "execution_context_lookup_failed", err.Error())
-		return
+	type correlationRecorder interface {
+		RecordExecutionPolicyCorrelation(
+			context.Context,
+			store.ExecutionPolicyCorrelation,
+		) (*store.ExecutionPolicyCorrelation, bool, error)
 	}
-	if ctxRecord.WorkID != workID {
-		writeError(w, http.StatusConflict, "execution_context_work_mismatch", "execution context belongs to another work")
+	recorder, ok := s.Store.(correlationRecorder)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "platform_correlation_unavailable", "store does not support platform correlation")
 		return
 	}
 
-	wk, err := s.Store.GetWork(r.Context(), workID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", workID)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "work_lookup_failed", err.Error())
-		return
-	}
-	for _, ev := range wk.Evidence {
-		if ev.Type != "policy" || ev.Details == nil {
-			continue
-		}
-		kind, _ := ev.Details["record_kind"].(string)
-		ctxID, _ := ev.Details["execution_context_id"].(string)
-		pdrID, _ := ev.Details["execution_pdr_id"].(string)
-		if kind == "execution_policy_decision" && ctxID == body.ExecutionContextID {
-			if pdrID != body.ExecutionPDRID {
-				writeError(w, http.StatusConflict, "execution_pdr_conflict", "execution context already correlated to another PDR")
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status": "already_recorded",
-				"evidence_id": ev.ID,
-				"execution_context_id": body.ExecutionContextID,
-				"execution_pdr_id": body.ExecutionPDRID,
-			})
-			return
-		}
-	}
-
-	ev := workgraph.Evidence{
-		ID:         executionPolicyEvidenceID(workID, body.ExecutionContextID, body.ExecutionPDRID),
-		Type:       "policy",
-		Result:     "pass",
-		RecordedAt: time.Now().UTC(),
-		Signer:     "trust-gateway",
-		Details: map[string]any{
-			"record_kind":          "execution_policy_decision",
-			"execution_context_id": body.ExecutionContextID,
-			"execution_pdr_id":     body.ExecutionPDRID,
-			"binding_hmac":         executionPolicyBindingMAC(bridgeSecret, workID, body.ExecutionContextID, body.ExecutionPDRID),
+	correlation, replayed, err := recorder.RecordExecutionPolicyCorrelation(
+		r.Context(),
+		store.ExecutionPolicyCorrelation{
+			WorkID:             workID,
+			ExecutionContextID: body.ExecutionContextID,
+			ExecutionPDRID:     body.ExecutionPDRID,
+			BindingHMAC: executionPolicyBindingMAC(
+				bridgeSecret,
+				workID,
+				body.ExecutionContextID,
+				body.ExecutionPDRID,
+			),
 		},
-	}
-	if _, err := s.Store.AppendEvidence(r.Context(), workID, ev); err != nil {
-		writeError(w, http.StatusInternalServerError, "evidence_record_failed", err.Error())
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "execution_context_not_found", body.ExecutionContextID)
+		case errors.Is(err, store.ErrExecutionPolicyContextMismatch):
+			writeError(w, http.StatusConflict, "execution_context_work_mismatch", "execution context belongs to another work")
+		case errors.Is(err, store.ErrExecutionPolicyCorrelationConflict):
+			writeError(w, http.StatusConflict, "execution_pdr_conflict", "execution context already correlated to another PDR")
+		default:
+			writeError(w, http.StatusInternalServerError, "platform_correlation_failed", err.Error())
+		}
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"status": "recorded",
-		"evidence_id": ev.ID,
-		"execution_context_id": body.ExecutionContextID,
-		"execution_pdr_id": body.ExecutionPDRID,
+
+	status := "recorded"
+	httpStatus := http.StatusCreated
+	if replayed {
+		status = "already_recorded"
+		httpStatus = http.StatusOK
+	}
+	writeJSON(w, httpStatus, map[string]any{
+		"status":               status,
+		"execution_context_id": correlation.ExecutionContextID,
+		"execution_pdr_id":     correlation.ExecutionPDRID,
 	})
+
 }
 
 func projectPlatformVerification(bundle *evidence.Bundle, outcome outcomeVerificationProjection) *platformVerificationProjection {
