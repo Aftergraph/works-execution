@@ -81,6 +81,22 @@ func executionPolicyBindingMAC(secret, workID, contextID, pdrID string) string {
 }
 
 func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Request, workID string) {
+	if len(s.PlatformAPIToken) < 32 {
+		writeError(w, http.StatusServiceUnavailable, "platform_auth_unavailable", "platform API token not configured")
+		return
+	}
+	const bearerPrefix = "Bearer "
+	authz := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authz, bearerPrefix) {
+		writeError(w, http.StatusUnauthorized, "platform_auth_required", "platform Bearer token required")
+		return
+	}
+	gotToken := strings.TrimSpace(authz[len(bearerPrefix):])
+	if gotToken == "" || subtle.ConstantTimeCompare([]byte(gotToken), s.PlatformAPIToken) != 1 {
+		writeError(w, http.StatusUnauthorized, "platform_auth_failed", "invalid platform Bearer token")
+		return
+	}
+
 	bridgeSecret := bridgeSecretFromEnv()
 	if !BridgeSecretConfigured(bridgeSecret) {
 		writeError(w, http.StatusServiceUnavailable, "bridge_unavailable", "platform bridge not configured")
