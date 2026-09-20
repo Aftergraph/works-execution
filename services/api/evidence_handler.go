@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -69,10 +68,9 @@ type executionPolicyDecisionRef struct {
 	ExecutionPDRID     string `json:"execution_pdr_id"`
 }
 
-func executionPolicyBindingMAC(secret, workID, contextID, pdrID string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
-	return hex.EncodeToString(mac.Sum(nil))
+func executionPolicyBindingDigest(workID, contextID, pdrID string) string {
+	sum := sha256.Sum256([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Request, workID string) {
@@ -133,8 +131,7 @@ func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Re
 			WorkID:             workID,
 			ExecutionContextID: body.ExecutionContextID,
 			ExecutionPDRID:     body.ExecutionPDRID,
-			BindingHMAC: executionPolicyBindingMAC(
-				bridgeSecret,
+			BindingDigest: executionPolicyBindingDigest(
 				workID,
 				body.ExecutionContextID,
 				body.ExecutionPDRID,
