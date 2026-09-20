@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -429,6 +430,52 @@ func newTestAPIServer(t *testing.T) (*api.Server, *httptest.Server, store.Store)
 	ts := httptest.NewServer(srv.Routes())
 	t.Cleanup(ts.Close)
 	return srv, ts, st
+}
+
+
+
+func postExecutionPDR(t *testing.T, base, workID, contextID, pdrID string) (int, map[string]any) {
+	t.Helper()
+	body := strings.NewReader(fmt.Sprintf(`{"execution_context_id":%q,"execution_pdr_id":%q}`, contextID, pdrID))
+	resp, err := http.Post(base+"/v1/works/"+workID+"/evidence", "application/json", body)
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
+}
+
+func TestExecutionPDRCorrelationIngest_IdempotentAndConflictSafe(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	status, first := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, "pdr_77777777777777777777777777777777")
+	if status != http.StatusCreated { t.Fatalf("first status=%d body=%#v", status, first) }
+	status, replay := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, "pdr_77777777777777777777777777777777")
+	if status != http.StatusOK || replay["status"] != "already_recorded" {
+		t.Fatalf("replay status=%d body=%#v", status, replay)
+	}
+	if first["evidence_id"] != replay["evidence_id"] {
+		t.Fatalf("idempotent replay changed evidence id: %#v %#v", first, replay)
+	}
+
+	status, conflict := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, "pdr_88888888888888888888888888888888")
+	if status != http.StatusConflict || conflict["error"] != "execution_pdr_conflict" {
+		t.Fatalf("conflict status=%d body=%#v", status, conflict)
+	}
+}
+
+func TestExecutionPDRCorrelationIngest_RejectsForeignContext(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w1 := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	w2 := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w1)
+
+	status, out := postExecutionPDR(t, ts.URL, w2.ID, ctx.ID, "pdr_77777777777777777777777777777777")
+	if status != http.StatusConflict || out["error"] != "execution_context_work_mismatch" {
+		t.Fatalf("foreign context status=%d body=%#v", status, out)
+	}
 }
 
 func TestEvidenceEndpoint_GET_Succeeded(t *testing.T) {
