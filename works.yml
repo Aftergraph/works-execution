@@ -1,7 +1,7 @@
 version: 1
 
 work:
-  sentinel-root-authority-diagnostic:
+  sentinel-production-activation:
     triggers:
       - push
 
@@ -12,22 +12,17 @@ work:
       pool: avc-core
 
     nodes:
-      diagnostic:
+      activate:
         run: |
-          set +e
-          echo "hostname=$(hostname -s)"
-          echo "uid=$(id -u)"
-          echo "user=$(id -un)"
-          if test -x scripts/ops/works-verifier-credential.sh; then echo "helper=present"; else echo "helper=missing"; fi
-          echo "pwd=$(pwd)"
-          printf "works_service="
-          systemctl is-active works-api.service 2>&1
-          printf "works_health_http="
-          curl -sS -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:18191/healthz 2>&1
-          echo
-          echo "helper_status_begin"
-          bash scripts/ops/works-verifier-credential.sh status 2>&1
-          echo "helper_status_rc=$?"
-          echo "helper_status_end"
-          exit 42
-        timeout_s: 120
+          set -euo pipefail
+          test "$(hostname -s)" = "vmi3517816"
+          test "$(id -u)" = "0"
+          activation_sha="528fcc96761da8112e7e7b4bbe536a13943603d9"
+          d="$(mktemp -d /tmp/sentinel-activation-work.XXXXXX)"
+          cleanup() { rm -rf -- "$d"; }
+          trap cleanup EXIT
+          git clone -q https://github.com/Aftergraph/sentinel.git "$d"
+          git -C "$d" checkout -q --detach "$activation_sha"
+          test "$(git -C "$d" rev-parse HEAD)" = "$activation_sha"
+          bash "$d/scripts/ops/activate-production-simplification-verifier.sh"
+        timeout_s: 1200
