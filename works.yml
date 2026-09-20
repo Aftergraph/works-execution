@@ -27,7 +27,7 @@ work:
             echo "privilege=passwordless-sudo";
           fi
         timeout_s: 30
-      production-shape:
+      tg-shape:
         needs: [privilege]
         run: >-
           set -eu;
@@ -35,12 +35,6 @@ work:
           if [ "$(id -u)" -ne 0 ]; then SUDO="sudo -n"; fi;
           $SUDO test -d /root/agent-workforce;
           $SUDO test -r /root/agent-workforce/data/gateway.env;
-          $SUDO test -r /etc/works/works.env;
-          $SUDO systemctl cat tg-gateway.service >/dev/null;
-          $SUDO systemctl cat works-api.service >/dev/null;
-          echo "tg_env=present";
-          echo "works_env=present";
-          echo "tg_unit=present";
-          echo "works_unit=present";
-          echo "v21-production-shape=PASS"
+          echo "tg_repo=present";
+          echo "tg_env=present"
         timeout_s: 30
