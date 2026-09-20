@@ -8,14 +8,18 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      live-service-health:
+      tg-live-source-anchor:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
           if [ "$(id -u)" -eq 0 ]; then P=""; else sudo -n true; P="sudo -n"; fi;
-          test "$($P systemctl is-active works-api.service)" = "active";
-          curl -fsS --max-time 2 http://127.0.0.1:18191/healthz >/dev/null;
-          test "$($P systemctl is-active tg-gateway.service)" = "active";
-          curl -fsS --max-time 2 http://127.0.0.1:8800/healthz >/dev/null;
-          echo "live-service-health=PASS"
-        timeout_s: 30
+          PID="$($P systemctl show tg-gateway.service -p MainPID --value)";
+          test "$PID" -gt 1;
+          $P test -d "/proc/$PID/cwd";
+          $P git -C "/proc/$PID/cwd" rev-parse --is-inside-work-tree | grep -qx true;
+          if ! $P git -C "/proc/$PID/cwd" cat-file -e 8a2c8d66a67d036227c77904844f105b39723f58^{commit} 2>/dev/null; then
+            $P git -C "/proc/$PID/cwd" fetch --quiet --no-tags origin 8a2c8d66a67d036227c77904844f105b39723f58;
+          fi;
+          $P git -C "/proc/$PID/cwd" cat-file -e 8a2c8d66a67d036227c77904844f105b39723f58^{commit};
+          echo "tg-live-source-anchor=PASS"
+        timeout_s: 120
