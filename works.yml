@@ -8,14 +8,15 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      provision-dry-run:
+      tg-runtime-source:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
-          chmod +x scripts/provision-v21-bridge.sh;
-          if [ "$(id -u)" -eq 0 ]; then
-            PROVISION_DRY_RUN=1 EXPECTED_VDS_HOST=vmi3517816 ./scripts/provision-v21-bridge.sh;
-          else
-            sudo -n env PROVISION_DRY_RUN=1 EXPECTED_VDS_HOST=vmi3517816 ./scripts/provision-v21-bridge.sh;
-          fi
-        timeout_s: 60
+          if [ "$(id -u)" -eq 0 ]; then P=""; else sudo -n true; P="sudo -n"; fi;
+          WD="$($P systemctl show tg-gateway.service -p WorkingDirectory --value | head -n1)";
+          test -n "$WD";
+          $P test -d "$WD";
+          REMOTE="$($P git -C "$WD" remote get-url origin)";
+          printf '%s' "$REMOTE" | grep -Eq '^(https://github.com/Aftergraph/trust-gateway.git|git@github.com:Aftergraph/trust-gateway.git)$';
+          echo "tg-runtime-source=PASS"
+        timeout_s: 30
