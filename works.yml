@@ -8,12 +8,13 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      tg-process-git-metadata:
+      tg-origin-canonical:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
           if [ "$(id -u)" -eq 0 ]; then P=""; else sudo -n true; P="sudo -n"; fi;
           PID="$($P systemctl show tg-gateway.service -p MainPID --value)";
-          $P test -e "/proc/$PID/cwd/.git";
-          echo "tg-process-git-metadata=PASS"
+          URL="$($P git -C "/proc/$PID/cwd" remote get-url origin)";
+          printf '%s' "$URL" | grep -Eq '^(https://github.com/Aftergraph/trust-gateway.git|git@github.com:Aftergraph/trust-gateway.git)$';
+          echo "tg-origin-canonical=PASS"
         timeout_s: 30
