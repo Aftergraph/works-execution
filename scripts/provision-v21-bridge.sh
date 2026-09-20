@@ -3,12 +3,10 @@ set -euo pipefail
 umask 077
 
 EXPECTED_HOST="${EXPECTED_VDS_HOST:-vmi3517816}"
-TG_REPO="/root/agent-workforce"
-TG_ENV="${TG_REPO}/data/gateway.env"
-WORKS_ENV="/etc/works/works.env"
+TG_UNIT="tg-gateway.service"
+WORKS_UNIT="works-api.service"
 TG_BASE="http://127.0.0.1:8800"
 WORKS_BASE="http://127.0.0.1:18191"
-EVIDENCE_DIR="${TG_REPO}/data/ops"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 APPLIED=0
 
@@ -21,17 +19,50 @@ if [[ "$(id -u)" -ne 0 ]]; then
   echo "provision: must run as root" >&2
   exit 11
 fi
-for p in "${TG_REPO}" "${TG_ENV}" "${WORKS_ENV}"; do
-  [[ -e "${p}" ]] || { echo "provision: required path missing: ${p}" >&2; exit 12; }
-done
-for unit in tg-gateway.service works-api.service; do
+for unit in "${TG_UNIT}" "${WORKS_UNIT}"; do
   systemctl cat "${unit}" >/dev/null 2>&1 || {
     echo "provision: required unit missing: ${unit}" >&2
     exit 13
   }
 done
+
+unit_workdir() {
+  systemctl show "$1" -p WorkingDirectory --value | head -n1
+}
+
+unit_envfile() {
+  local raw
+  raw="$(systemctl show "$1" -p EnvironmentFiles --value | head -n1)"
+  raw="${raw#-}"
+  printf '%s' "${raw%% *}"
+}
+
+TG_REPO="${TG_REPO_OVERRIDE:-$(unit_workdir "${TG_UNIT}")}"
+TG_ENV="${TG_ENV_OVERRIDE:-$(unit_envfile "${TG_UNIT}")}"
+WORKS_ENV="${WORKS_ENV_OVERRIDE:-$(unit_envfile "${WORKS_UNIT}")}"
+EVIDENCE_DIR="${TG_REPO}/data/ops"
+
+for p in "${TG_REPO}" "${TG_ENV}" "${WORKS_ENV}"; do
+  [[ -e "${p}" ]] || { echo "provision: required runtime path missing: ${p}" >&2; exit 12; }
+done
+
+remote="$(git -C "${TG_REPO}" remote get-url origin 2>/dev/null || true)"
+case "${remote}" in
+  https://github.com/Aftergraph/trust-gateway.git|git@github.com:Aftergraph/trust-gateway.git) ;;
+  *)
+    echo "provision: TG WorkingDirectory is not canonical Aftergraph/trust-gateway (origin=${remote:-missing})" >&2
+    exit 15
+    ;;
+esac
+
 command -v openssl >/dev/null || { echo "provision: openssl missing" >&2; exit 14; }
 command -v curl >/dev/null || { echo "provision: curl missing" >&2; exit 14; }
+
+if [[ "${PROVISION_DRY_RUN:-0}" == "1" ]]; then
+  echo "provision: DRY-RUN PASS host=${short_host}"
+  echo "provision: systemd-derived paths and canonical TG remote verified"
+  exit 0
+fi
 
 read_env() {
   local file="$1" key="$2"
@@ -80,8 +111,8 @@ rollback() {
     echo "provision: failure after mutation; restoring env backups" >&2
     cp -a "${TG_BACKUP}" "${TG_ENV}" || true
     cp -a "${WORKS_BACKUP}" "${WORKS_ENV}" || true
-    systemctl restart works-api.service >/dev/null 2>&1 || true
-    systemctl restart tg-gateway.service >/dev/null 2>&1 || true
+    systemctl restart "${WORKS_UNIT}" >/dev/null 2>&1 || true
+    systemctl restart "${TG_UNIT}" >/dev/null 2>&1 || true
   fi
   exit "${rc}"
 }
@@ -102,14 +133,14 @@ upsert_env "${TG_ENV}" WORKS_API_TOKEN "${platform_token}"
 upsert_env "${TG_ENV}" WORKS_PLATFORM_BRIDGE_SECRET "${bridge_secret}"
 APPLIED=1
 
-systemctl restart works-api.service
+systemctl restart "${WORKS_UNIT}"
 for _ in $(seq 1 20); do
   curl -fsS --max-time 2 "${WORKS_BASE}/healthz" >/dev/null 2>&1 && break
   sleep 1
 done
 curl -fsS --max-time 2 "${WORKS_BASE}/healthz" >/dev/null
 
-systemctl restart tg-gateway.service
+systemctl restart "${TG_UNIT}"
 for _ in $(seq 1 20); do
   curl -fsS --max-time 2 "${TG_BASE}/healthz" >/dev/null 2>&1 && break
   sleep 1
