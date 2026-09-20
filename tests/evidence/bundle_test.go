@@ -70,7 +70,7 @@ func seedTerminalWork(t *testing.T, st store.Store, result workgraph.State) *wor
 	if _, err := st.UpdateState(ctx, w.ID, workgraph.StateQueued); err != nil {
 		t.Fatalf("UpdateState QUEUED: %v", err)
 	}
-	lease, _, err := st.GrantLease(ctx, w.ID, "a", "worker-1", 5*time.Second)
+	lease, _, err := st.GrantLease(ctx, w.ID, "a", "wrkr_11111111111111111111111111111111", 5*time.Second)
 	if err != nil {
 		t.Fatalf("GrantLease: %v", err)
 	}
@@ -558,9 +558,14 @@ func TestEvidenceEndpoint_409_NotTerminal(t *testing.T) {
 	}
 }
 
-func TestEvidenceEndpoint_405_PostNotAllowed(t *testing.T) {
+func TestEvidenceEndpoint_405_UnsupportedMethod(t *testing.T) {
 	_, ts, _ := newTestAPIServer(t)
-	resp, err := http.Post(ts.URL+"/v1/works/wrk_x/evidence", "application/json", strings.NewReader("{}"))
+	req, err := http.NewRequest(http.MethodPut, ts.URL+"/v1/works/wrk_x/evidence", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
