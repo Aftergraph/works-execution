@@ -10,7 +10,7 @@ import (
 
 func activationScriptPath(t *testing.T) string {
 	t.Helper()
-	p := filepath.Clean(filepath.Join("..", "..", "scripts", "ops", "enable-sentinel-verifier-credential.sh"))
+	p := filepath.Clean(filepath.Join("..", "..", "scripts", "ops", "works-verifier-credential.sh"))
 	if _, err := os.Stat(p); err != nil {
 		t.Fatalf("activation helper missing: %v", err)
 	}
@@ -34,16 +34,17 @@ func TestSentinelVerifierActivationSafetyContract(t *testing.T) {
 
 	required := []string{
 		`[[ "${EUID:-$(id -u)}" -eq 0 ]]`,
-		`ENV_FILE="${WORKS_ENV_FILE:-/etc/works/works.env}"`,
-		`SERVICE="${WORKS_SERVICE:-works-api.service}"`,
-		`WORKS_URL="${WORKS_URL:-http://127.0.0.1:18191}"`,
+		`ENV_FILE=/etc/works/works.env`,
+		`SERVICE=works-api.service`,
+		`BASE_URL=http://127.0.0.1:18191`,
 		`[[ -f "$ENV_FILE" && ! -L "$ENV_FILE" ]]`,
 		`[[ "$(stat -c '%u:%g' "$ENV_FILE")" == "0:0" ]]`,
-		`BACKUP="$(mktemp /run/works.env.before-verifier.XXXXXX)"`,
+		`canonical_env_file_redirected`,
+		`backup="$(mktemp /run/works.env.before-verifier.XXXXXX)"`,
 		`trap rollback ERR INT TERM HUP`,
-		`TOKEN="$(openssl rand -hex 32)"`,
-		`[[ "$AFTER_VERIFIER" == "401" ]]`,
-		`[[ "$AFTER_ENROLLMENT" == "401" ]]`,
+		`token="$(openssl rand -hex 32)"`,
+		`[[ "$verify_code" == 401 ]]`,
+		`[[ "$enroll_code" == 401 ]]`,
 		`"credential_value_exposed":false`,
 	}
 	for _, needle := range required {
