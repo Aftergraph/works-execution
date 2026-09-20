@@ -69,16 +69,23 @@ type Environment struct {
 // Bundle is the wire shape that satisfies
 // docs/standards/schemas/evidence-bundle.schema.json (M1-extended).
 type Bundle struct {
-	BundleID     string       `json:"bundle_id"`
-	WorkID       string       `json:"work_id"`
-	PolicyVer    string       `json:"policy_version,omitempty"`
-	Runner       *Runner      `json:"runner,omitempty"`
-	Source       *Source      `json:"source,omitempty"`     // M1
-	Environment  *Environment `json:"environment,omitempty"`// M1
-	CreatedAt    time.Time    `json:"created_at"`
-	Summary      Summary      `json:"summary"`
-	Components   Components   `json:"components"`
-	Signatures   []Signature  `json:"signatures,omitempty"`
+	BundleID             string                `json:"bundle_id"`
+	WorkID               string                `json:"work_id"`
+	PolicyVer            string                `json:"policy_version,omitempty"`
+	Runner               *Runner               `json:"runner,omitempty"`
+	Source               *Source               `json:"source,omitempty"`     // M1
+	Environment          *Environment          `json:"environment,omitempty"`// M1
+	IdentityChain        map[string]string     `json:"identity_chain,omitempty"`
+	PlatformVerification *PlatformVerification `json:"platform_verification,omitempty"`
+	CreatedAt            time.Time             `json:"created_at"`
+	Summary              Summary               `json:"summary"`
+	Components           Components            `json:"components"`
+	Signatures           []Signature            `json:"signatures,omitempty"`
+}
+
+type PlatformVerification struct {
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // Runner identifies the executor that produced the bundle.
@@ -294,6 +301,43 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 		})
 	}
 
+	// Platform V2.1 correlation is provenance only. Presence of these references
+	// must never be used as live authorization inside evidence production.
+	contexts, err := st.ListExecutionContextsByWorkID(ctx, workID)
+	if err != nil {
+		return nil, fmt.Errorf("evidence: load execution contexts: %w", err)
+	}
+	if len(contexts) > 0 {
+		// Reauthorization creates a new immutable context; the latest durable
+		// context is the one whose correlation must be complete for this bundle.
+		platformCtx := contexts[len(contexts)-1]
+		identity := map[string]string{
+			"organization_id":       platformCtx.OrganizationID,
+			"tenant_id":             platformCtx.TenantID,
+			"principal_id":          platformCtx.PrincipalID,
+			"mission_id":            platformCtx.MissionID,
+			"authority_lease_id":    platformCtx.AuthorityLeaseID,
+			"execution_context_id":  platformCtx.ID,
+			"work_id":               platformCtx.WorkID,
+			"worker_id":             platformCtx.WorkerID,
+			"worker_lease_id":       platformCtx.WorkerLeaseID,
+			"admission_decision_id": platformCtx.AdmissionDecisionID,
+			"trace_id":              platformCtx.TraceID,
+		}
+		executionPDRID := executionPDRForContext(w.Evidence, platformCtx.ID)
+		if executionPDRID == "" {
+			b.IdentityChain = identity
+			b.PlatformVerification = &PlatformVerification{
+				Status: "provenance_gap",
+				Reason: "missing_execution_policy_decision",
+			}
+		} else {
+			identity["execution_policy_decision_id"] = executionPDRID
+			b.IdentityChain = identity
+			b.PlatformVerification = &PlatformVerification{Status: "correlated"}
+		}
+	}
+
 	// Compute bundle_id over the canonical bytes (signatures stripped,
 	// bundle_id replaced by a 32-zero placeholder). This is the
 	// standard trick used by in-toto / Sigstore attestations: the id
@@ -337,6 +381,24 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 		return nil, err
 	}
 	return b, nil
+}
+
+
+func executionPDRForContext(records []workgraph.Evidence, executionContextID string) string {
+	for i := len(records) - 1; i >= 0; i-- {
+		e := records[i]
+		if e.Type != "policy" || e.Result != "pass" || e.Details == nil {
+			continue
+		}
+		kind, _ := e.Details["record_kind"].(string)
+		ctxID, _ := e.Details["execution_context_id"].(string)
+		pdrID, _ := e.Details["execution_pdr_id"].(string)
+		if kind == "execution_policy_decision" && ctxID == executionContextID &&
+			len(pdrID) == 36 && len(pdrID) > 4 && pdrID[:4] == "pdr_" {
+			return pdrID
+		}
+	}
+	return ""
 }
 
 // summaryOf derives the bundle summary from the Work's terminal state and
