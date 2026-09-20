@@ -12,13 +12,23 @@ This runbook activates the dedicated credential used by Sentinel to publish term
 
 The credential is distinct from worker enrollment, RAB control, GitHub and platform-bridge credentials.
 
+## Status
+
+Run without root mutation to inspect the fail-closed boundary:
+
+```bash
+bash scripts/ops/works-verifier-credential.sh status
+```
+
+`configured` means a wrong verifier token receives HTTP 401. `unconfigured` means the endpoint returns HTTP 503.
+
 ## Activation
 
 Run on the **actual WORKS production host as root**:
 
 ```bash
 cd /opt/works
-bash scripts/ops/enable-sentinel-verifier-credential.sh
+bash scripts/ops/works-verifier-credential.sh enable
 ```
 
 The helper:
