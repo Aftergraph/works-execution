@@ -8,12 +8,16 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      works-envfile-property:
+      tg-envfile-readable:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
           if [ "$(id -u)" -eq 0 ]; then P=""; else sudo -n true; P="sudo -n"; fi;
-          RAW="$($P systemctl show works-api.service -p EnvironmentFiles --value | head -n1)";
-          test -n "$RAW";
-          echo "works-envfile-property=PASS"
+          RAW="$($P systemctl show tg-gateway.service -p EnvironmentFiles --value | head -n1)";
+          RAW="${RAW#-}";
+          FILE="${RAW%% *}";
+          test -n "$FILE";
+          $P test -f "$FILE";
+          $P test -r "$FILE";
+          echo "tg-envfile-readable=PASS"
         timeout_s: 30
