@@ -18,7 +18,10 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 fail() { printf 'v21-activate: %s\n' "$*" >&2; exit 2; }
+STAGE_FILE="/tmp/aftergraph-v21-activation-stage"
+stage() { printf '%s\n' "$1" >"$STAGE_FILE"; echo "v21-activate: stage=$1"; }
 
+stage preflight
 [[ "$(hostname -s)" == "$EXPECTED_HOST" ]] || fail "host mismatch"
 if [[ "$(id -u)" -eq 0 ]]; then
   SUDO=""
@@ -50,17 +53,23 @@ fi
 [[ -n "$WORKS_BIN" && "$WORKS_BIN" == /* ]] || fail "cannot discover WORKS ExecStart binary"
 $SUDO test -f "$WORKS_BIN" || fail "WORKS binary missing: $WORKS_BIN"
 
-# Live deployment identity.
+# Live deployment identity. TG code will run from an immutable release
+# worktree selected by a systemd WorkingDirectory drop-in; the mutable operator
+# checkout is never reset or cleaned.
 TG_PREV="$($SUDO git -C "$TG_REPO" rev-parse HEAD)"
-TG_DIRTY="$($SUDO git -C "$TG_REPO" status --porcelain --untracked-files=no || true)"
-if [[ -n "$TG_DIRTY" ]]; then
-  # rollout.sh is allowed to mutate only app/sw.js for cache busting.
-  BAD_DIRTY="$(printf '%s\n' "$TG_DIRTY" | grep -vE '^ [MADRCU?!] app/sw\.js$|^[MADRCU?!][MADRCU?!] app/sw\.js$' || true)"
-  [[ -z "$BAD_DIRTY" ]] || fail "TG checkout has non-rollout tracked changes"
-fi
+TG_RELEASE_ROOT="/opt/aftergraph/trust-gateway/releases"
+TG_RELEASE="$TG_RELEASE_ROOT/$TG_REQUIRED_SHA"
+TG_DROPIN_DIR="/etc/systemd/system/tg-gateway.service.d"
+TG_DROPIN="$TG_DROPIN_DIR/90-aftergraph-v21-release.conf"
 
 # Backup all mutable production state before first write.
 $SUDO cp -a "$WORKS_BIN" "$TMP/works-api.prev"
+if $SUDO test -e "$TG_DROPIN"; then
+  $SUDO cp -a "$TG_DROPIN" "$TMP/tg-dropin.prev"
+  TG_DROPIN_EXISTED=1
+else
+  TG_DROPIN_EXISTED=0
+fi
 if $SUDO test -e "$TG_ENV"; then
   $SUDO cp -a "$TG_ENV" "$TMP/tg.env.prev"
   TG_ENV_EXISTED=1
@@ -77,7 +86,13 @@ rollback() {
       $SUDO cp -a "$TMP/works-api.prev" "$WORKS_BIN" || true
     fi
     if [[ "$TG_CHANGED" -eq 1 ]]; then
-      $SUDO git -C "$TG_REPO" reset --hard "$TG_PREV" >/dev/null 2>&1 || true
+      if [[ "$TG_DROPIN_EXISTED" -eq 1 ]]; then
+        $SUDO install -d -m 755 "$TG_DROPIN_DIR" || true
+        $SUDO cp -a "$TMP/tg-dropin.prev" "$TG_DROPIN" || true
+      else
+        $SUDO rm -f "$TG_DROPIN" || true
+      fi
+      $SUDO systemctl daemon-reload >/dev/null 2>&1 || true
     fi
     if [[ "$TG_ENV_CHANGED" -eq 1 ]]; then
       if [[ "$TG_ENV_EXISTED" -eq 1 ]]; then
@@ -97,6 +112,7 @@ rollback() {
 trap rollback ERR
 
 # Build and test the merged WORKS code from this checkout.
+stage works-build
 cd "$ROOT_DIR"
 go test ./...
 go build -trimpath -o "$TMP/works-api.new" ./cmd/works-api
@@ -106,23 +122,38 @@ $SUDO mv -f "$WORKS_BIN.new" "$WORKS_BIN"
 WORKS_CHANGED=1
 MUTATED=1
 
-# Move TG production checkout only forward until it contains the verified V2.1 merge.
-$SUDO git -C "$TG_REPO" fetch --quiet origin "$TG_REQUIRED_SHA"
-TG_NOW="$($SUDO git -C "$TG_REPO" rev-parse HEAD)"
-if $SUDO git -C "$TG_REPO" merge-base --is-ancestor "$TG_REQUIRED_SHA" "$TG_NOW"; then
-  :
-elif $SUDO git -C "$TG_REPO" merge-base --is-ancestor "$TG_NOW" "$TG_REQUIRED_SHA"; then
-  $SUDO git -C "$TG_REPO" reset --hard "$TG_REQUIRED_SHA" >/dev/null
-  TG_CHANGED=1
-else
-  fail "TG checkout diverged from required V2.1 merge"
+# Materialize the verified TG merge as an immutable release, without touching
+# the mutable operator checkout. The live data path remains the unit's existing
+# EnvironmentFile/ReadWritePaths target.
+stage tg-release
+if ! $SUDO git -C "$TG_REPO" cat-file -e "$TG_REQUIRED_SHA^{commit}" 2>/dev/null; then
+  $SUDO git -C "$TG_REPO" fetch --quiet origin "$TG_REQUIRED_SHA"
 fi
-TG_DEPLOYED="$($SUDO git -C "$TG_REPO" rev-parse HEAD)"
-$SUDO git -C "$TG_REPO" merge-base --is-ancestor "$TG_REQUIRED_SHA" "$TG_DEPLOYED" ||
-  fail "TG deployed revision does not contain V2.1 merge"
+$SUDO install -d -m 755 "$TG_RELEASE_ROOT"
+if ! $SUDO test -d "$TG_RELEASE"; then
+  $SUDO git -C "$TG_REPO" worktree add --detach "$TG_RELEASE" "$TG_REQUIRED_SHA" >/dev/null
+fi
+TG_DEPLOYED="$($SUDO git -C "$TG_RELEASE" rev-parse HEAD)"
+[[ "$TG_DEPLOYED" == "$TG_REQUIRED_SHA" ]] || fail "TG release SHA mismatch"
+
+# Preserve the canonical writable data boundary for relative data/ consumers.
+if ! $SUDO test -e "$TG_RELEASE/data"; then
+  $SUDO ln -s "$(dirname "$TG_ENV")" "$TG_RELEASE/data"
+fi
 
 # Host-level smoke of the load-bearing TG seams before restart.
-$SUDO node --test   "$TG_REPO/tests/platform-execution-context.test.js"   "$TG_REPO/tests/platform-approval-v21.test.js"   "$TG_REPO/tests/works-context-client.test.js"
+$SUDO node --test \
+  "$TG_RELEASE/tests/platform-execution-context.test.js" \
+  "$TG_RELEASE/tests/platform-approval-v21.test.js" \
+  "$TG_RELEASE/tests/works-context-client.test.js"
+
+# Switch only WorkingDirectory through a systemd drop-in. Existing
+# EnvironmentFile and ReadWritePaths stay untouched.
+$SUDO install -d -m 755 "$TG_DROPIN_DIR"
+printf '[Service]\nWorkingDirectory=%s\n' "$TG_RELEASE" >"$TMP/tg-dropin.new"
+$SUDO install -m 644 "$TMP/tg-dropin.new" "$TG_DROPIN"
+$SUDO systemctl daemon-reload
+TG_CHANGED=1
 
 read_env() {
   local file="$1" key="$2"
@@ -153,6 +184,7 @@ upsert_env() {
   $SUDO cp -f "$tmp" "$file"
 }
 
+stage credentials
 tg_token="$(read_env "$TG_ENV" WORKS_API_TOKEN)"
 works_token="$(read_env "$WORKS_ENV" WORKS_API_TOKEN)"
 tg_bridge="$(read_env "$TG_ENV" WORKS_PLATFORM_BRIDGE_SECRET)"
@@ -169,6 +201,7 @@ upsert_env "$TG_ENV" WORKS_API_TOKEN "$platform_token"
 upsert_env "$TG_ENV" WORKS_PLATFORM_BRIDGE_SECRET "$bridge_secret"
 TG_ENV_CHANGED=1
 
+stage works-restart
 $SUDO systemctl restart works-api.service
 for _ in $(seq 1 30); do
   curl -fsS --max-time 2 "$WORKS_BASE/healthz" >/dev/null 2>&1 && break
@@ -183,6 +216,7 @@ SMOKE_BODY='{"execution_context_id":"ctx_00000000000000000000000000000000","exec
 HTTP_CODE="$(curl -sS -o "$TMP/works-smoke.json" -w '%{http_code}'   -H "Authorization: Bearer $platform_token"   -H "X-Works-Platform-Bridge: $bridge_secret"   -H 'Content-Type: application/json'   --data "$SMOKE_BODY"   "$WORKS_BASE/v1/works/wrk_00000000000000000000000000000000/evidence")"
 [[ "$HTTP_CODE" == "404" ]] || fail "WORKS authenticated seam smoke returned HTTP $HTTP_CODE"
 
+stage tg-restart
 $SUDO systemctl restart tg-gateway.service
 for _ in $(seq 1 30); do
   curl -fsS --max-time 2 "$TG_BASE/healthz" >/dev/null 2>&1 && break
@@ -201,7 +235,8 @@ WORKS_PID="$($SUDO systemctl show works-api.service -p MainPID --value)"
 $SUDO tr '\0' '\n' < "/proc/$WORKS_PID/environ" | grep -q '^WORKS_API_TOKEN='
 $SUDO tr '\0' '\n' < "/proc/$WORKS_PID/environ" | grep -q '^WORKS_PLATFORM_BRIDGE_SECRET='
 
-EVIDENCE_DIR="$TG_REPO/data/ops"
+stage final-evidence
+EVIDENCE_DIR="$(dirname "$TG_ENV")/ops"
 $SUDO install -d -m 700 "$EVIDENCE_DIR"
 token_fp="$(printf '%s' "$platform_token" | sha256sum | awk '{print substr($1,1,16)}')"
 bridge_fp="$(printf '%s' "$bridge_secret" | sha256sum | awk '{print substr($1,1,16)}')"
@@ -224,6 +259,7 @@ cat >"$TMP/evidence.json" <<EOF
 EOF
 $SUDO install -m 600 "$TMP/evidence.json" "$EVIDENCE_DIR/v21-production-activation.json"
 
+stage complete
 MUTATED=0
 trap - ERR
 
