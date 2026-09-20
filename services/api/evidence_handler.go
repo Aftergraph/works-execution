@@ -2,9 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -56,6 +59,208 @@ type platformVerificationProjection struct {
 	OutcomeStatus string `json:"outcome_status,omitempty"`
 }
 
+var executionContextIDRE = regexp.MustCompile(`^ctx_[a-f0-9]{32}package api
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/JonasAbde/works-execution/packages/workgraph"
+	"github.com/JonasAbde/works-execution/services/evidence"
+	"github.com/JonasAbde/works-execution/services/work/store"
+)
+
+// projectOutcomeVerification returns pending only when the lookup yields no
+// record; otherwise it projects the stored verifier record with its
+// provenance. A lookup error fails closed to evidence_failed — a store fault
+// is not a verdict. The lookup is injected (production: Store method value)
+// so the error path stays unit-testable without stubbing the whole Store.
+func projectOutcomeVerification(
+	ctx context.Context,
+	lookup func(context.Context, string) (*store.VerificationVerdict, error),
+	workID string,
+) (outcomeVerificationProjection, error) {
+	v, err := lookup(ctx, workID)
+	if err != nil {
+		return outcomeVerificationProjection{}, err
+	}
+	if v == nil {
+		return outcomeVerificationProjection{Status: "pending"}, nil
+	}
+	return outcomeVerificationProjection{
+		Status:      v.Result,
+		VerifierID:  v.VerifierID,
+		EvidenceRef: v.EvidenceRef,
+		VerifiedAt:  v.VerifiedAt.UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
+// outcomeVerificationProjection is deliberately separate from the evidence
+// integrity verdicts returned by workgraph.VerifyEvidence. Executor state and
+// hash-valid evidence are inputs to a verifier, not a verifier decision.
+// Until a durable independent verdict exists, the only truthful projection is
+// pending. Optional provenance fields are omitted rather than invented.
+type outcomeVerificationProjection struct {
+	Status      string `json:"status"`
+	VerifierID  string `json:"verifier_id,omitempty"`
+	EvidenceRef string `json:"evidence_ref,omitempty"`
+	VerifiedAt  string `json:"verified_at,omitempty"`
+}
+
+)
+var executionPDRIDRE = regexp.MustCompile(`^pdr_[a-f0-9]{32}package api
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/JonasAbde/works-execution/packages/workgraph"
+	"github.com/JonasAbde/works-execution/services/evidence"
+	"github.com/JonasAbde/works-execution/services/work/store"
+)
+
+// projectOutcomeVerification returns pending only when the lookup yields no
+// record; otherwise it projects the stored verifier record with its
+// provenance. A lookup error fails closed to evidence_failed — a store fault
+// is not a verdict. The lookup is injected (production: Store method value)
+// so the error path stays unit-testable without stubbing the whole Store.
+func projectOutcomeVerification(
+	ctx context.Context,
+	lookup func(context.Context, string) (*store.VerificationVerdict, error),
+	workID string,
+) (outcomeVerificationProjection, error) {
+	v, err := lookup(ctx, workID)
+	if err != nil {
+		return outcomeVerificationProjection{}, err
+	}
+	if v == nil {
+		return outcomeVerificationProjection{Status: "pending"}, nil
+	}
+	return outcomeVerificationProjection{
+		Status:      v.Result,
+		VerifierID:  v.VerifierID,
+		EvidenceRef: v.EvidenceRef,
+		VerifiedAt:  v.VerifiedAt.UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
+// outcomeVerificationProjection is deliberately separate from the evidence
+// integrity verdicts returned by workgraph.VerifyEvidence. Executor state and
+// hash-valid evidence are inputs to a verifier, not a verifier decision.
+// Until a durable independent verdict exists, the only truthful projection is
+// pending. Optional provenance fields are omitted rather than invented.
+type outcomeVerificationProjection struct {
+	Status      string `json:"status"`
+	VerifierID  string `json:"verifier_id,omitempty"`
+	EvidenceRef string `json:"evidence_ref,omitempty"`
+	VerifiedAt  string `json:"verified_at,omitempty"`
+}
+
+)
+
+type executionPolicyDecisionRef struct {
+	ExecutionContextID string `json:"execution_context_id"`
+	ExecutionPDRID     string `json:"execution_pdr_id"`
+}
+
+func executionPolicyEvidenceID(workID, contextID, pdrID string) string {
+	sum := sha256.Sum256([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
+	return "evd_" + hex.EncodeToString(sum[:])[:32]
+}
+
+func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Request, workID string) {
+	var body executionPolicyDecisionRef
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if !executionContextIDRE.MatchString(body.ExecutionContextID) || !executionPDRIDRE.MatchString(body.ExecutionPDRID) {
+		writeError(w, http.StatusBadRequest, "invalid_platform_reference", "canonical execution context and PDR ids required")
+		return
+	}
+	ctxRecord, err := s.Store.GetExecutionContext(r.Context(), body.ExecutionContextID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "execution_context_not_found", body.ExecutionContextID)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "execution_context_lookup_failed", err.Error())
+		return
+	}
+	if ctxRecord.WorkID != workID {
+		writeError(w, http.StatusConflict, "execution_context_work_mismatch", "execution context belongs to another work")
+		return
+	}
+	wk, err := s.Store.GetWork(r.Context(), workID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", workID)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "work_lookup_failed", err.Error())
+		return
+	}
+	for _, ev := range wk.Evidence {
+		if ev.Type != "policy" || ev.Details == nil {
+			continue
+		}
+		kind, _ := ev.Details["record_kind"].(string)
+		ctxID, _ := ev.Details["execution_context_id"].(string)
+		pdrID, _ := ev.Details["execution_pdr_id"].(string)
+		if kind == "execution_policy_decision" && ctxID == body.ExecutionContextID {
+			if pdrID != body.ExecutionPDRID {
+				writeError(w, http.StatusConflict, "execution_pdr_conflict", "execution context already correlated to another PDR")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"status": "already_recorded",
+				"evidence_id": ev.ID,
+				"execution_context_id": body.ExecutionContextID,
+				"execution_pdr_id": body.ExecutionPDRID,
+			})
+			return
+		}
+	}
+	ev := workgraph.Evidence{
+		ID:         executionPolicyEvidenceID(workID, body.ExecutionContextID, body.ExecutionPDRID),
+		Type:       "policy",
+		Result:     "pass",
+		RecordedAt: time.Now().UTC(),
+		Signer:     "trust-gateway",
+		Details: map[string]any{
+			"record_kind":          "execution_policy_decision",
+			"execution_context_id": body.ExecutionContextID,
+			"execution_pdr_id":     body.ExecutionPDRID,
+		},
+	}
+	if _, err := s.Store.AppendEvidence(r.Context(), workID, ev); err != nil {
+		writeError(w, http.StatusInternalServerError, "evidence_record_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"status": "recorded",
+		"evidence_id": ev.ID,
+		"execution_context_id": body.ExecutionContextID,
+		"execution_pdr_id": body.ExecutionPDRID,
+	})
+}
+
 func projectPlatformVerification(bundle *evidence.Bundle, outcome outcomeVerificationProjection) *platformVerificationProjection {
 	if bundle == nil || bundle.PlatformVerification == nil {
 		return nil
@@ -95,10 +300,6 @@ func projectPlatformVerification(bundle *evidence.Bundle, outcome outcomeVerific
 //   503 — EvidenceConfig not configured on the server
 //   500 — store / canonicalize failure
 func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", r.Method)
-		return
-	}
 	path := strings.TrimPrefix(r.URL.Path, "/v1/works/")
 	parts := strings.Split(path, "/")
 	if len(parts) != 2 || parts[0] == "" {
@@ -106,6 +307,14 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workID := parts[0]
+	if r.Method == http.MethodPost {
+		s.recordExecutionPolicyDecision(w, r, workID)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", r.Method)
+		return
+	}
 
 	if s.EvidenceConfig == nil {
 		writeError(w, http.StatusServiceUnavailable, "evidence_unavailable", "evidence producer not configured")
