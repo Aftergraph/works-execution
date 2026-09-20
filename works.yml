@@ -1,7 +1,7 @@
 version: 1
 
 work:
-  live-works-checkout-diagnostic:
+  sentinel-production-activation:
     triggers:
       - push
 
@@ -12,40 +12,17 @@ work:
       pool: avc-core
 
     nodes:
-      diagnostic:
+      activate:
         run: |
-          set +e
-          echo "hostname=$(hostname -s)"
-          echo "uid=$(id -u)"
-          echo "user=$(id -un)"
-          echo "live_root=/root/works-venture"
-          if test -d /root/works-venture/.git; then
-            echo "live_repo=present"
-            printf "live_head="
-            git -C /root/works-venture rev-parse HEAD 2>&1
-            printf "live_branch="
-            git -C /root/works-venture branch --show-current 2>&1
-            printf "live_remote="
-            git -C /root/works-venture remote get-url origin 2>&1
-            echo "live_status_begin"
-            git -C /root/works-venture status --short 2>&1 | head -80
-            echo "live_status_end"
-            if test -f /root/works-venture/scripts/ops/works-verifier-credential.sh; then
-              echo "canonical_helper_file=present"
-              stat -c 'helper_mode=%a helper_owner=%U:%G helper_path=%n' /root/works-venture/scripts/ops/works-verifier-credential.sh 2>&1
-            else
-              echo "canonical_helper_file=missing"
-            fi
-            echo "verifier_candidates_begin"
-            find /root/works-venture/scripts -maxdepth 4 -type f \( -iname '*verifier*' -o -iname '*sentinel*' \) -print 2>/dev/null | head -80
-            echo "verifier_candidates_end"
-          else
-            echo "live_repo=missing"
-          fi
-          printf "works_service="
-          systemctl is-active works-api.service 2>&1
-          printf "works_health_http="
-          curl -sS -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:18191/healthz 2>&1
-          echo
-          exit 42
-        timeout_s: 120
+          set -euo pipefail
+          test "$(hostname -s)" = "vmi3517816"
+          test "$(id -u)" = "0"
+          activation_sha="eb51f824af2279ee3eee5daa8572bd54a34b3ca8"
+          d="$(mktemp -d /tmp/sentinel-activation-work.XXXXXX)"
+          cleanup() { rm -rf -- "$d"; }
+          trap cleanup EXIT
+          git clone -q https://github.com/Aftergraph/sentinel.git "$d"
+          git -C "$d" checkout -q --detach "$activation_sha"
+          test "$(git -C "$d" rev-parse HEAD)" = "$activation_sha"
+          bash "$d/scripts/ops/activate-production-simplification-verifier.sh"
+        timeout_s: 1200
