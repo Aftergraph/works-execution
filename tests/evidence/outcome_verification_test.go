@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
+	"github.com/JonasAbde/works-execution/services/evidence"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
@@ -155,5 +156,38 @@ func TestPlatformVerification_CompleteCorrelationAndPassedOutcomeProjectsVerifie
 	if chain["execution_context_id"] != ctx.ID ||
 		chain["execution_policy_decision_id"] != "pdr_77777777777777777777777777777777" {
 		t.Fatalf("identity chain incomplete: %#v", chain)
+	}
+}
+
+
+func TestPlatformOutcomeProjectionDoesNotInvalidateSignedBundle(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+	appendExecutionPDR(t, st, w, ctx.ID, "pdr_77777777777777777777777777777777")
+	if err := st.SaveVerificationVerdict(context.Background(), store.VerificationVerdict{
+		WorkID: w.ID, Result: "passed", VerifierID: "verifier-independent",
+		EvidenceRef: "verdict://signed-bundle", VerifiedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("SaveVerificationVerdict: %v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/v1/works/" + w.ID + "/evidence")
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+
+	var bundle evidence.Bundle
+	if err := json.NewDecoder(resp.Body).Decode(&bundle); err != nil {
+		t.Fatalf("decode signed bundle view: %v", err)
+	}
+	result, err := evidence.VerifyBundle(&bundle, testKeyID, testKey())
+	if err != nil {
+		t.Fatalf("VerifyBundle: %v", err)
+	}
+	if !result.Valid || !result.SignatureValid {
+		t.Fatalf("response projection invalidated signed bundle: %#v", result)
+	}
+	if bundle.PlatformVerification == nil || bundle.PlatformVerification.Status != "correlated" {
+		t.Fatalf("signed platform_verification was overwritten: %#v", bundle.PlatformVerification)
 	}
 }
