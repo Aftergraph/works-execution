@@ -8,12 +8,11 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      preflight-probe:
+      tg-discovery:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
           if [ "$(id -u)" -ne 0 ]; then sudo -n true; SUDO="sudo -n"; else SUDO=""; fi;
-          for c in git go curl openssl sha256sum systemctl awk sed install stat; do command -v "$c" >/dev/null; done;
           TG_REPO="$($SUDO systemctl show tg-gateway.service -p WorkingDirectory --value | tr -d '\r')";
           test -n "$TG_REPO";
           test "${TG_REPO#/}" != "$TG_REPO";
