@@ -328,7 +328,10 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 			"admission_decision_id": platformCtx.AdmissionDecisionID,
 			"trace_id":              platformCtx.TraceID,
 		}
-		executionPDRID := executionPDRForContext(w.Evidence, workID, platformCtx.ID, cfg.PlatformBridgeSecret)
+		executionPDRID, corrErr := executionPDRForContext(ctx, st, workID, platformCtx.ID, cfg.PlatformBridgeSecret)
+		if corrErr != nil {
+			return nil, fmt.Errorf("evidence: load execution policy correlation: %w", corrErr)
+		}
 		if executionPDRID == "" {
 			b.IdentityChain = identity
 			b.PlatformVerification = &PlatformVerification{
@@ -396,32 +399,46 @@ func executionPDRBindingMAC(secret []byte, workID, contextID, pdrID string) []by
 	return mac.Sum(nil)
 }
 
-func executionPDRForContext(records []workgraph.Evidence, workID, executionContextID string, bridgeSecret []byte) string {
+func executionPDRForContext(
+	ctx context.Context,
+	st store.Store,
+	workID, executionContextID string,
+	bridgeSecret []byte,
+) (string, error) {
 	if len(bridgeSecret) < 32 {
-		return ""
+		return "", nil
 	}
-	for i := len(records) - 1; i >= 0; i-- {
-		e := records[i]
-		if e.Type != "policy" || e.Result != "pass" || e.Details == nil {
-			continue
-		}
-		kind, _ := e.Details["record_kind"].(string)
-		ctxID, _ := e.Details["execution_context_id"].(string)
-		pdrID, _ := e.Details["execution_pdr_id"].(string)
-		bindingHex, _ := e.Details["binding_hmac"].(string)
-		if kind != "execution_policy_decision" || ctxID != executionContextID ||
-			!executionPDRIDPattern.MatchString(pdrID) || len(bindingHex) != 64 {
-			continue
-		}
-		got, err := hex.DecodeString(bindingHex)
-		if err != nil {
-			continue
-		}
-		if hmac.Equal(got, executionPDRBindingMAC(bridgeSecret, workID, executionContextID, pdrID)) {
-			return pdrID
-		}
+	type correlationReader interface {
+		GetExecutionPolicyCorrelation(context.Context, string) (*store.ExecutionPolicyCorrelation, error)
 	}
-	return ""
+	reader, ok := st.(correlationReader)
+	if !ok {
+		return "", nil
+	}
+	rec, err := reader.GetExecutionPolicyCorrelation(ctx, executionContextID)
+	if err != nil {
+		return "", err
+	}
+	if rec == nil ||
+		rec.WorkID != workID ||
+		rec.ExecutionContextID != executionContextID ||
+		!executionPDRIDPattern.MatchString(rec.ExecutionPDRID) ||
+		len(rec.BindingHMAC) != 64 {
+		return "", nil
+	}
+	got, err := hex.DecodeString(rec.BindingHMAC)
+	if err != nil {
+		return "", nil
+	}
+	if !hmac.Equal(got, executionPDRBindingMAC(
+		bridgeSecret,
+		workID,
+		executionContextID,
+		rec.ExecutionPDRID,
+	)) {
+		return "", nil
+	}
+	return rec.ExecutionPDRID, nil
 }
 
 // summaryOf derives the bundle summary from the Work's terminal state and
