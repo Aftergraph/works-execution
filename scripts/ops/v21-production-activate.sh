@@ -37,7 +37,7 @@ done
 # Discover live service locations rather than assuming old deployment paths.
 TG_REPO="$($SUDO systemctl show tg-gateway.service -p WorkingDirectory --value | tr -d '\r')"
 [[ -n "$TG_REPO" && "$TG_REPO" == /* ]] || fail "cannot discover TG WorkingDirectory"
-$SUDO test -d "$TG_REPO/.git" || fail "TG WorkingDirectory is not a git checkout"
+$SUDO git -C "$TG_REPO" rev-parse --git-dir >/dev/null 2>&1 || fail "TG WorkingDirectory is not a git checkout"
 
 TG_ENV="$($SUDO systemctl show tg-gateway.service -p EnvironmentFiles --value | awk '{print $1}' | head -n1)"
 if [[ -z "$TG_ENV" || "$TG_ENV" != /* ]]; then TG_ENV="$TG_REPO/data/gateway.env"; fi
@@ -116,7 +116,7 @@ stage works-build
 cd "$ROOT_DIR"
 go test ./...
 go build -trimpath -o "$TMP/works-api.new" ./cmd/works-api
-$SUDO install -m "$(stat -c '%a' "$WORKS_BIN")" "$TMP/works-api.new" "$WORKS_BIN.new"
+$SUDO install -m "$($SUDO stat -c '%a' "$WORKS_BIN")" "$TMP/works-api.new" "$WORKS_BIN.new"
 $SUDO chown --reference="$WORKS_BIN" "$WORKS_BIN.new"
 $SUDO mv -f "$WORKS_BIN.new" "$WORKS_BIN"
 WORKS_CHANGED=1
@@ -130,7 +130,11 @@ if ! $SUDO git -C "$TG_REPO" cat-file -e "$TG_REQUIRED_SHA^{commit}" 2>/dev/null
   $SUDO git -C "$TG_REPO" fetch --quiet origin "$TG_REQUIRED_SHA"
 fi
 $SUDO install -d -m 755 "$TG_RELEASE_ROOT"
-if ! $SUDO test -d "$TG_RELEASE"; then
+if $SUDO test -e "$TG_RELEASE" && ! $SUDO git -C "$TG_RELEASE" rev-parse --git-dir >/dev/null 2>&1; then
+  $SUDO rm -rf "$TG_RELEASE"
+  $SUDO git -C "$TG_REPO" worktree prune
+fi
+if ! $SUDO test -e "$TG_RELEASE"; then
   $SUDO git -C "$TG_REPO" worktree add --detach "$TG_RELEASE" "$TG_REQUIRED_SHA" >/dev/null
 fi
 TG_DEPLOYED="$($SUDO git -C "$TG_RELEASE" rev-parse HEAD)"
@@ -226,14 +230,14 @@ curl -fsS --max-time 2 "$TG_BASE/healthz" >/dev/null
 
 TG_PID="$($SUDO systemctl show tg-gateway.service -p MainPID --value)"
 [[ "$TG_PID" =~ ^[1-9][0-9]*$ ]] || fail "TG MainPID unavailable"
-$SUDO tr '\0' '\n' < "/proc/$TG_PID/environ" | grep -q '^WORKS_API_URL='
-$SUDO tr '\0' '\n' < "/proc/$TG_PID/environ" | grep -q '^WORKS_API_TOKEN='
-$SUDO tr '\0' '\n' < "/proc/$TG_PID/environ" | grep -q '^WORKS_PLATFORM_BRIDGE_SECRET='
+$SUDO cat "/proc/$TG_PID/environ" | tr '\0' '\n' | grep -q '^WORKS_API_URL='
+$SUDO cat "/proc/$TG_PID/environ" | tr '\0' '\n' | grep -q '^WORKS_API_TOKEN='
+$SUDO cat "/proc/$TG_PID/environ" | tr '\0' '\n' | grep -q '^WORKS_PLATFORM_BRIDGE_SECRET='
 
 WORKS_PID="$($SUDO systemctl show works-api.service -p MainPID --value)"
 [[ "$WORKS_PID" =~ ^[1-9][0-9]*$ ]] || fail "WORKS MainPID unavailable"
-$SUDO tr '\0' '\n' < "/proc/$WORKS_PID/environ" | grep -q '^WORKS_API_TOKEN='
-$SUDO tr '\0' '\n' < "/proc/$WORKS_PID/environ" | grep -q '^WORKS_PLATFORM_BRIDGE_SECRET='
+$SUDO cat "/proc/$WORKS_PID/environ" | tr '\0' '\n' | grep -q '^WORKS_API_TOKEN='
+$SUDO cat "/proc/$WORKS_PID/environ" | tr '\0' '\n' | grep -q '^WORKS_PLATFORM_BRIDGE_SECRET='
 
 stage final-evidence
 EVIDENCE_DIR="$(dirname "$TG_ENV")/ops"
