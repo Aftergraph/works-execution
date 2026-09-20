@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -72,7 +74,24 @@ func executionPolicyEvidenceID(workID, contextID, pdrID string) string {
 	return "evd_" + hex.EncodeToString(sum[:])[:32]
 }
 
+func executionPolicyBindingMAC(secret, workID, contextID, pdrID string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
 func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Request, workID string) {
+	bridgeSecret := bridgeSecretFromEnv()
+	if !BridgeSecretConfigured(bridgeSecret) {
+		writeError(w, http.StatusServiceUnavailable, "bridge_unavailable", "platform bridge not configured")
+		return
+	}
+	gotBridge := r.Header.Get("X-Works-Platform-Bridge")
+	if gotBridge == "" || subtle.ConstantTimeCompare([]byte(gotBridge), []byte(bridgeSecret)) != 1 {
+		writeError(w, http.StatusUnauthorized, "bridge_unauthorized", "missing or invalid platform bridge header")
+		return
+	}
+
 	var body executionPolicyDecisionRef
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -140,6 +159,7 @@ func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Re
 			"record_kind":          "execution_policy_decision",
 			"execution_context_id": body.ExecutionContextID,
 			"execution_pdr_id":     body.ExecutionPDRID,
+			"binding_hmac":         executionPolicyBindingMAC(bridgeSecret, workID, body.ExecutionContextID, body.ExecutionPDRID),
 		},
 	}
 	if _, err := s.Store.AppendEvidence(r.Context(), workID, ev); err != nil {
