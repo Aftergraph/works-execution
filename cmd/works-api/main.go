@@ -112,6 +112,17 @@ func main() {
 		logger.Printf("Sentinel verification ingest unavailable (no WORKS_VERIFIER_TOKEN)")
 	}
 
+	platformAPIToken := envOr("WORKS_API_TOKEN", "")
+	if platformAPIToken != "" {
+		if len([]byte(platformAPIToken)) < 32 {
+			logger.Fatalf("WORKS_API_TOKEN must be at least 32 bytes when configured")
+		}
+		srv.PlatformAPIToken = []byte(platformAPIToken)
+		logger.Printf("platform service authentication enabled")
+	} else {
+		logger.Printf("platform service authentication unavailable (no WORKS_API_TOKEN)")
+	}
+
 	// Publisher: prefer GitHub App if both App ID + installation-token
 	// command are present; fall back to Status API with PAT; disabled
 	// when neither is configured.
