@@ -26,10 +26,6 @@ for unit in "${TG_UNIT}" "${WORKS_UNIT}"; do
   }
 done
 
-unit_workdir() {
-  systemctl show "$1" -p WorkingDirectory --value | head -n1
-}
-
 unit_envfile() {
   local raw
   raw="$(systemctl show "$1" -p EnvironmentFiles --value | head -n1)"
@@ -37,30 +33,30 @@ unit_envfile() {
   printf '%s' "${raw%% *}"
 }
 
-TG_REPO="${TG_REPO_OVERRIDE:-$(unit_workdir "${TG_UNIT}")}"
 TG_ENV="${TG_ENV_OVERRIDE:-$(unit_envfile "${TG_UNIT}")}"
 WORKS_ENV="${WORKS_ENV_OVERRIDE:-$(unit_envfile "${WORKS_UNIT}")}"
-EVIDENCE_DIR="${TG_REPO}/data/ops"
+EVIDENCE_DIR="${EVIDENCE_DIR_OVERRIDE:-/var/lib/aftergraph/ops}"
 
-for p in "${TG_REPO}" "${TG_ENV}" "${WORKS_ENV}"; do
-  [[ -e "${p}" ]] || { echo "provision: required runtime path missing: ${p}" >&2; exit 12; }
+for p in "${TG_ENV}" "${WORKS_ENV}"; do
+  [[ -n "${p}" && -f "${p}" && -r "${p}" ]] || {
+    echo "provision: required systemd EnvironmentFile missing/unreadable: ${p:-<unset>}" >&2
+    exit 12
+  }
 done
 
-remote="$(git -C "${TG_REPO}" remote get-url origin 2>/dev/null || true)"
-case "${remote}" in
-  https://github.com/Aftergraph/trust-gateway.git|git@github.com:Aftergraph/trust-gateway.git) ;;
-  *)
-    echo "provision: TG WorkingDirectory is not canonical Aftergraph/trust-gateway (origin=${remote:-missing})" >&2
-    exit 15
-    ;;
-esac
+# Verify the named units are the expected local services without depending on
+# any stale checkout path.
+tg_exec="$(systemctl show "${TG_UNIT}" -p ExecStart --value)"
+works_exec="$(systemctl show "${WORKS_UNIT}" -p ExecStart --value)"
+[[ "${tg_exec}" == *gateway* ]] || { echo "provision: unexpected TG ExecStart" >&2; exit 15; }
+[[ "${works_exec}" == *works-api* ]] || { echo "provision: unexpected WORKS ExecStart" >&2; exit 15; }
 
 command -v openssl >/dev/null || { echo "provision: openssl missing" >&2; exit 14; }
 command -v curl >/dev/null || { echo "provision: curl missing" >&2; exit 14; }
 
 if [[ "${PROVISION_DRY_RUN:-0}" == "1" ]]; then
   echo "provision: DRY-RUN PASS host=${short_host}"
-  echo "provision: systemd-derived paths and canonical TG remote verified"
+  echo "provision: systemd EnvironmentFiles and service identities verified"
   exit 0
 fi
 
