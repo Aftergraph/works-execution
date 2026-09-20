@@ -2,7 +2,6 @@ package evidence_test
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -140,10 +139,9 @@ func seedV21Context(t *testing.T, st store.Store, w *workgraph.Work) *executionc
 	return c
 }
 
-func testExecutionPDRMAC(workID, contextID, pdrID string) string {
-	mac := hmac.New(sha256.New, []byte(testBridgeSecret))
-	_, _ = mac.Write([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
-	return hex.EncodeToString(mac.Sum(nil))
+func testExecutionPDRBindingDigest(workID, contextID, pdrID string) string {
+	sum := sha256.Sum256([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
+	return hex.EncodeToString(sum[:])
 }
 
 func appendExecutionPDR(t *testing.T, st store.Store, w *workgraph.Work, contextID, pdrID string) {
@@ -162,7 +160,7 @@ func appendExecutionPDR(t *testing.T, st store.Store, w *workgraph.Work, context
 		WorkID:             w.ID,
 		ExecutionContextID: contextID,
 		ExecutionPDRID:     pdrID,
-		BindingHMAC:        testExecutionPDRMAC(w.ID, contextID, pdrID),
+		BindingDigest:      testExecutionPDRBindingDigest(w.ID, contextID, pdrID),
 	})
 	if err != nil {
 		t.Fatalf("RecordExecutionPolicyCorrelation: %v", err)
@@ -201,6 +199,24 @@ func TestProduce_V21IdentityChainRequiresActionTimePDRCorrelation(t *testing.T) 
 	}
 	for k, v := range want {
 		if b.IdentityChain[k] != v { t.Fatalf("identity_chain[%s]=%q want %q", k, b.IdentityChain[k], v) }
+	}
+}
+
+func TestProduce_V21CorrelationSurvivesBridgeSecretRotation(t *testing.T) {
+	st := newTestStore(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+	appendExecutionPDR(t, st, w, ctx.ID, "pdr_77777777777777777777777777777777")
+
+	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
+		KeyID: testKeyID,
+		HMACKey: testKey(),
+		PlatformBridgeSecret: []byte("rotated-platform-bridge-secret-abcdefghijklmnopqrstuvwxyz"),
+		Runner: testRunner(),
+	})
+	if err != nil { t.Fatal(err) }
+	if b.PlatformVerification == nil || b.PlatformVerification.Status != "correlated" {
+		t.Fatalf("bridge-secret rotation degraded durable correlation: %#v", b.PlatformVerification)
 	}
 }
 
