@@ -13,7 +13,7 @@ work:
           set -eu;
           stage="$(cat /tmp/aftergraph-v21-activation-stage 2>/dev/null || true)";
           case "$stage" in
-            preflight|works-build|tg-release|credentials) exit 0 ;;
+            preflight|works-build) exit 0 ;;
             *) exit 1 ;;
           esac
         timeout_s: 30
