@@ -28,6 +28,7 @@ import (
 const (
 	testKeyID = "test-key-v1"
 	testBridgeSecret = "works-platform-bridge-test-secret-0123456789"
+	testPlatformToken = "works-platform-api-token-test-0123456789abcdef"
 )
 
 func testKey() []byte {
@@ -458,6 +459,7 @@ func newTestAPIServer(t *testing.T) (*api.Server, *httptest.Server, store.Store)
 	st := newTestStore(t)
 	srv := &api.Server{
 		Store: st,
+		PlatformAPIToken: []byte(testPlatformToken),
 		EvidenceConfig: &api.EvidenceConfig{
 			KeyID:   testKeyID,
 			HMACKey: testKey(),
@@ -477,6 +479,7 @@ func postExecutionPDR(t *testing.T, base, workID, contextID, pdrID string) (int,
 	req, err := http.NewRequest(http.MethodPost, base+"/v1/works/"+workID+"/evidence", body)
 	if err != nil { t.Fatal(err) }
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testPlatformToken)
 	req.Header.Set("X-Works-Platform-Bridge", testBridgeSecret)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil { t.Fatal(err) }
@@ -484,6 +487,51 @@ func postExecutionPDR(t *testing.T, base, workID, contextID, pdrID string) (int,
 	var out map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	return resp.StatusCode, out
+}
+
+
+func TestExecutionPDRCorrelationIngest_RequiresDedicatedPlatformToken(t *testing.T) {
+	t.Setenv("WORKS_PLATFORM_BRIDGE_SECRET", testBridgeSecret)
+	st := newTestStore(t)
+	srv := &api.Server{Store: st, PlatformAPIToken: []byte(testPlatformToken)}
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	body := strings.NewReader(fmt.Sprintf(`{"execution_context_id":%q,"execution_pdr_id":%q}`, ctx.ID, "pdr_77777777777777777777777777777777"))
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/works/"+w.ID+"/evidence", body)
+	if err != nil { t.Fatal(err) }
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Works-Platform-Bridge", testBridgeSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("missing platform bearer status=%d want 401", resp.StatusCode)
+	}
+}
+
+func TestExecutionPDRCorrelationIngest_UnconfiguredPlatformTokenFailsClosed(t *testing.T) {
+	t.Setenv("WORKS_PLATFORM_BRIDGE_SECRET", testBridgeSecret)
+	st := newTestStore(t)
+	srv := &api.Server{Store: st}
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	body := strings.NewReader(fmt.Sprintf(`{"execution_context_id":%q,"execution_pdr_id":%q}`, ctx.ID, "pdr_77777777777777777777777777777777"))
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/works/"+w.ID+"/evidence", body)
+	if err != nil { t.Fatal(err) }
+	req.Header.Set("Authorization", "Bearer "+testPlatformToken)
+	req.Header.Set("X-Works-Platform-Bridge", testBridgeSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured platform token status=%d want 503", resp.StatusCode)
+	}
 }
 
 func TestExecutionPDRCorrelationIngest_IdempotentAndConflictSafe(t *testing.T) {
