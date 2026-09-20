@@ -8,14 +8,12 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      tg-process-cwd:
+      tg-process-git-metadata:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
           if [ "$(id -u)" -eq 0 ]; then P=""; else sudo -n true; P="sudo -n"; fi;
           PID="$($P systemctl show tg-gateway.service -p MainPID --value)";
-          test "$PID" -gt 1;
-          $P test -e "/proc/$PID/cwd";
-          $P test -f "/proc/$PID/cwd/bin/gateway.js";
-          echo "tg-process-cwd=PASS"
+          $P test -e "/proc/$PID/cwd/.git";
+          echo "tg-process-git-metadata=PASS"
         timeout_s: 30
