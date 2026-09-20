@@ -2,9 +2,13 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -50,6 +54,142 @@ type outcomeVerificationProjection struct {
 	VerifiedAt  string `json:"verified_at,omitempty"`
 }
 
+type platformVerificationProjection struct {
+	Status        string `json:"status"`
+	Reason        string `json:"reason,omitempty"`
+	OutcomeStatus string `json:"outcome_status,omitempty"`
+}
+
+var executionContextIDRE = regexp.MustCompile("^ctx_[a-f0-9]{32}$")
+var executionPDRIDRE = regexp.MustCompile("^pdr_[a-f0-9]{32}$")
+
+type executionPolicyDecisionRef struct {
+	ExecutionContextID string `json:"execution_context_id"`
+	ExecutionPDRID     string `json:"execution_pdr_id"`
+}
+
+func executionPolicyBindingDigest(workID, contextID, pdrID string) string {
+	sum := sha256.Sum256([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
+	return hex.EncodeToString(sum[:])
+}
+
+func (s *Server) recordExecutionPolicyDecision(w http.ResponseWriter, r *http.Request, workID string) {
+	if len(s.PlatformAPIToken) < 32 {
+		writeError(w, http.StatusServiceUnavailable, "platform_auth_unavailable", "platform API token not configured")
+		return
+	}
+	const bearerPrefix = "Bearer "
+	authz := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authz, bearerPrefix) {
+		writeError(w, http.StatusUnauthorized, "platform_auth_required", "platform Bearer token required")
+		return
+	}
+	gotToken := strings.TrimSpace(authz[len(bearerPrefix):])
+	if gotToken == "" || subtle.ConstantTimeCompare([]byte(gotToken), s.PlatformAPIToken) != 1 {
+		writeError(w, http.StatusUnauthorized, "platform_auth_failed", "invalid platform Bearer token")
+		return
+	}
+
+	bridgeSecret := bridgeSecretFromEnv()
+	if !BridgeSecretConfigured(bridgeSecret) {
+		writeError(w, http.StatusServiceUnavailable, "bridge_unavailable", "platform bridge not configured")
+		return
+	}
+	gotBridge := r.Header.Get("X-Works-Platform-Bridge")
+	if gotBridge == "" || subtle.ConstantTimeCompare([]byte(gotBridge), []byte(bridgeSecret)) != 1 {
+		writeError(w, http.StatusUnauthorized, "bridge_unauthorized", "missing or invalid platform bridge header")
+		return
+	}
+
+	var body executionPolicyDecisionRef
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if !executionContextIDRE.MatchString(body.ExecutionContextID) || !executionPDRIDRE.MatchString(body.ExecutionPDRID) {
+		writeError(w, http.StatusBadRequest, "invalid_platform_reference", "canonical execution context and PDR ids required")
+		return
+	}
+
+	type correlationRecorder interface {
+		RecordExecutionPolicyCorrelation(
+			context.Context,
+			store.ExecutionPolicyCorrelation,
+		) (*store.ExecutionPolicyCorrelation, bool, error)
+	}
+	recorder, ok := s.Store.(correlationRecorder)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "platform_correlation_unavailable", "store does not support platform correlation")
+		return
+	}
+
+	correlation, replayed, err := recorder.RecordExecutionPolicyCorrelation(
+		r.Context(),
+		store.ExecutionPolicyCorrelation{
+			WorkID:             workID,
+			ExecutionContextID: body.ExecutionContextID,
+			ExecutionPDRID:     body.ExecutionPDRID,
+			BindingDigest: executionPolicyBindingDigest(
+				workID,
+				body.ExecutionContextID,
+				body.ExecutionPDRID,
+			),
+		},
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "execution_context_not_found", body.ExecutionContextID)
+		case errors.Is(err, store.ErrExecutionPolicyContextMismatch):
+			writeError(w, http.StatusConflict, "execution_context_work_mismatch", "execution context belongs to another work")
+		case errors.Is(err, store.ErrExecutionPolicyCorrelationConflict):
+			writeError(w, http.StatusConflict, "execution_pdr_conflict", "execution context already correlated to another PDR")
+		default:
+			writeError(w, http.StatusInternalServerError, "platform_correlation_failed", err.Error())
+		}
+		return
+	}
+
+	status := "recorded"
+	httpStatus := http.StatusCreated
+	if replayed {
+		status = "already_recorded"
+		httpStatus = http.StatusOK
+	}
+	writeJSON(w, httpStatus, map[string]any{
+		"status":               status,
+		"execution_context_id": correlation.ExecutionContextID,
+		"execution_pdr_id":     correlation.ExecutionPDRID,
+	})
+
+}
+
+func projectPlatformVerification(bundle *evidence.Bundle, outcome outcomeVerificationProjection) *platformVerificationProjection {
+	if bundle == nil || bundle.PlatformVerification == nil {
+		return nil
+	}
+	if bundle.PlatformVerification.Status == "provenance_gap" {
+		return &platformVerificationProjection{
+			Status: "provenance_gap",
+			Reason: bundle.PlatformVerification.Reason,
+			OutcomeStatus: outcome.Status,
+		}
+	}
+	if bundle.PlatformVerification.Status != "correlated" {
+		return &platformVerificationProjection{Status: "provenance_gap", Reason: "invalid_platform_correlation"}
+	}
+	switch outcome.Status {
+	case "passed":
+		return &platformVerificationProjection{Status: "verified", OutcomeStatus: outcome.Status}
+	case "failed":
+		return &platformVerificationProjection{Status: "failed", OutcomeStatus: outcome.Status}
+	default:
+		return &platformVerificationProjection{Status: "pending", OutcomeStatus: outcome.Status}
+	}
+}
+
 // workEvidenceHandler implements GET /v1/works/{id}/evidence.
 //
 // It produces an evidence.Bundle from the durable Work state and returns
@@ -65,10 +205,6 @@ type outcomeVerificationProjection struct {
 //   503 — EvidenceConfig not configured on the server
 //   500 — store / canonicalize failure
 func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", r.Method)
-		return
-	}
 	path := strings.TrimPrefix(r.URL.Path, "/v1/works/")
 	parts := strings.Split(path, "/")
 	if len(parts) != 2 || parts[0] == "" {
@@ -76,6 +212,14 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workID := parts[0]
+	if r.Method == http.MethodPost {
+		s.recordExecutionPolicyDecision(w, r, workID)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", r.Method)
+		return
+	}
 
 	if s.EvidenceConfig == nil {
 		writeError(w, http.StatusServiceUnavailable, "evidence_unavailable", "evidence producer not configured")
@@ -83,9 +227,10 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := evidence.ProducerConfig{
-		KeyID:   s.EvidenceConfig.KeyID,
-		HMACKey: s.EvidenceConfig.HMACKey,
-		Runner:  s.EvidenceConfig.Runner,
+		KeyID:                s.EvidenceConfig.KeyID,
+		HMACKey:              s.EvidenceConfig.HMACKey,
+		PlatformBridgeSecret: []byte(bridgeSecretFromEnv()),
+		Runner:               s.EvidenceConfig.Runner,
 	}
 
 	bundle, err := evidence.Produce(r.Context(), s.Store, workID, cfg)
@@ -137,5 +282,11 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out["outcome_verification"] = ov
+	if pv := projectPlatformVerification(bundle, ov); pv != nil {
+		// Keep the signed bundle's platform_verification field untouched.
+		// This response-only projection combines signed provenance completeness
+		// with the independent verifier verdict without invalidating bundle_id/HMAC.
+		out["platform_outcome_verification"] = pv
+	}
 	writeJSON(w, http.StatusOK, out)
 }

@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"time"
 
@@ -69,16 +70,23 @@ type Environment struct {
 // Bundle is the wire shape that satisfies
 // docs/standards/schemas/evidence-bundle.schema.json (M1-extended).
 type Bundle struct {
-	BundleID     string       `json:"bundle_id"`
-	WorkID       string       `json:"work_id"`
-	PolicyVer    string       `json:"policy_version,omitempty"`
-	Runner       *Runner      `json:"runner,omitempty"`
-	Source       *Source      `json:"source,omitempty"`     // M1
-	Environment  *Environment `json:"environment,omitempty"`// M1
-	CreatedAt    time.Time    `json:"created_at"`
-	Summary      Summary      `json:"summary"`
-	Components   Components   `json:"components"`
-	Signatures   []Signature  `json:"signatures,omitempty"`
+	BundleID             string                `json:"bundle_id"`
+	WorkID               string                `json:"work_id"`
+	PolicyVer            string                `json:"policy_version,omitempty"`
+	Runner               *Runner               `json:"runner,omitempty"`
+	Source               *Source               `json:"source,omitempty"`     // M1
+	Environment          *Environment          `json:"environment,omitempty"`// M1
+	IdentityChain        map[string]string     `json:"identity_chain,omitempty"`
+	PlatformVerification *PlatformVerification `json:"platform_verification,omitempty"`
+	CreatedAt            time.Time             `json:"created_at"`
+	Summary              Summary               `json:"summary"`
+	Components           Components            `json:"components"`
+	Signatures           []Signature            `json:"signatures,omitempty"`
+}
+
+type PlatformVerification struct {
+	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // Runner identifies the executor that produced the bundle.
@@ -166,6 +174,11 @@ type ProducerConfig struct {
 	KeyID string
 	// HMACKey is the symmetric key used to sign the bundle. Required.
 	HMACKey []byte
+	// PlatformBridgeSecret is retained for N-1 configuration compatibility.
+	// Platform-only correlations no longer derive integrity from this rotatable
+	// transport secret; authority comes from the authenticated write boundary
+	// and the durable platform-owned correlation row.
+	PlatformBridgeSecret []byte
 	// Runner describes the executor. Required.
 	Runner Runner
 	// Now overrides time.Now for tests. Defaults to time.Now().UTC().
@@ -294,6 +307,46 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 		})
 	}
 
+	// Platform V2.1 correlation is provenance only. Presence of these references
+	// must never be used as live authorization inside evidence production.
+	contexts, err := st.ListExecutionContextsByWorkID(ctx, workID)
+	if err != nil {
+		return nil, fmt.Errorf("evidence: load execution contexts: %w", err)
+	}
+	if len(contexts) > 0 {
+		// Reauthorization creates a new immutable context; the latest durable
+		// context is the one whose correlation must be complete for this bundle.
+		platformCtx := contexts[len(contexts)-1]
+		identity := map[string]string{
+			"organization_id":       platformCtx.OrganizationID,
+			"tenant_id":             platformCtx.TenantID,
+			"principal_id":          platformCtx.PrincipalID,
+			"mission_id":            platformCtx.MissionID,
+			"authority_lease_id":    platformCtx.AuthorityLeaseID,
+			"execution_context_id":  platformCtx.ID,
+			"work_id":               platformCtx.WorkID,
+			"worker_id":             platformCtx.WorkerID,
+			"worker_lease_id":       platformCtx.WorkerLeaseID,
+			"admission_decision_id": platformCtx.AdmissionDecisionID,
+			"trace_id":              platformCtx.TraceID,
+		}
+		executionPDRID, corrErr := executionPDRForContext(ctx, st, workID, platformCtx.ID)
+		if corrErr != nil {
+			return nil, fmt.Errorf("evidence: load execution policy correlation: %w", corrErr)
+		}
+		if executionPDRID == "" {
+			b.IdentityChain = identity
+			b.PlatformVerification = &PlatformVerification{
+				Status: "provenance_gap",
+				Reason: "missing_execution_policy_decision",
+			}
+		} else {
+			identity["execution_policy_decision_id"] = executionPDRID
+			b.IdentityChain = identity
+			b.PlatformVerification = &PlatformVerification{Status: "correlated"}
+		}
+	}
+
 	// Compute bundle_id over the canonical bytes (signatures stripped,
 	// bundle_id replaced by a 32-zero placeholder). This is the
 	// standard trick used by in-toto / Sigstore attestations: the id
@@ -337,6 +390,40 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 		return nil, err
 	}
 	return b, nil
+}
+
+
+var executionPDRIDPattern = regexp.MustCompile("^pdr_[a-f0-9]{32}$")
+
+func executionPDRBindingDigest(workID, contextID, pdrID string) string {
+	sum := sha256.Sum256([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
+	return hex.EncodeToString(sum[:])
+}
+
+func executionPDRForContext(
+	ctx context.Context,
+	st store.Store,
+	workID, executionContextID string,
+) (string, error) {
+	type correlationReader interface {
+		GetExecutionPolicyCorrelation(context.Context, string) (*store.ExecutionPolicyCorrelation, error)
+	}
+	reader, ok := st.(correlationReader)
+	if !ok {
+		return "", nil
+	}
+	rec, err := reader.GetExecutionPolicyCorrelation(ctx, executionContextID)
+	if err != nil {
+		return "", err
+	}
+	if rec == nil ||
+		rec.WorkID != workID ||
+		rec.ExecutionContextID != executionContextID ||
+		!executionPDRIDPattern.MatchString(rec.ExecutionPDRID) ||
+		rec.BindingDigest != executionPDRBindingDigest(workID, executionContextID, rec.ExecutionPDRID) {
+		return "", nil
+	}
+	return rec.ExecutionPDRID, nil
 }
 
 // summaryOf derives the bundle summary from the Work's terminal state and

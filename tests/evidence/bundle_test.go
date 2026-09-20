@@ -6,14 +6,17 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/JonasAbde/works-execution/packages/executioncontext"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/api"
 	"github.com/JonasAbde/works-execution/services/evidence"
@@ -24,6 +27,8 @@ import (
 
 const (
 	testKeyID = "test-key-v1"
+	testBridgeSecret = "works-platform-bridge-test-secret-0123456789"
+	testPlatformToken = "works-platform-api-token-test-0123456789abcdef"
 )
 
 func testKey() []byte {
@@ -68,7 +73,7 @@ func seedTerminalWork(t *testing.T, st store.Store, result workgraph.State) *wor
 	if _, err := st.UpdateState(ctx, w.ID, workgraph.StateQueued); err != nil {
 		t.Fatalf("UpdateState QUEUED: %v", err)
 	}
-	lease, _, err := st.GrantLease(ctx, w.ID, "a", "worker-1", 5*time.Second)
+	lease, _, err := st.GrantLease(ctx, w.ID, "a", "wrkr_11111111111111111111111111111111", 5*time.Second)
 	if err != nil {
 		t.Fatalf("GrantLease: %v", err)
 	}
@@ -109,14 +114,192 @@ func seedTerminalWork(t *testing.T, st store.Store, result workgraph.State) *wor
 	return w2
 }
 
+
+func seedV21Context(t *testing.T, st store.Store, w *workgraph.Work) *executioncontext.Context {
+	t.Helper()
+	ctx := context.Background()
+	leases, err := st.LeasesByWorkID(ctx, w.ID)
+	if err != nil || len(leases) == 0 {
+		t.Fatalf("LeasesByWorkID: %v len=%d", err, len(leases))
+	}
+	c, err := st.CreateExecutionContext(ctx, executioncontext.Context{
+		WorkID:              w.ID,
+		OrganizationID:      "org_11111111111111111111111111111111",
+		TenantID:            "ten_22222222222222222222222222222222",
+		PrincipalID:         "prn_33333333333333333333333333333333",
+		MissionID:           "mis_example",
+		AuthorityLeaseID:    "auth_44444444444444444444444444444444",
+		WorkerLeaseID:       leases[0].ID,
+		AdmissionDecisionID: "pdr_55555555555555555555555555555555",
+		TraceID:             "trc_66666666666666666666666666666666",
+	})
+	if err != nil {
+		t.Fatalf("CreateExecutionContext: %v", err)
+	}
+	return c
+}
+
+func testExecutionPDRBindingDigest(workID, contextID, pdrID string) string {
+	sum := sha256.Sum256([]byte(workID + "\x00" + contextID + "\x00" + pdrID))
+	return hex.EncodeToString(sum[:])
+}
+
+func appendExecutionPDR(t *testing.T, st store.Store, w *workgraph.Work, contextID, pdrID string) {
+	t.Helper()
+	type recorder interface {
+		RecordExecutionPolicyCorrelation(
+			context.Context,
+			store.ExecutionPolicyCorrelation,
+		) (*store.ExecutionPolicyCorrelation, bool, error)
+	}
+	rd, ok := st.(recorder)
+	if !ok {
+		t.Fatalf("store does not implement RecordExecutionPolicyCorrelation: %T", st)
+	}
+	_, _, err := rd.RecordExecutionPolicyCorrelation(context.Background(), store.ExecutionPolicyCorrelation{
+		WorkID:             w.ID,
+		ExecutionContextID: contextID,
+		ExecutionPDRID:     pdrID,
+		BindingDigest:      testExecutionPDRBindingDigest(w.ID, contextID, pdrID),
+	})
+	if err != nil {
+		t.Fatalf("RecordExecutionPolicyCorrelation: %v", err)
+	}
+}
+
 // --- producer tests ---------------------------------------------------------
+
+
+func TestProduce_V21IdentityChainRequiresActionTimePDRCorrelation(t *testing.T) {
+	st := newTestStore(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+	appendExecutionPDR(t, st, w, ctx.ID, "pdr_77777777777777777777777777777777")
+
+	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
+	})
+	if err != nil { t.Fatalf("Produce: %v", err) }
+	if b.PlatformVerification == nil || b.PlatformVerification.Status != "correlated" {
+		t.Fatalf("platform verification = %#v, want correlated", b.PlatformVerification)
+	}
+	want := map[string]string{
+		"organization_id": "org_11111111111111111111111111111111",
+		"tenant_id": "ten_22222222222222222222222222222222",
+		"principal_id": "prn_33333333333333333333333333333333",
+		"mission_id": "mis_example",
+		"authority_lease_id": "auth_44444444444444444444444444444444",
+		"execution_context_id": ctx.ID,
+		"work_id": w.ID,
+		"worker_id": ctx.WorkerID,
+		"worker_lease_id": ctx.WorkerLeaseID,
+		"admission_decision_id": "pdr_55555555555555555555555555555555",
+		"trace_id": "trc_66666666666666666666666666666666",
+		"execution_policy_decision_id": "pdr_77777777777777777777777777777777",
+	}
+	for k, v := range want {
+		if b.IdentityChain[k] != v { t.Fatalf("identity_chain[%s]=%q want %q", k, b.IdentityChain[k], v) }
+	}
+}
+
+func TestProduce_V21CorrelationSurvivesBridgeSecretRotation(t *testing.T) {
+	st := newTestStore(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+	appendExecutionPDR(t, st, w, ctx.ID, "pdr_77777777777777777777777777777777")
+
+	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
+		KeyID: testKeyID,
+		HMACKey: testKey(),
+		PlatformBridgeSecret: []byte("rotated-platform-bridge-secret-abcdefghijklmnopqrstuvwxyz"),
+		Runner: testRunner(),
+	})
+	if err != nil { t.Fatal(err) }
+	if b.PlatformVerification == nil || b.PlatformVerification.Status != "correlated" {
+		t.Fatalf("bridge-secret rotation degraded durable correlation: %#v", b.PlatformVerification)
+	}
+}
+
+func TestProduce_V21MissingActionTimePDRIsExplicitProvenanceGap(t *testing.T) {
+	st := newTestStore(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
+	})
+	if err != nil { t.Fatalf("Produce: %v", err) }
+	if b.IdentityChain["execution_context_id"] != ctx.ID {
+		t.Fatalf("context correlation missing: %#v", b.IdentityChain)
+	}
+	if b.PlatformVerification == nil ||
+		b.PlatformVerification.Status != "provenance_gap" ||
+		b.PlatformVerification.Reason != "missing_execution_policy_decision" {
+		t.Fatalf("platform verification = %#v", b.PlatformVerification)
+	}
+	if _, ok := b.IdentityChain["execution_policy_decision_id"]; ok {
+		t.Fatal("missing PDR must not be invented")
+	}
+}
+
+
+func TestProduce_V21WorkerForgedPDRWithoutBridgeMACDoesNotCloseGap(t *testing.T) {
+	st := newTestStore(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+	_, err := st.AppendEvidence(context.Background(), w.ID, workgraph.Evidence{
+		ID: workgraph.NewID("evd"), NodeID: "a", AttemptID: w.Attempts[0].ID,
+		Type: "policy", Result: "pass", RecordedAt: time.Now().UTC(),
+		Signer: "trust-gateway",
+		Details: map[string]any{
+			"record_kind": "execution_policy_decision",
+			"execution_context_id": ctx.ID,
+			"execution_pdr_id": "pdr_77777777777777777777777777777777",
+		},
+	})
+	if err != nil { t.Fatal(err) }
+
+	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
+		KeyID: testKeyID, HMACKey: testKey(),
+		PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
+	})
+	if err != nil { t.Fatal(err) }
+	if b.PlatformVerification == nil || b.PlatformVerification.Status != "provenance_gap" {
+		t.Fatalf("worker-forged PDR closed provenance gap: %#v", b.PlatformVerification)
+	}
+}
+
+func TestProduce_V21WorkerEvidenceForDifferentContextDoesNotCloseGap(t *testing.T) {
+	st := newTestStore(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	_ = seedV21Context(t, st, w)
+	_, err := st.AppendEvidence(context.Background(), w.ID, workgraph.Evidence{
+		ID: workgraph.NewID("evd"), NodeID: "a", AttemptID: w.Attempts[0].ID,
+		Type: "policy", Result: "pass", RecordedAt: time.Now().UTC(),
+		Details: map[string]any{
+			"record_kind": "execution_policy_decision",
+			"execution_context_id": "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"execution_pdr_id": "pdr_77777777777777777777777777777777",
+			"binding_hmac": strings.Repeat("0", 64),
+		},
+	})
+	if err != nil { t.Fatal(err) }
+
+	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
+	})
+	if err != nil { t.Fatalf("Produce: %v", err) }
+	if b.PlatformVerification == nil || b.PlatformVerification.Status != "provenance_gap" {
+		t.Fatalf("worker evidence closed provenance gap: %#v", b.PlatformVerification)
+	}
+}
 
 func TestProduce_HappyPath_Succeeded(t *testing.T) {
 	st := newTestStore(t)
 	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
 
 	cfg := evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 		Now: func() time.Time { return time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC) },
 	}
 	b, err := evidence.Produce(context.Background(), st, w.ID, cfg)
@@ -215,7 +398,7 @@ func TestProduce_RejectsNonTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 	})
 	if !errors.Is(err, evidence.ErrWorkNotTerminal) {
 		t.Errorf("got %v, want ErrWorkNotTerminal", err)
@@ -225,7 +408,7 @@ func TestProduce_RejectsNonTerminal(t *testing.T) {
 func TestProduce_NotFound(t *testing.T) {
 	st := newTestStore(t)
 	_, err := evidence.Produce(context.Background(), st, "wrk_does_not_exist", evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 	})
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)
@@ -282,7 +465,7 @@ func TestProduce_TamperDetected(t *testing.T) {
 	st := newTestStore(t)
 	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
 	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
-		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+		KeyID: testKeyID, HMACKey: testKey(), PlatformBridgeSecret: []byte(testBridgeSecret), Runner: testRunner(),
 	})
 	if err != nil {
 		t.Fatalf("Produce: %v", err)
@@ -301,9 +484,11 @@ func TestProduce_TamperDetected(t *testing.T) {
 
 func newTestAPIServer(t *testing.T) (*api.Server, *httptest.Server, store.Store) {
 	t.Helper()
+	t.Setenv("WORKS_PLATFORM_BRIDGE_SECRET", testBridgeSecret)
 	st := newTestStore(t)
 	srv := &api.Server{
 		Store: st,
+		PlatformAPIToken: []byte(testPlatformToken),
 		EvidenceConfig: &api.EvidenceConfig{
 			KeyID:   testKeyID,
 			HMACKey: testKey(),
@@ -313,6 +498,174 @@ func newTestAPIServer(t *testing.T) (*api.Server, *httptest.Server, store.Store)
 	ts := httptest.NewServer(srv.Routes())
 	t.Cleanup(ts.Close)
 	return srv, ts, st
+}
+
+
+
+func postExecutionPDR(t *testing.T, base, workID, contextID, pdrID string) (int, map[string]any) {
+	t.Helper()
+	body := strings.NewReader(fmt.Sprintf(`{"execution_context_id":%q,"execution_pdr_id":%q}`, contextID, pdrID))
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/works/"+workID+"/evidence", body)
+	if err != nil { t.Fatal(err) }
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testPlatformToken)
+	req.Header.Set("X-Works-Platform-Bridge", testBridgeSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
+}
+
+
+func TestExecutionPDRCorrelationIngest_RequiresDedicatedPlatformToken(t *testing.T) {
+	t.Setenv("WORKS_PLATFORM_BRIDGE_SECRET", testBridgeSecret)
+	st := newTestStore(t)
+	srv := &api.Server{Store: st, PlatformAPIToken: []byte(testPlatformToken)}
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	body := strings.NewReader(fmt.Sprintf(`{"execution_context_id":%q,"execution_pdr_id":%q}`, ctx.ID, "pdr_77777777777777777777777777777777"))
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/works/"+w.ID+"/evidence", body)
+	if err != nil { t.Fatal(err) }
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Works-Platform-Bridge", testBridgeSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("missing platform bearer status=%d want 401", resp.StatusCode)
+	}
+}
+
+func TestExecutionPDRCorrelationIngest_UnconfiguredPlatformTokenFailsClosed(t *testing.T) {
+	t.Setenv("WORKS_PLATFORM_BRIDGE_SECRET", testBridgeSecret)
+	st := newTestStore(t)
+	srv := &api.Server{Store: st}
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	body := strings.NewReader(fmt.Sprintf(`{"execution_context_id":%q,"execution_pdr_id":%q}`, ctx.ID, "pdr_77777777777777777777777777777777"))
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/works/"+w.ID+"/evidence", body)
+	if err != nil { t.Fatal(err) }
+	req.Header.Set("Authorization", "Bearer "+testPlatformToken)
+	req.Header.Set("X-Works-Platform-Bridge", testBridgeSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil { t.Fatal(err) }
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("unconfigured platform token status=%d want 503", resp.StatusCode)
+	}
+}
+
+func TestExecutionPDRCorrelationIngest_IdempotentAndConflictSafe(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	status, first := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, "pdr_77777777777777777777777777777777")
+	if status != http.StatusCreated { t.Fatalf("first status=%d body=%#v", status, first) }
+	status, replay := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, "pdr_77777777777777777777777777777777")
+	if status != http.StatusOK || replay["status"] != "already_recorded" {
+		t.Fatalf("replay status=%d body=%#v", status, replay)
+	}
+	if first["execution_context_id"] != replay["execution_context_id"] ||
+		first["execution_pdr_id"] != replay["execution_pdr_id"] {
+		t.Fatalf("idempotent replay changed correlation identity: %#v %#v", first, replay)
+	}
+
+	status, conflict := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, "pdr_88888888888888888888888888888888")
+	if status != http.StatusConflict || conflict["error"] != "execution_pdr_conflict" {
+		t.Fatalf("conflict status=%d body=%#v", status, conflict)
+	}
+}
+
+func TestExecutionPDRCorrelationIngest_WorkerPreseedCannotBlockAuthoritativeWrite(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	_, err := st.AppendEvidence(context.Background(), w.ID, workgraph.Evidence{
+		ID: workgraph.NewID("evd"), NodeID: "a", AttemptID: w.Attempts[0].ID,
+		Type: "policy", Result: "pass", RecordedAt: time.Now().UTC(),
+		Details: map[string]any{
+			"record_kind": "execution_policy_decision",
+			"execution_context_id": ctx.ID,
+			"execution_pdr_id": "pdr_88888888888888888888888888888888",
+			"binding_hmac": strings.Repeat("0", 64),
+		},
+	})
+	if err != nil { t.Fatal(err) }
+
+	status, out := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, "pdr_77777777777777777777777777777777")
+	if status != http.StatusCreated || out["status"] != "recorded" {
+		t.Fatalf("worker preseed blocked authoritative correlation: status=%d body=%#v", status, out)
+	}
+}
+
+func TestExecutionPDRCorrelationIngest_ConcurrentDifferentPDRsHaveSingleWinner(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	type result struct {
+		status int
+		body map[string]any
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, pdr := range []string{
+		"pdr_77777777777777777777777777777777",
+		"pdr_88888888888888888888888888888888",
+	} {
+		pdr := pdr
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			status, body := postExecutionPDR(t, ts.URL, w.ID, ctx.ID, pdr)
+			results <- result{status: status, body: body}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	created, conflicts := 0, 0
+	for got := range results {
+		switch got.status {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			if got.body["error"] != "execution_pdr_conflict" {
+				t.Fatalf("unexpected conflict body: %#v", got.body)
+			}
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent status=%d body=%#v", got.status, got.body)
+		}
+	}
+	if created != 1 || conflicts != 1 {
+		t.Fatalf("atomic single-winner law violated: created=%d conflicts=%d", created, conflicts)
+	}
+}
+
+func TestExecutionPDRCorrelationIngest_RejectsForeignContext(t *testing.T) {
+	_, ts, st := newTestAPIServer(t)
+	w1 := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	w2 := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w1)
+
+	status, out := postExecutionPDR(t, ts.URL, w2.ID, ctx.ID, "pdr_77777777777777777777777777777777")
+	if status != http.StatusConflict || out["error"] != "execution_context_work_mismatch" {
+		t.Fatalf("foreign context status=%d body=%#v", status, out)
+	}
 }
 
 func TestEvidenceEndpoint_GET_Succeeded(t *testing.T) {
@@ -395,9 +748,14 @@ func TestEvidenceEndpoint_409_NotTerminal(t *testing.T) {
 	}
 }
 
-func TestEvidenceEndpoint_405_PostNotAllowed(t *testing.T) {
+func TestEvidenceEndpoint_405_UnsupportedMethod(t *testing.T) {
 	_, ts, _ := newTestAPIServer(t)
-	resp, err := http.Post(ts.URL+"/v1/works/wrk_x/evidence", "application/json", strings.NewReader("{}"))
+	req, err := http.NewRequest(http.MethodPut, ts.URL+"/v1/works/wrk_x/evidence", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
