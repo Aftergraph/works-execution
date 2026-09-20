@@ -16,15 +16,15 @@ work:
           test "$(hostname -s)" = "vmi3517816";
           echo "host=vmi3517816"
         timeout_s: 30
-      privilege:
+      privileged-boundary:
         needs: [host-identity]
         run: >-
           set -eu;
-          echo "uid=$(id -u)";
-          if [ "$(id -u)" -eq 0 ]; then
-            echo "privilege=root";
-          else
-            sudo -n true;
-            echo "privilege=passwordless-sudo";
-          fi
+          if [ "$(id -u)" -eq 0 ]; then P=""; else sudo -n true; P="sudo -n"; fi;
+          $P test -d /root/agent-workforce;
+          $P test -r /root/agent-workforce/data/gateway.env;
+          $P test -r /etc/works/works.env;
+          $P systemctl cat tg-gateway.service >/dev/null;
+          $P systemctl cat works-api.service >/dev/null;
+          echo "v21-privileged-boundary=PASS"
         timeout_s: 30
