@@ -123,7 +123,7 @@ func TestPlatformVerification_PassedOutcomeStillFailsClosedOnProvenanceGap(t *te
 	if ov["status"] != "passed" {
 		t.Fatalf("independent verifier projection changed: %#v", ov)
 	}
-	pv := got["platform_verification"].(map[string]any)
+	pv := got["platform_outcome_verification"].(map[string]any)
 	if pv["status"] != "provenance_gap" || pv["outcome_status"] != "passed" {
 		t.Fatalf("passed outcome bypassed provenance gate: %#v", pv)
 	}
@@ -147,7 +147,7 @@ func TestPlatformVerification_CompleteCorrelationAndPassedOutcomeProjectsVerifie
 	var got map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil { t.Fatal(err) }
 
-	pv := got["platform_verification"].(map[string]any)
+	pv := got["platform_outcome_verification"].(map[string]any)
 	if pv["status"] != "verified" || pv["outcome_status"] != "passed" {
 		t.Fatalf("complete V2.1 provenance not projected verified: %#v", pv)
 	}
