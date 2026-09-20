@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JonasAbde/works-execution/packages/executioncontext"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/api"
 	"github.com/JonasAbde/works-execution/services/evidence"
@@ -109,7 +110,122 @@ func seedTerminalWork(t *testing.T, st store.Store, result workgraph.State) *wor
 	return w2
 }
 
+
+func seedV21Context(t *testing.T, st store.Store, w *workgraph.Work) *executioncontext.Context {
+	t.Helper()
+	ctx := context.Background()
+	leases, err := st.LeasesByWorkID(ctx, w.ID)
+	if err != nil || len(leases) == 0 {
+		t.Fatalf("LeasesByWorkID: %v len=%d", err, len(leases))
+	}
+	c, err := st.CreateExecutionContext(ctx, executioncontext.Context{
+		WorkID:              w.ID,
+		OrganizationID:      "org_11111111111111111111111111111111",
+		TenantID:            "ten_22222222222222222222222222222222",
+		PrincipalID:         "prn_33333333333333333333333333333333",
+		MissionID:           "mis_example",
+		AuthorityLeaseID:    "auth_44444444444444444444444444444444",
+		WorkerLeaseID:       leases[0].ID,
+		AdmissionDecisionID: "pdr_55555555555555555555555555555555",
+		TraceID:             "trc_66666666666666666666666666666666",
+	})
+	if err != nil {
+		t.Fatalf("CreateExecutionContext: %v", err)
+	}
+	return c
+}
+
+func appendExecutionPDR(t *testing.T, st store.Store, w *workgraph.Work, contextID, pdrID string) {
+	t.Helper()
+	_, err := st.AppendEvidence(context.Background(), w.ID, workgraph.Evidence{
+		ID:         workgraph.NewID("evd"),
+		NodeID:     "a",
+		AttemptID:  w.Attempts[0].ID,
+		Type:       "policy",
+		Result:     "pass",
+		RecordedAt: time.Now().UTC(),
+		Details: map[string]any{
+			"record_kind":          "execution_policy_decision",
+			"execution_context_id": contextID,
+			"execution_pdr_id":     pdrID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("AppendEvidence execution PDR: %v", err)
+	}
+}
+
 // --- producer tests ---------------------------------------------------------
+
+
+func TestProduce_V21IdentityChainRequiresActionTimePDRCorrelation(t *testing.T) {
+	st := newTestStore(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+	appendExecutionPDR(t, st, w, ctx.ID, "pdr_77777777777777777777777777777777")
+
+	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
+		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+	})
+	if err != nil { t.Fatalf("Produce: %v", err) }
+	if b.PlatformVerification == nil || b.PlatformVerification.Status != "correlated" {
+		t.Fatalf("platform verification = %#v, want correlated", b.PlatformVerification)
+	}
+	want := map[string]string{
+		"organization_id": "org_11111111111111111111111111111111",
+		"tenant_id": "ten_22222222222222222222222222222222",
+		"principal_id": "prn_33333333333333333333333333333333",
+		"mission_id": "mis_example",
+		"authority_lease_id": "auth_44444444444444444444444444444444",
+		"execution_context_id": ctx.ID,
+		"work_id": w.ID,
+		"worker_id": ctx.WorkerID,
+		"worker_lease_id": ctx.WorkerLeaseID,
+		"admission_decision_id": "pdr_55555555555555555555555555555555",
+		"trace_id": "trc_66666666666666666666666666666666",
+		"execution_policy_decision_id": "pdr_77777777777777777777777777777777",
+	}
+	for k, v := range want {
+		if b.IdentityChain[k] != v { t.Fatalf("identity_chain[%s]=%q want %q", k, b.IdentityChain[k], v) }
+	}
+}
+
+func TestProduce_V21MissingActionTimePDRIsExplicitProvenanceGap(t *testing.T) {
+	st := newTestStore(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	ctx := seedV21Context(t, st, w)
+
+	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
+		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+	})
+	if err != nil { t.Fatalf("Produce: %v", err) }
+	if b.IdentityChain["execution_context_id"] != ctx.ID {
+		t.Fatalf("context correlation missing: %#v", b.IdentityChain)
+	}
+	if b.PlatformVerification == nil ||
+		b.PlatformVerification.Status != "provenance_gap" ||
+		b.PlatformVerification.Reason != "missing_execution_policy_decision" {
+		t.Fatalf("platform verification = %#v", b.PlatformVerification)
+	}
+	if _, ok := b.IdentityChain["execution_policy_decision_id"]; ok {
+		t.Fatal("missing PDR must not be invented")
+	}
+}
+
+func TestProduce_V21PDRForDifferentContextDoesNotCloseGap(t *testing.T) {
+	st := newTestStore(t)
+	w := seedTerminalWork(t, st, workgraph.StateSucceeded)
+	_ = seedV21Context(t, st, w)
+	appendExecutionPDR(t, st, w, "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "pdr_77777777777777777777777777777777")
+
+	b, err := evidence.Produce(context.Background(), st, w.ID, evidence.ProducerConfig{
+		KeyID: testKeyID, HMACKey: testKey(), Runner: testRunner(),
+	})
+	if err != nil { t.Fatalf("Produce: %v", err) }
+	if b.PlatformVerification == nil || b.PlatformVerification.Status != "provenance_gap" {
+		t.Fatalf("mismatched PDR closed provenance gap: %#v", b.PlatformVerification)
+	}
+}
 
 func TestProduce_HappyPath_Succeeded(t *testing.T) {
 	st := newTestStore(t)
