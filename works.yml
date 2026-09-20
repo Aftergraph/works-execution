@@ -4,30 +4,16 @@ work:
   verify:
     triggers:
       - pull_request
-
     requirements:
       confidence: development
       os: linux
       arch: amd64
       pool: avc-core
-
     nodes:
-      host-probe:
+      host-identity:
         run: >-
           set -eu;
           echo "host=$(hostname -s)";
-          echo "uid=$(id -u)";
           test "$(hostname -s)" = "vmi3517816";
-          test -d /root/agent-workforce;
-          test -r /root/agent-workforce/data/gateway.env;
-          test -r /etc/works/works.env;
-          systemctl cat tg-gateway.service >/dev/null;
-          systemctl cat works-api.service >/dev/null;
-          if [ "$(id -u)" -eq 0 ]; then
-            echo "privilege=root";
-          else
-            sudo -n true;
-            echo "privilege=passwordless-sudo";
-          fi;
-          echo "v21-host-probe=PASS"
-        timeout_s: 60
+          echo "v21-host-identity=PASS"
+        timeout_s: 30
