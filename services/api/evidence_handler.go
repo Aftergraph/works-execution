@@ -235,9 +235,10 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := evidence.ProducerConfig{
-		KeyID:   s.EvidenceConfig.KeyID,
-		HMACKey: s.EvidenceConfig.HMACKey,
-		Runner:  s.EvidenceConfig.Runner,
+		KeyID:                s.EvidenceConfig.KeyID,
+		HMACKey:              s.EvidenceConfig.HMACKey,
+		PlatformBridgeSecret: []byte(bridgeSecretFromEnv()),
+		Runner:               s.EvidenceConfig.Runner,
 	}
 
 	bundle, err := evidence.Produce(r.Context(), s.Store, workID, cfg)
@@ -290,7 +291,10 @@ func (s *Server) workEvidenceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	out["outcome_verification"] = ov
 	if pv := projectPlatformVerification(bundle, ov); pv != nil {
-		out["platform_verification"] = pv
+		// Keep the signed bundle's platform_verification field untouched.
+		// This response-only projection combines signed provenance completeness
+		// with the independent verifier verdict without invalidating bundle_id/HMAC.
+		out["platform_outcome_verification"] = pv
 	}
 	writeJSON(w, http.StatusOK, out)
 }
