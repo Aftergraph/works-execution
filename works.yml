@@ -8,11 +8,11 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      tg-unit:
+      works-unit:
         run: >-
           set -eu;
           test "$(hostname -s)" = "vmi3517816";
           if [ "$(id -u)" -eq 0 ]; then P=""; else sudo -n true; P="sudo -n"; fi;
-          $P systemctl cat tg-gateway.service >/dev/null;
-          echo "tg-unit=PASS"
+          $P systemctl cat works-api.service >/dev/null;
+          echo "works-unit=PASS"
         timeout_s: 30
