@@ -35,6 +35,7 @@ func oidcFixture() (*Server, *httptest.Server) {
 			RepositoryID: "1356862124",
 			Ref: "refs/heads/bootstrap/lenovo-works-native",
 			WorkflowRef: "Aftergraph/intelligence-systems-research/.github/workflows/bootstrap-lenovo-works-native.yml@refs/heads/bootstrap/lenovo-works-native",
+			WorkflowSHA: "approved-workflow-sha",
 			RunnerEnvironment: "self-hosted",
 			EventName: "push",
 		},
