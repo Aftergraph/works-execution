@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -36,7 +37,7 @@ func bindSubjectV2(t *testing.T, base, workID, executionID, body string) *http.R
 	t.Helper()
 	req, err := http.NewRequest(
 		http.MethodPost,
-		base+"/v2/works/"+workID+"/acceptances/"+executionID+"/verification-subject",
+		base+"/v2/works/"+workID+"/acceptances/"+url.PathEscape(executionID)+"/verification-subject",
 		strings.NewReader(body),
 	)
 	if err != nil { t.Fatal(err) }
