@@ -1,0 +1,20 @@
+# Proof workload for the physical Jonas Lenovo WORKS pool.
+# Submit only after wrkr_jonas_lenovo is visible as alive.
+version: 1
+
+work:
+  lenovo-native-smoke:
+    requirements:
+      confidence: development
+      os: windows
+      arch: amd64
+      pool: jonas-lenovo
+
+    nodes:
+      identity:
+        run: |
+          if ([Environment]::MachineName -ne 'JONAS-LENOVO') { throw ('wrong_host:' + [Environment]::MachineName) }
+          Write-Output ('aftergraph-native-worker host=' + [Environment]::MachineName)
+          Write-Output ('powershell=' + $PSVersionTable.PSVersion.ToString())
+        cache: false
+        timeout_s: 60
