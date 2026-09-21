@@ -764,7 +764,8 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "sh", "-c", command)
+	shell, shellArgs := commandShell(runtime.GOOS, command)
+	cmd := exec.CommandContext(cctx, shell, shellArgs...)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}

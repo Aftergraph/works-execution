@@ -36,6 +36,14 @@ work:
         run: go test ./... -count=1
         timeout_s: 600
 
+      windows-worker-crossbuild:
+        needs: [test]
+        run: |
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o dist/works-worker-windows-amd64.exe ./cmd/works-worker
+          sha256sum dist/works-worker-windows-amd64.exe
+        timeout_s: 180
+
       build:
         needs: [test]
         run: make build
