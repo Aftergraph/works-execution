@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -76,7 +77,7 @@ func postMissionAcceptance(
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequest(
 		http.MethodPost,
-		base+"/v2/works/"+workID+"/acceptances/"+executionID+"/mission-acceptance",
+		base+"/v2/works/"+workID+"/acceptances/"+url.PathEscape(executionID)+"/mission-acceptance",
 		bytes.NewReader(raw),
 	)
 	if err != nil {
