@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,7 +132,7 @@ func TestMissionAcceptanceV2PersistsCurrentExactSentinelSHIP(t *testing.T) {
 		"verifier_id":          "sentinel:exact-head",
 		"sentinel_head_sha":    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		"sentinel_verdict":     "SHIP",
-		"sentinel_receipt_id":  "a" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"sentinel_receipt_id":  strings.Repeat("a", 64),
 	}
 	final := postMissionAcceptance(t, base, workID, accepted.WorksExecutionID, body, missionAcceptanceVerifierToken)
 	defer final.Body.Close()
@@ -180,7 +181,7 @@ func TestMissionAcceptanceV2FailsClosedOnStaleHeadOrMissingVerifierCredential(t 
 		"verifier_id":          "sentinel:exact-head",
 		"sentinel_head_sha":    "cccccccccccccccccccccccccccccccccccccccc",
 		"sentinel_verdict":     "SHIP",
-		"sentinel_receipt_id":  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"sentinel_receipt_id":  strings.Repeat("b", 64),
 	}
 	stale := postMissionAcceptance(t, base, workID, executionID, body, missionAcceptanceVerifierToken)
 	defer stale.Body.Close()
