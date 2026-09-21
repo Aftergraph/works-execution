@@ -25,12 +25,18 @@ materialize the real execution context:
 - Work route scope;
 - WorkerLease reference;
 - initial admission PDR;
-- Runtime dispatch/effect/idempotency/checkpoint/evidence references;
-- exact verification subject.
+- Runtime dispatch/effect/idempotency/checkpoint/evidence references.
+
+The final verification subject is intentionally absent from initial acceptance because it does not exist until the governed effect produces an immutable candidate.
 
 WORKS validates that the WorkerLease is active, unexpired and belongs to the
 route-scoped Work, mints `ctx_*` + `trc_*`, and commits the acceptance plus
 `execution-context/1.0` in one SQLite transaction.
+
+After the effect, Runtime binds the observed immutable subject through
+`dispatch.verification-subject/1.0`. The first binding wins; replaying the same
+subject is idempotent; a different subject for the same accepted execution is a
+conflict. For coding work the canonical subject is `git:<owner>/<repo>@<40hex>`.
 
 ## Authority boundary
 
@@ -50,6 +56,12 @@ AIE live revalidation
 execution-phase PDR
   ↓
 effect
+  ↓
+observed immutable candidate
+  ↓
+Runtime → WORKS exact-subject binding
+  ↓
+independent verification
 ```
 
 WORKS does not infer authority from Project, Work, WorkerLease, execution
@@ -66,10 +78,12 @@ A fresh V2 acceptance requires a current active WorkerLease.
 ## Failure laws
 
 - unknown/foreign/expired WorkerLease → fail closed;
-- client-supplied ctx/trc/authority_epoch → rejected by strict HTTP decoding;
+- client-supplied ctx/trc/authority_epoch/final verification subject at initial acceptance → rejected by strict HTTP decoding;
 - same idempotency key + different causal identity → fail closed;
 - acceptance insertion without context insertion → impossible by transaction;
 - context insertion without acceptance insertion → impossible by transaction;
+- verdict before post-effect subject binding → fail closed;
+- different-subject rebind → fail closed;
 - SUCCEEDED still does not imply VERIFIED.
 
 ## Freeze boundary

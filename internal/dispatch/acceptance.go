@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -41,6 +42,9 @@ var (
 	ErrV2StoreRequired        = errors.New("dispatch: contextual V2 store required")
 	ErrContextBinding         = errors.New("dispatch: V2 execution-context binding mismatch")
 	ErrWorkerLeaseUnavailable = errors.New("dispatch: V2 worker lease unavailable")
+	ErrSubjectNotBound         = errors.New("dispatch: verification subject not bound")
+	ErrSubjectConflict         = errors.New("dispatch: verification subject already bound to different subject")
+	ErrInvalidSubject          = errors.New("dispatch: invalid verification subject")
 )
 
 // Dispatch is the Runtime-built envelope. WORKS never mints these identities;
@@ -130,6 +134,162 @@ type V2Store interface {
 		binding V2Binding,
 	) (*Acceptance, *executioncontext.Context, error)
 }
+
+// VerificationSubjectBinding is an observed post-effect immutable subject.
+// It is not accepted from initial dispatch because the candidate does not yet
+// exist at that point.
+type VerificationSubjectBinding struct {
+	WorksExecutionID string
+	WorkID           string
+	AttemptID        string
+	EffectID         string
+	CausalID         string
+	Subject          string
+	BoundAt          time.Time
+}
+
+type VerificationSubjectStore interface {
+	BindVerificationSubject(
+		ctx context.Context,
+		binding VerificationSubjectBinding,
+	) (*VerificationSubjectBinding, error)
+	LoadVerificationSubject(
+		ctx context.Context,
+		worksExecutionID string,
+	) (*VerificationSubjectBinding, error)
+}
+
+var exactGitSubjectPattern = regexp.MustCompile(
+	`^git:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+@[a-f0-9]{40}// Package dispatch implements the Runtime → WORKS dispatch acceptance seal
+// (contract:dispatch.acceptance/1.0).
+//
+// Runtime dispatches; WORKS accepts durably. Acceptance is the exact seam
+// where "Runtime sent" becomes "WORKS owns": at-most-once effect identity,
+// authority freshness at accept time, budget ceiling binding, and a
+// verification gate that never lets SUCCEEDED become VERIFIED without an
+// independent verdict. Ambiguous consequential state resolves to
+// INDETERMINATE, never to silent success.
+package dispatch
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/JonasAbde/works-execution/packages/executioncontext"
+)
+
+// Sentinel failures. All are fail-closed: callers must not proceed with
+// protected work when Accept or a transition returns one of these.
+var (
+	ErrMissingBinding         = errors.New("dispatch: missing mission/authority/dispatch/idempotency binding")
+	ErrStaleAuthority         = errors.New("dispatch: authority epoch is stale")
+	ErrCausalMismatch         = errors.New("dispatch: idempotency key already bound to a different causal identity")
+	ErrUnknownAcceptance      = errors.New("dispatch: unknown works execution")
+	ErrEffectDuplicate        = errors.New("dispatch: effect already applied")
+	ErrEffectUnknown          = errors.New("dispatch: effect outcome unknown; INDETERMINATE")
+	ErrBudgetExhausted        = errors.New("dispatch: budget ceiling exhausted; autonomous retry forbidden")
+	ErrRevoked                = errors.New("dispatch: authority revoked mid-flight")
+	ErrSelfVerification       = errors.New("dispatch: executor cannot verify itself")
+	ErrStaleSubject           = errors.New("dispatch: verification subject is stale")
+	ErrVerifierUnavailable    = errors.New("dispatch: verifier unavailable; outcome stays UNVERIFIED")
+	ErrInvalidSpend           = errors.New("dispatch: spend amount must be positive")
+	ErrInvalidBudget          = errors.New("dispatch: persisted budget state is invalid")
+	ErrExecutionNotTerminal   = errors.New("dispatch: verification requires terminal execution outcome")
+	ErrMissingVerdictEvidence = errors.New("dispatch: verdict result and evidence reference are required")
+	ErrInvalidVerdict         = errors.New("dispatch: verdict result must be ACCEPT or REJECT")
+	ErrV2StoreRequired        = errors.New("dispatch: contextual V2 store required")
+	ErrContextBinding         = errors.New("dispatch: V2 execution-context binding mismatch")
+	ErrWorkerLeaseUnavailable = errors.New("dispatch: V2 worker lease unavailable")
+	ErrSubjectNotBound         = errors.New("dispatch: verification subject not bound")
+	ErrSubjectConflict         = errors.New("dispatch: verification subject already bound to different subject")
+	ErrInvalidSubject          = errors.New("dispatch: invalid verification subject")
+)
+
+// Dispatch is the Runtime-built envelope. WORKS never mints these identities;
+// it only accepts and records them.
+type Dispatch struct {
+	MissionID         string
+	AuthorityRef      string
+	AuthorityEpoch    int64
+	RuntimeDispatchID string
+	AttemptID         string
+	EffectID          string
+	IdempotencyKey    string
+	BudgetRef         string
+	BudgetCeiling     int64
+	CheckpointID      string
+	EvidenceRoot      string
+	VerificationSubj  string
+	CausalID          string
+}
+
+// VerificationVerdict is the immutable proof reference attached to an execution
+// verdict. The verifier identity remains duplicated on Acceptance for
+// compatibility with the frozen 1.0 record shape.
+type VerificationVerdict struct {
+	Result      string
+	Subject     string
+	EvidenceRef string
+	RecordedAt  time.Time
+}
+
+// Acceptance is the durable WORKS-owned record.
+type Acceptance struct {
+	ContractVersion  string
+	WorkID           string
+	WorksExecutionID string
+	Dispatch         Dispatch
+	AcceptedAt       time.Time
+	AuthorityEpochAt int64
+	EffectApplied    bool
+	BudgetSpent      int64
+	Revoked          bool
+	Outcome          string // ACCEPTED | SUCCEEDED | FAILED | INDETERMINATE
+	Verified         bool
+	VerifierID       string
+	Verdict          *VerificationVerdict
+	// ExecutionContextID and TraceID are WORKS-minted correlation identities
+	// bound at accept time (execution-context/1.0). They never arrive on the
+	// Runtime Dispatch envelope — clients cannot choose either field — and are
+	// stable across duplicate/retry of the same idempotency key because only the
+	// winning AcceptIfAbsent insert persists; every replay returns the winner's.
+	ExecutionContextID string
+	TraceID            string
+}
+
+// Store is the durability seam. Production uses SQLite; tests use memory.
+type Store interface {
+	LoadByIdempotency(key string) (*Acceptance, error)
+	LoadByExecution(id string) (*Acceptance, error)
+	// AcceptIfAbsent must atomically insert on the idempotency key and return
+	// the winner when another request already inserted the same key.
+	AcceptIfAbsent(a *Acceptance) (*Acceptance, error)
+	Save(a *Acceptance) error
+}
+
+// V2Binding is correlation input for dispatch.acceptance/2.0. It carries
+// references that WORKS must bind into the real execution-context/1.0.
+// Possession of these references is not authority; consequential action still
+// requires Trust Gateway action-time revalidation through AIE.
+type V2Binding struct {
+	WorkID              string
+	OrganizationID      string
+	TenantID            string
+	PrincipalID         string
+	AuthorityLeaseID    string
+	WorkerLeaseID       string
+	AdmissionDecisionID string
+}
+
+// V2Store extends the durable acceptance store with one atomic operation that
+// inserts the acceptance and materializes the canonical execution context.
+// A V2 implementation must return the committed winner on idempotent replay.
+,
+)
 
 // Clock decouples expiry/freshness checks in tests.
 type Clock func() time.Time
@@ -231,7 +391,7 @@ func (a *Acceptor) AcceptV2(
 ) (*Acceptance, *executioncontext.Context, error) {
 	if d.MissionID == "" || d.AuthorityRef == "" || d.RuntimeDispatchID == "" ||
 		d.IdempotencyKey == "" || d.EffectID == "" || d.AttemptID == "" ||
-		d.VerificationSubj == "" || d.CausalID == "" {
+		d.CausalID == "" {
 		return nil, nil, ErrMissingBinding
 	}
 	if binding.WorkID == "" || binding.OrganizationID == "" || binding.TenantID == "" ||
@@ -272,8 +432,7 @@ func (a *Acceptor) AcceptV2(
 		accepted.Dispatch.MissionID != d.MissionID ||
 		accepted.Dispatch.AuthorityRef != d.AuthorityRef ||
 		accepted.Dispatch.RuntimeDispatchID != d.RuntimeDispatchID ||
-		accepted.Dispatch.EffectID != d.EffectID ||
-		accepted.Dispatch.VerificationSubj != d.VerificationSubj {
+		accepted.Dispatch.EffectID != d.EffectID {
 		return nil, nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
 	}
 	if executionContext.ID != accepted.ExecutionContextID ||
@@ -289,6 +448,65 @@ func (a *Acceptor) AcceptV2(
 		return nil, nil, ErrContextBinding
 	}
 	return accepted, executionContext, nil
+}
+
+// BindVerificationSubject records the immutable subject observed after the
+// governed effect. The first binding wins. Replaying the same binding is
+// idempotent; rebinding to another subject fails closed.
+func (a *Acceptor) BindVerificationSubject(
+	ctx context.Context,
+	worksExecutionID string,
+	workID string,
+	attemptID string,
+	effectID string,
+	causalID string,
+	subject string,
+) (*VerificationSubjectBinding, error) {
+	if !exactGitSubjectPattern.MatchString(subject) {
+		return nil, ErrInvalidSubject
+	}
+	acc, err := a.get(worksExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	if acc.ContractVersion != "dispatch.acceptance/2.0" {
+		return nil, ErrV2StoreRequired
+	}
+	if acc.WorkID != workID ||
+		acc.Dispatch.AttemptID != attemptID ||
+		acc.Dispatch.EffectID != effectID ||
+		acc.Dispatch.CausalID != causalID {
+		return nil, fmt.Errorf("%w: verification subject correlation mismatch", ErrCausalMismatch)
+	}
+	store, ok := a.store.(VerificationSubjectStore)
+	if !ok {
+		return nil, ErrV2StoreRequired
+	}
+	winner, err := store.BindVerificationSubject(ctx, VerificationSubjectBinding{
+		WorksExecutionID: worksExecutionID,
+		WorkID:           workID,
+		AttemptID:        attemptID,
+		EffectID:         effectID,
+		CausalID:         causalID,
+		Subject:          subject,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if winner == nil {
+		return nil, ErrSubjectNotBound
+	}
+	if winner.WorksExecutionID != worksExecutionID ||
+		winner.WorkID != workID ||
+		winner.AttemptID != attemptID ||
+		winner.EffectID != effectID ||
+		winner.CausalID != causalID {
+		return nil, fmt.Errorf("%w: persisted verification subject correlation mismatch", ErrCausalMismatch)
+	}
+	if winner.Subject != subject {
+		return nil, ErrSubjectConflict
+	}
+	return winner, nil
 }
 
 // Revoke marks authority revoked mid-flight. Revoked executions cannot apply
@@ -385,7 +603,22 @@ func (a *Acceptor) RecordVerdict(worksExecutionID, verifierID, subject string, s
 	if verifierID == "" || verifierID == acc.Dispatch.RuntimeDispatchID {
 		return ErrSelfVerification
 	}
-	if !subjectCurrent || subject != acc.Dispatch.VerificationSubj {
+	expectedSubject := acc.Dispatch.VerificationSubj
+	if acc.ContractVersion == "dispatch.acceptance/2.0" {
+		store, ok := a.store.(VerificationSubjectStore)
+		if !ok {
+			return ErrV2StoreRequired
+		}
+		binding, err := store.LoadVerificationSubject(context.Background(), worksExecutionID)
+		if err != nil {
+			return err
+		}
+		if binding == nil || binding.Subject == "" {
+			return ErrSubjectNotBound
+		}
+		expectedSubject = binding.Subject
+	}
+	if !subjectCurrent || subject != expectedSubject {
 		return fmt.Errorf("%w: %q", ErrStaleSubject, subject)
 	}
 	if !verifierAvailable {

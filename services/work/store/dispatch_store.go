@@ -6,6 +6,7 @@ package store
 // state survive process restart.
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,16 @@ CREATE TABLE IF NOT EXISTS dispatch_acceptances (
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_acceptances_causal
 ON dispatch_acceptances(causal_id);
+
+CREATE TABLE IF NOT EXISTS dispatch_verification_subjects (
+    works_execution_id TEXT PRIMARY KEY,
+    work_id            TEXT NOT NULL,
+    attempt_id         TEXT NOT NULL,
+    effect_id          TEXT NOT NULL,
+    causal_id          TEXT NOT NULL,
+    subject            TEXT NOT NULL,
+    bound_at           TEXT NOT NULL
+);
 `
 
 func (s *SQLiteStore) migrateDispatchAcceptance() error {
@@ -192,4 +203,113 @@ func (s *dispatchAcceptanceStore) Save(accepted *dispatch.Acceptance) error {
 		return fmt.Errorf("dispatch acceptance save: %w", err)
 	}
 	return nil
+}
+
+func (s *dispatchAcceptanceStore) BindVerificationSubject(
+	ctx context.Context,
+	binding dispatch.VerificationSubjectBinding,
+) (*dispatch.VerificationSubjectBinding, error) {
+	if binding.WorksExecutionID == "" || binding.WorkID == "" || binding.AttemptID == "" ||
+		binding.EffectID == "" || binding.CausalID == "" || binding.Subject == "" {
+		return nil, dispatch.ErrInvalidSubject
+	}
+	now := time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch subject begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO dispatch_verification_subjects
+			(works_execution_id, work_id, attempt_id, effect_id, causal_id, subject, bound_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(works_execution_id) DO NOTHING`,
+		binding.WorksExecutionID,
+		binding.WorkID,
+		binding.AttemptID,
+		binding.EffectID,
+		binding.CausalID,
+		binding.Subject,
+		now.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch subject insert: %w", err)
+	}
+	winner, err := loadVerificationSubjectTx(ctx, tx, binding.WorksExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	if winner == nil {
+		return nil, dispatch.ErrSubjectNotBound
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("dispatch subject commit: %w", err)
+	}
+	return winner, nil
+}
+
+func (s *dispatchAcceptanceStore) LoadVerificationSubject(
+	ctx context.Context,
+	worksExecutionID string,
+) (*dispatch.VerificationSubjectBinding, error) {
+	var out dispatch.VerificationSubjectBinding
+	var boundAt string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT works_execution_id, work_id, attempt_id, effect_id, causal_id, subject, bound_at
+		FROM dispatch_verification_subjects WHERE works_execution_id = ?`,
+		worksExecutionID,
+	).Scan(
+		&out.WorksExecutionID,
+		&out.WorkID,
+		&out.AttemptID,
+		&out.EffectID,
+		&out.CausalID,
+		&out.Subject,
+		&boundAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out.BoundAt, err = time.Parse(time.RFC3339Nano, boundAt)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch subject bound_at: %w", err)
+	}
+	return &out, nil
+}
+
+func loadVerificationSubjectTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	worksExecutionID string,
+) (*dispatch.VerificationSubjectBinding, error) {
+	var out dispatch.VerificationSubjectBinding
+	var boundAt string
+	err := tx.QueryRowContext(ctx, `
+		SELECT works_execution_id, work_id, attempt_id, effect_id, causal_id, subject, bound_at
+		FROM dispatch_verification_subjects WHERE works_execution_id = ?`,
+		worksExecutionID,
+	).Scan(
+		&out.WorksExecutionID,
+		&out.WorkID,
+		&out.AttemptID,
+		&out.EffectID,
+		&out.CausalID,
+		&out.Subject,
+		&boundAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out.BoundAt, err = time.Parse(time.RFC3339Nano, boundAt)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch subject bound_at: %w", err)
+	}
+	return &out, nil
 }
