@@ -206,6 +206,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/works/", s.workPathHandler)                                                   // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
 	mux.Handle("POST /v2/works/{id}/accept", http.HandlerFunc(s.acceptDispatchV2))                    // dispatch.acceptance/2.0 + materialized execution-context/1.0
 	mux.Handle("POST /v2/works/{id}/acceptances/{execution}/verification-subject", http.HandlerFunc(s.bindDispatchVerificationSubjectV2)) // post-effect exact-subject binding
+	mux.Handle("POST /v2/works/{id}/acceptances/{execution}/mission-acceptance", http.HandlerFunc(s.recordMissionAcceptanceV2)) // exact-subject independent verifier acceptance
 	mux.Handle("POST /v1/works/{id}/verification", http.HandlerFunc(s.workVerificationIngestHandler)) // Sentinel-owned semantic verifier ingest
 	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)                          // GET immutable execution context
 	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)                                             // unauthenticated; issues tokens
