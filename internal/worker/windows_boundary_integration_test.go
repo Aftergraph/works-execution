@@ -23,3 +23,10 @@ func TestRunCommandWindowsDoesNotLeakWorkerEnrollmentSecret(t *testing.T) {
 		t.Fatalf("worker-private env crossed execution boundary: status=%q exit=%d log=%q", res.Status, res.ExitCode, string(res.CombinedLog))
 	}
 }
+
+func TestRunCommandWindowsRejectsStaleNativeSuccessBeforePowerShellFailure(t *testing.T) {
+	res := runCommand(context.Background(), "cmd.exe /c exit 0; Write-Error 'aftergraph-final-failure'", nil, 10*time.Second, nil, "", nil)
+	if res.Status != "failed" || res.ExitCode == 0 {
+		t.Fatalf("stale native success masked final PowerShell failure: status=%q exit=%d log=%q", res.Status, res.ExitCode, string(res.CombinedLog))
+	}
+}
