@@ -125,6 +125,30 @@ func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
 	if d.MissionID == "" || d.AuthorityRef == "" || d.RuntimeDispatchID == "" || d.IdempotencyKey == "" {
 		return nil, ErrMissingBinding
 	}
+
+	// Recovery/replay law: once WORKS has durably accepted this idempotency key,
+	// the committed winner is the truth for that dispatch. A Runtime that died
+	// after acceptance must be able to recover the same correlation pair even if
+	// authority freshness advanced while its HTTP response was lost.
+	//
+	// This lookup is NOT the concurrency primitive. A concurrent first-accept
+	// race still goes through AcceptIfAbsent below. It only lets an already
+	// committed winner bypass a freshness check that is relevant to NEW
+	// acceptance, not to readback of a completed acceptance decision.
+	existing, err := a.store.LoadByIdempotency(d.IdempotencyKey)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		if existing.Dispatch.IdempotencyKey != d.IdempotencyKey ||
+			existing.Dispatch.CausalID != d.CausalID ||
+			existing.Dispatch.AuthorityEpoch != d.AuthorityEpoch ||
+			existing.Dispatch.MissionID != d.MissionID {
+			return nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
+		}
+		return existing, nil
+	}
+
 	if d.AuthorityEpoch < currentEpoch {
 		return nil, fmt.Errorf("%w: dispatch epoch %d < current %d", ErrStaleAuthority, d.AuthorityEpoch, currentEpoch)
 	}
