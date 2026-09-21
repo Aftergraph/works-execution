@@ -1,0 +1,179 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "contract:dispatch.acceptance/2.0",
+  "title": "WORKS Dispatch Acceptance 2.0 Proposal",
+  "description": "Proposed V2.1/P2 dispatch acceptance contract. Request binds canonical identity + Work lease inputs. WORKS response materializes the canonical execution-context/1.0 correlation. This proposal is not frozen platform law until governance disposition.",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/request"
+    },
+    {
+      "$ref": "#/definitions/acceptance"
+    }
+  ],
+  "definitions": {
+    "identityProperties": {
+      "type": "object",
+      "properties": {
+        "organization_id": {"type": "string", "pattern": "^org_[a-f0-9]{32}$"},
+        "tenant_id": {"type": "string", "pattern": "^ten_[a-f0-9]{32}$"},
+        "principal_id": {"type": "string", "pattern": "^prn_[a-f0-9]{32}$"},
+        "mission_id": {"type": "string", "minLength": 1},
+        "authority_lease_id": {"type": "string", "pattern": "^auth_[a-f0-9]{32}$"},
+        "worker_lease_id": {"type": "string", "pattern": "^lse_[a-f0-9]{32}$"},
+        "admission_decision_id": {"type": "string", "pattern": "^pdr_[a-f0-9]{32}$"}
+      }
+    },
+    "dispatchProperties": {
+      "type": "object",
+      "properties": {
+        "runtime_dispatch_id": {"type": "string", "minLength": 1},
+        "attempt_id": {"type": "string", "minLength": 1},
+        "effect_id": {"type": "string", "minLength": 1},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "budget_ref": {"type": "string", "minLength": 1},
+        "budget_ceiling": {"type": "integer", "minimum": 0},
+        "checkpoint_id": {"type": "string", "minLength": 1},
+        "evidence_root": {"type": "string", "minLength": 1},
+        "verification_subject": {"type": "string", "minLength": 1},
+        "causal_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "subject", "evidence_ref", "recorded_at"],
+      "properties": {
+        "result": {"enum": ["ACCEPT", "REJECT"]},
+        "subject": {"type": "string", "minLength": 1},
+        "evidence_ref": {"type": "string", "minLength": 1},
+        "recorded_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "organization_id",
+        "tenant_id",
+        "principal_id",
+        "mission_id",
+        "authority_lease_id",
+        "worker_lease_id",
+        "admission_decision_id",
+        "runtime_dispatch_id",
+        "attempt_id",
+        "effect_id",
+        "idempotency_key",
+        "budget_ref",
+        "budget_ceiling",
+        "checkpoint_id",
+        "evidence_root",
+        "verification_subject",
+        "causal_id"
+      ],
+      "properties": {
+        "schema": {"const": "dispatch.acceptance/2.0"},
+        "kind": {"const": "request"},
+        "organization_id": {"type": "string", "pattern": "^org_[a-f0-9]{32}$"},
+        "tenant_id": {"type": "string", "pattern": "^ten_[a-f0-9]{32}$"},
+        "principal_id": {"type": "string", "pattern": "^prn_[a-f0-9]{32}$"},
+        "mission_id": {"type": "string", "minLength": 1},
+        "authority_lease_id": {"type": "string", "pattern": "^auth_[a-f0-9]{32}$"},
+        "worker_lease_id": {"type": "string", "pattern": "^lse_[a-f0-9]{32}$"},
+        "admission_decision_id": {"type": "string", "pattern": "^pdr_[a-f0-9]{32}$"},
+        "runtime_dispatch_id": {"type": "string", "minLength": 1},
+        "attempt_id": {"type": "string", "minLength": 1},
+        "effect_id": {"type": "string", "minLength": 1},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "budget_ref": {"type": "string", "minLength": 1},
+        "budget_ceiling": {"type": "integer", "minimum": 0},
+        "checkpoint_id": {"type": "string", "minLength": 1},
+        "evidence_root": {"type": "string", "minLength": 1},
+        "verification_subject": {"type": "string", "minLength": 1},
+        "causal_id": {"type": "string", "minLength": 1}
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "work_id",
+        "organization_id",
+        "tenant_id",
+        "principal_id",
+        "mission_id",
+        "authority_lease_id",
+        "worker_lease_id",
+        "admission_decision_id",
+        "runtime_dispatch_id",
+        "works_execution_id",
+        "attempt_id",
+        "effect_id",
+        "idempotency_key",
+        "budget_ref",
+        "budget_ceiling",
+        "checkpoint_id",
+        "evidence_root",
+        "verification_subject",
+        "causal_id",
+        "execution_context_id",
+        "trace_id",
+        "outcome",
+        "verified"
+      ],
+      "properties": {
+        "schema": {"const": "dispatch.acceptance/2.0"},
+        "kind": {"const": "acceptance"},
+        "work_id": {"type": "string", "pattern": "^wrk_[a-f0-9]{32}$"},
+        "organization_id": {"type": "string", "pattern": "^org_[a-f0-9]{32}$"},
+        "tenant_id": {"type": "string", "pattern": "^ten_[a-f0-9]{32}$"},
+        "principal_id": {"type": "string", "pattern": "^prn_[a-f0-9]{32}$"},
+        "mission_id": {"type": "string", "minLength": 1},
+        "authority_lease_id": {"type": "string", "pattern": "^auth_[a-f0-9]{32}$"},
+        "worker_lease_id": {"type": "string", "pattern": "^lse_[a-f0-9]{32}$"},
+        "admission_decision_id": {"type": "string", "pattern": "^pdr_[a-f0-9]{32}$"},
+        "runtime_dispatch_id": {"type": "string", "minLength": 1},
+        "works_execution_id": {"type": "string", "minLength": 1},
+        "attempt_id": {"type": "string", "minLength": 1},
+        "effect_id": {"type": "string", "minLength": 1},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "budget_ref": {"type": "string", "minLength": 1},
+        "budget_ceiling": {"type": "integer", "minimum": 0},
+        "checkpoint_id": {"type": "string", "minLength": 1},
+        "evidence_root": {"type": "string", "minLength": 1},
+        "verification_subject": {"type": "string", "minLength": 1},
+        "causal_id": {"type": "string", "minLength": 1},
+        "execution_context_id": {"type": "string", "pattern": "^ctx_[a-f0-9]{32}$"},
+        "trace_id": {"type": "string", "pattern": "^trc_[a-f0-9]{32}$"},
+        "outcome": {"enum": ["ACCEPTED", "SUCCEEDED", "FAILED", "INDETERMINATE"]},
+        "verified": {"type": "boolean"},
+        "verifier_id": {"type": "string", "minLength": 1},
+        "verdict": {"$ref": "#/definitions/verdict"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"verified": {"const": true}},
+            "required": ["verified"]
+          },
+          "then": {
+            "required": ["verifier_id", "verdict"],
+            "properties": {
+              "verdict": {
+                "allOf": [
+                  {"$ref": "#/definitions/verdict"},
+                  {"properties": {"result": {"const": "ACCEPT"}}}
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
