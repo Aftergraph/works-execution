@@ -31,6 +31,7 @@ func main() {
 		pollEvery      = flag.Duration("poll", 2*time.Second, "poll interval")
 		leaseTTL       = flag.Duration("lease-ttl", 25*time.Second, "lease TTL")
 		heartbeatEvery = flag.Duration("heartbeat", 10*time.Second, "heartbeat interval")
+		bearerToken    = flag.String("token", envOr("WORKS_TOKEN", ""), "pre-minted short-lived WORKS bearer (for OIDC bootstrap)")
 		enrollSecret   = flag.String("enroll-secret", envOr("WORKS_ENROLL_SECRET", ""), "shared secret for /v1/workers/enroll (Zero-Secret: required)")
 		enrollTTL      = flag.Duration("enroll-ttl", time.Hour, "requested enrollment-token TTL")
 		githubToken    = flag.String("github-token", envOr("WORKS_GITHUB_TOKEN", ""), "GitHub token for work-scoped source checkout")
@@ -51,6 +52,7 @@ func main() {
 	cli := &worker.Client{
 		BaseURL:       *apiURL,
 		HTTP:          &http.Client{Timeout: 10 * time.Second},
+		Token:         *bearerToken,
 		WorkerID:      *workerID,
 		EnrollSecret:  *enrollSecret,
 		EnrollTTL:     *enrollTTL,
@@ -99,8 +101,10 @@ func main() {
 				}
 			}
 		}
+	} else if *bearerToken != "" {
+		logger.Printf("using pre-minted short-lived WORKS bearer: worker_id=%s", *workerID)
 	} else {
-		logger.Printf("WARNING: WORKS_ENROLL_SECRET not set; worker running without Bearer token (dev mode)")
+		logger.Printf("WARNING: neither WORKS_ENROLL_SECRET nor WORKS_TOKEN is set; worker running without Bearer token (dev mode)")
 	}
 
 	w := &worker.Worker{
