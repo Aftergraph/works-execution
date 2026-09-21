@@ -57,7 +57,7 @@ slice (see `platform-ai-failure-intel` in the registry).
 | Poll `/v1/workers/ready` | HTTP GET, every `PollEvery` | `internal/worker/worker.go` |
 | Request lease via `POST /v1/leases` | HTTP POST | same |
 | Send `POST /v1/leases/{id}/heartbeat` | HTTP POST every `HeartbeatEvery` | same |
-| Execute subprocess via `sh -c "<command>"` | `exec.CommandContext` | same |
+| Execute subprocess via host-native shell (`sh -c` on POSIX; non-interactive PowerShell on Windows) | `exec.CommandContext` | same |
 | Kill subprocess on lease loss | `cmd.Process.Kill()` | same |
 | Write artifact to `<ArtifactsDir>/<workID>/<nodeID>.log` | `os.WriteFile` with sha256 | same |
 | Report result via `POST /v1/leases/{id}/complete` | HTTP POST | same |
@@ -125,7 +125,7 @@ enforces this in middleware; slice 1+2 enforces via DB schema).
 
 ## Allowed actions
 
-- Run `Node.Run` as `sh -c <command>`.
+- Run `Node.Run` through the host-native shell adapter (`sh -c` on POSIX; `powershell.exe -NoLogo -NoProfile -NonInteractive -Command` on Windows).
 - Create the artifact file under `<ArtifactsDir>/<workID>/<nodeID>.log`.
 - POST result, evidence, and artifact metadata back via `/v1/leases/{id}/complete`.
 - Respond to SIGTERM by cancelling the in-flight subprocess and releasing
