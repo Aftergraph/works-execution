@@ -84,13 +84,14 @@ type GitHubActionsOIDCPolicy struct {
 	RepositoryID      string
 	Ref               string
 	WorkflowRef       string
+	WorkflowSHA       string
 	RunnerEnvironment string
 	EventName         string
 }
 
 func (p GitHubActionsOIDCPolicy) Validate(c GitHubActionsOIDCClaims) error {
 	if strings.TrimSpace(p.Repository) == "" || strings.TrimSpace(p.RepositoryID) == "" || strings.TrimSpace(p.Ref) == "" ||
-		strings.TrimSpace(p.WorkflowRef) == "" || strings.TrimSpace(p.RunnerEnvironment) == "" || strings.TrimSpace(p.EventName) == "" {
+		strings.TrimSpace(p.WorkflowRef) == "" || strings.TrimSpace(p.WorkflowSHA) == "" || strings.TrimSpace(p.RunnerEnvironment) == "" || strings.TrimSpace(p.EventName) == "" {
 		return errors.New("github oidc policy incomplete")
 	}
 	if c.Repository != p.Repository {
@@ -104,6 +105,9 @@ func (p GitHubActionsOIDCPolicy) Validate(c GitHubActionsOIDCClaims) error {
 	}
 	if c.WorkflowRef != p.WorkflowRef {
 		return errors.New("github oidc workflow_ref rejected")
+	}
+	if c.WorkflowSHA != p.WorkflowSHA {
+		return errors.New("github oidc workflow_sha rejected")
 	}
 	if c.RunnerEnvironment != p.RunnerEnvironment {
 		return errors.New("github oidc runner_environment rejected")
