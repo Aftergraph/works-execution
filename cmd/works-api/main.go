@@ -85,7 +85,7 @@ func main() {
 		if *githubOIDCAudience == "" || *githubOIDCRepo == "" || *githubOIDCRepositoryID == "" || *githubOIDCRef == "" || *githubOIDCWorkflowRef == "" {
 			logger.Fatalf("GitHub OIDC enrollment requires WORKS_GITHUB_OIDC_AUDIENCE, _REPOSITORY, _REPOSITORY_ID, _REF, and _WORKFLOW_REF together")
 		}
-		srv.GitHubOIDCVerifier = api.RemoteGitHubActionsOIDCVerifier{Audience: *githubOIDCAudience}
+		srv.GitHubOIDCVerifier = &api.RemoteGitHubActionsOIDCVerifier{Audience: *githubOIDCAudience}
 		srv.GitHubOIDCPolicy = &api.GitHubActionsOIDCPolicy{
 			Repository: *githubOIDCRepo,
 			RepositoryID: *githubOIDCRepositoryID,
