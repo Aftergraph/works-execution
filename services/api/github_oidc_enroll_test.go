@@ -91,3 +91,23 @@ func TestGitHubOIDCEnrollmentDisabledFailsClosed(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable { t.Fatalf("want 503 got %d", resp.StatusCode) }
 }
+
+func TestGitHubOIDCEnrollmentRejectsWrongImmutableRepositoryID(t *testing.T) {
+	s, ts := oidcFixture(); defer ts.Close()
+	c := s.GitHubOIDCVerifier.(stubGitHubOIDCVerifier).claims
+	c.RepositoryID = "999"
+	s.GitHubOIDCVerifier = stubGitHubOIDCVerifier{claims:c}
+	resp := postOIDC(t, ts.URL, map[string]any{"worker_id":"wrkr_jonas_lenovo","oidc_token":"signed"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden { t.Fatalf("want 403 got %d", resp.StatusCode) }
+}
+
+func TestGitHubOIDCEnrollmentRejectsNonPushEvent(t *testing.T) {
+	s, ts := oidcFixture(); defer ts.Close()
+	c := s.GitHubOIDCVerifier.(stubGitHubOIDCVerifier).claims
+	c.EventName = "pull_request"
+	s.GitHubOIDCVerifier = stubGitHubOIDCVerifier{claims:c}
+	resp := postOIDC(t, ts.URL, map[string]any{"worker_id":"wrkr_jonas_lenovo","oidc_token":"signed"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden { t.Fatalf("want 403 got %d", resp.StatusCode) }
+}
