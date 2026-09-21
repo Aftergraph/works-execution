@@ -26,7 +26,7 @@ func TestCommandShellWindows(t *testing.T) {
 		"-NoProfile",
 		"-NonInteractive",
 		"-Command",
-		"Write-Output ok",
+		"Write-Output ok; $ag_ok=$?; $ag_ec=$LASTEXITCODE; if ($null -ne $ag_ec) { exit $ag_ec }; if (-not $ag_ok) { exit 1 }; exit 0",
 	}
 	if !reflect.DeepEqual(gotArgs, want) {
 		t.Fatalf("args = %#v, want %#v", gotArgs, want)
