@@ -10,6 +10,7 @@
 package dispatch
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -37,6 +38,9 @@ var (
 	ErrExecutionNotTerminal   = errors.New("dispatch: verification requires terminal execution outcome")
 	ErrMissingVerdictEvidence = errors.New("dispatch: verdict result and evidence reference are required")
 	ErrInvalidVerdict         = errors.New("dispatch: verdict result must be ACCEPT or REJECT")
+	ErrV2StoreRequired        = errors.New("dispatch: contextual V2 store required")
+	ErrContextBinding         = errors.New("dispatch: V2 execution-context binding mismatch")
+	ErrWorkerLeaseUnavailable = errors.New("dispatch: V2 worker lease unavailable")
 )
 
 // Dispatch is the Runtime-built envelope. WORKS never mints these identities;
@@ -69,6 +73,8 @@ type VerificationVerdict struct {
 
 // Acceptance is the durable WORKS-owned record.
 type Acceptance struct {
+	ContractVersion  string
+	WorkID           string
 	WorksExecutionID string
 	Dispatch         Dispatch
 	AcceptedAt       time.Time
@@ -97,6 +103,32 @@ type Store interface {
 	// the winner when another request already inserted the same key.
 	AcceptIfAbsent(a *Acceptance) (*Acceptance, error)
 	Save(a *Acceptance) error
+}
+
+// V2Binding is correlation input for dispatch.acceptance/2.0. It carries
+// references that WORKS must bind into the real execution-context/1.0.
+// Possession of these references is not authority; consequential action still
+// requires Trust Gateway action-time revalidation through AIE.
+type V2Binding struct {
+	WorkID              string
+	OrganizationID      string
+	TenantID            string
+	PrincipalID         string
+	AuthorityLeaseID    string
+	WorkerLeaseID       string
+	AdmissionDecisionID string
+}
+
+// V2Store extends the durable acceptance store with one atomic operation that
+// inserts the acceptance and materializes the canonical execution context.
+// A V2 implementation must return the committed winner on idempotent replay.
+type V2Store interface {
+	Store
+	AcceptContextualIfAbsent(
+		ctx context.Context,
+		accepted *Acceptance,
+		binding V2Binding,
+	) (*Acceptance, *executioncontext.Context, error)
 }
 
 // Clock decouples expiry/freshness checks in tests.
@@ -157,6 +189,7 @@ func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
 	// the execution context stays stable across replay rather than being reminted.
 	ctxID, trcID := executioncontext.MintCorrelationIDs()
 	acc := &Acceptance{
+		ContractVersion:    "dispatch.acceptance/1.0",
 		WorksExecutionID:   "wexec/" + d.IdempotencyKey,
 		Dispatch:           d,
 		AcceptedAt:         a.clock(),
@@ -182,6 +215,80 @@ func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
 		return nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
 	}
 	return accepted, nil
+}
+
+// AcceptV2 implements dispatch.acceptance/2.0 without inventing an authority
+// epoch. Initial authority correlation is represented by AuthorityLease +
+// admission PDR. Effect authorization is deliberately outside this method and
+// remains Trust Gateway -> live AIE revalidation immediately before consequence.
+//
+// The V2 store owns the atomicity boundary: acceptance and the resolvable
+// execution-context/1.0 either commit together or neither commits.
+func (a *Acceptor) AcceptV2(
+	ctx context.Context,
+	d Dispatch,
+	binding V2Binding,
+) (*Acceptance, *executioncontext.Context, error) {
+	if d.MissionID == "" || d.AuthorityRef == "" || d.RuntimeDispatchID == "" ||
+		d.IdempotencyKey == "" || d.EffectID == "" || d.AttemptID == "" ||
+		d.VerificationSubj == "" || d.CausalID == "" {
+		return nil, nil, ErrMissingBinding
+	}
+	if binding.WorkID == "" || binding.OrganizationID == "" || binding.TenantID == "" ||
+		binding.PrincipalID == "" || binding.AuthorityLeaseID == "" ||
+		binding.WorkerLeaseID == "" || binding.AdmissionDecisionID == "" {
+		return nil, nil, ErrContextBinding
+	}
+	if d.AuthorityRef != binding.AuthorityLeaseID {
+		return nil, nil, ErrContextBinding
+	}
+	v2store, ok := a.store.(V2Store)
+	if !ok {
+		return nil, nil, ErrV2StoreRequired
+	}
+
+	ctxID, trcID := executioncontext.MintCorrelationIDs()
+	candidate := &Acceptance{
+		ContractVersion:    "dispatch.acceptance/2.0",
+		WorkID:             binding.WorkID,
+		WorksExecutionID:   "wexec/" + d.IdempotencyKey,
+		Dispatch:           d,
+		AcceptedAt:         a.clock(),
+		Outcome:            "ACCEPTED",
+		ExecutionContextID: ctxID,
+		TraceID:            trcID,
+	}
+	accepted, executionContext, err := v2store.AcceptContextualIfAbsent(ctx, candidate, binding)
+	if err != nil {
+		return nil, nil, err
+	}
+	if accepted == nil || executionContext == nil {
+		return nil, nil, ErrContextBinding
+	}
+	if accepted.ContractVersion != "dispatch.acceptance/2.0" ||
+		accepted.WorkID != binding.WorkID ||
+		accepted.Dispatch.IdempotencyKey != d.IdempotencyKey ||
+		accepted.Dispatch.CausalID != d.CausalID ||
+		accepted.Dispatch.MissionID != d.MissionID ||
+		accepted.Dispatch.AuthorityRef != d.AuthorityRef ||
+		accepted.Dispatch.RuntimeDispatchID != d.RuntimeDispatchID ||
+		accepted.Dispatch.EffectID != d.EffectID ||
+		accepted.Dispatch.VerificationSubj != d.VerificationSubj {
+		return nil, nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
+	}
+	if executionContext.ID != accepted.ExecutionContextID ||
+		executionContext.TraceID != accepted.TraceID ||
+		executionContext.WorkID != binding.WorkID ||
+		executionContext.OrganizationID != binding.OrganizationID ||
+		executionContext.TenantID != binding.TenantID ||
+		executionContext.PrincipalID != binding.PrincipalID ||
+		executionContext.MissionID != d.MissionID ||
+		executionContext.AuthorityLeaseID != binding.AuthorityLeaseID ||
+		executionContext.WorkerLeaseID != binding.WorkerLeaseID ||
+		executionContext.AdmissionDecisionID != binding.AdmissionDecisionID {
+		return nil, nil, ErrContextBinding
+	}
+	return accepted, executionContext, nil
 }
 
 // Revoke marks authority revoked mid-flight. Revoked executions cannot apply

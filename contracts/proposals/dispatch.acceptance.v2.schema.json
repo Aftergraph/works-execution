@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "contract:dispatch.acceptance/2.0",
+  "title": "PROPOSED dispatch.acceptance/2.0",
+  "description": "P2/V2.1 candidate. Additive to frozen dispatch.acceptance/1.0; not part of the frozen manifest until governance approval.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","work_id","works_execution_id","request","execution_context","outcome","verified"],
+  "properties": {
+    "schema": {"const": "dispatch.acceptance/2.0"},
+    "work_id": {"type":"string","pattern":"^wrk_[a-f0-9]{32}$"},
+    "works_execution_id": {"type":"string","minLength":1},
+    "request": {
+      "type":"object",
+      "additionalProperties":false,
+      "required":["schema","organization_id","tenant_id","principal_id","mission_id","authority_lease_id","worker_lease_id","admission_decision_id","runtime_dispatch_id","attempt_id","effect_id","idempotency_key","budget_ref","budget_ceiling","checkpoint_id","evidence_root","verification_subject","causal_id"],
+      "properties":{
+        "schema":{"const":"dispatch.acceptance/2.0"},
+        "organization_id":{"type":"string","pattern":"^org_[a-f0-9]{32}$"},
+        "tenant_id":{"type":"string","pattern":"^ten_[a-f0-9]{32}$"},
+        "principal_id":{"type":"string","pattern":"^prn_[a-f0-9]{32}$"},
+        "mission_id":{"type":"string","pattern":"^mis_.+"},
+        "authority_lease_id":{"type":"string","pattern":"^auth_[a-f0-9]{32}$"},
+        "worker_lease_id":{"type":"string","pattern":"^lse_[a-f0-9]{32}$"},
+        "admission_decision_id":{"type":"string","pattern":"^pdr_[a-f0-9]{32}$"},
+        "runtime_dispatch_id":{"type":"string","minLength":1},
+        "attempt_id":{"type":"string","minLength":1},
+        "effect_id":{"type":"string","minLength":1},
+        "idempotency_key":{"type":"string","minLength":1},
+        "budget_ref":{"type":"string","minLength":1},
+        "budget_ceiling":{"type":"integer","minimum":0},
+        "checkpoint_id":{"type":"string","minLength":1},
+        "evidence_root":{"type":"string","minLength":1},
+        "verification_subject":{"type":"string","minLength":1},
+        "causal_id":{"type":"string","minLength":1}
+      }
+    },
+    "execution_context": {"type":"object"},
+    "outcome":{"enum":["ACCEPTED","SUCCEEDED","FAILED","INDETERMINATE"]},
+    "verified":{"type":"boolean"},
+    "verifier_id":{"type":"string"},
+    "verdict":{"type":"object"}
+  }
+}
