@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -41,9 +42,11 @@ type GitHubActionsOIDCVerifier interface {
 // GitHub's OIDC discovery document and rotating public keys.
 type RemoteGitHubActionsOIDCVerifier struct {
 	Audience string
+	mu sync.Mutex
+	verifier *oidc.IDTokenVerifier
 }
 
-func (v RemoteGitHubActionsOIDCVerifier) Verify(ctx context.Context, raw string) (GitHubActionsOIDCClaims, error) {
+func (v *RemoteGitHubActionsOIDCVerifier) Verify(ctx context.Context, raw string) (GitHubActionsOIDCClaims, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return GitHubActionsOIDCClaims{}, errors.New("oidc token required")
@@ -51,11 +54,19 @@ func (v RemoteGitHubActionsOIDCVerifier) Verify(ctx context.Context, raw string)
 	if strings.TrimSpace(v.Audience) == "" {
 		return GitHubActionsOIDCClaims{}, errors.New("oidc audience not configured")
 	}
-	provider, err := oidc.NewProvider(ctx, githubActionsOIDCIssuer)
-	if err != nil {
-		return GitHubActionsOIDCClaims{}, fmt.Errorf("github oidc discovery: %w", err)
+	v.mu.Lock()
+	verifier := v.verifier
+	if verifier == nil {
+		provider, err := oidc.NewProvider(ctx, githubActionsOIDCIssuer)
+		if err != nil {
+			v.mu.Unlock()
+			return GitHubActionsOIDCClaims{}, fmt.Errorf("github oidc discovery: %w", err)
+		}
+		verifier = provider.Verifier(&oidc.Config{ClientID: v.Audience})
+		v.verifier = verifier
 	}
-	idToken, err := provider.Verifier(&oidc.Config{ClientID: v.Audience}).Verify(ctx, raw)
+	v.mu.Unlock()
+	idToken, err := verifier.Verify(ctx, raw)
 	if err != nil {
 		return GitHubActionsOIDCClaims{}, fmt.Errorf("github oidc verify: %w", err)
 	}
