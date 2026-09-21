@@ -28,6 +28,7 @@ type GitHubActionsOIDCClaims struct {
 	WorkflowSHA       string `json:"workflow_sha"`
 	RunnerEnvironment string `json:"runner_environment"`
 	Actor             string `json:"actor"`
+	EventName         string `json:"event_name"`
 }
 
 // GitHubActionsOIDCVerifier is injectable so route tests never depend on
@@ -69,18 +70,23 @@ func (v RemoteGitHubActionsOIDCVerifier) Verify(ctx context.Context, raw string)
 // not mean wildcard: Validate rejects an incomplete policy fail-closed.
 type GitHubActionsOIDCPolicy struct {
 	Repository        string
+	RepositoryID      string
 	Ref               string
 	WorkflowRef       string
 	RunnerEnvironment string
+	EventName         string
 }
 
 func (p GitHubActionsOIDCPolicy) Validate(c GitHubActionsOIDCClaims) error {
-	if strings.TrimSpace(p.Repository) == "" || strings.TrimSpace(p.Ref) == "" ||
-		strings.TrimSpace(p.WorkflowRef) == "" || strings.TrimSpace(p.RunnerEnvironment) == "" {
+	if strings.TrimSpace(p.Repository) == "" || strings.TrimSpace(p.RepositoryID) == "" || strings.TrimSpace(p.Ref) == "" ||
+		strings.TrimSpace(p.WorkflowRef) == "" || strings.TrimSpace(p.RunnerEnvironment) == "" || strings.TrimSpace(p.EventName) == "" {
 		return errors.New("github oidc policy incomplete")
 	}
 	if c.Repository != p.Repository {
 		return errors.New("github oidc repository rejected")
+	}
+	if c.RepositoryID != p.RepositoryID {
+		return errors.New("github oidc repository_id rejected")
 	}
 	if c.Ref != p.Ref {
 		return errors.New("github oidc ref rejected")
@@ -90,6 +96,9 @@ func (p GitHubActionsOIDCPolicy) Validate(c GitHubActionsOIDCClaims) error {
 	}
 	if c.RunnerEnvironment != p.RunnerEnvironment {
 		return errors.New("github oidc runner_environment rejected")
+	}
+	if c.EventName != p.EventName {
+		return errors.New("github oidc event_name rejected")
 	}
 	return nil
 }
