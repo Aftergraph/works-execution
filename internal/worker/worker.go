@@ -717,6 +717,31 @@ func (w *Worker) logf(format string, args ...any) {
 	}
 }
 
+// workerPrivateEnv contains credentials/control material that belongs to the
+// worker daemon and must never cross the execution boundary into leased nodes.
+// Node-specific secrets must arrive as secret:// refs in ReadyItem.Env and are
+// resolved separately at execution time.
+var workerPrivateEnv = map[string]struct{}{
+	"WORKS_ENROLL_SECRET": {},
+	"WORKS_GITHUB_TOKEN":  {},
+	"GITHUB_TOKEN":        {},
+	"GH_TOKEN":            {},
+}
+
+func sanitizedWorkerProcessEnv(base []string) []string {
+	out := make([]string, 0, len(base))
+	for _, entry := range base {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, private := workerPrivateEnv[strings.ToUpper(key)]; private {
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 // execResult captures the outcome of running one node command.
 type execResult struct {
 	Status      string
@@ -789,7 +814,7 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 		// Legacy path: full process env + caller overrides. Kept so the
 		// slice-2 API surface (ReadyItem.Env as opaque pass-through) is
 		// unchanged. Slice-4 callers should always pass a manifest.
-		cmd.Env = os.Environ()
+		cmd.Env = sanitizedWorkerProcessEnv(os.Environ())
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
