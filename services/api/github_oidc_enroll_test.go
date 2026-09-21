@@ -23,15 +23,19 @@ func oidcFixture() (*Server, *httptest.Server) {
 		AuthEnabled: true,
 		GitHubOIDCVerifier: stubGitHubOIDCVerifier{claims: GitHubActionsOIDCClaims{
 			Repository: "Aftergraph/intelligence-systems-research",
+			RepositoryID: "1356862124",
 			Ref: "refs/heads/bootstrap/lenovo-works-native",
 			WorkflowRef: "Aftergraph/intelligence-systems-research/.github/workflows/bootstrap-lenovo-works-native.yml@refs/heads/bootstrap/lenovo-works-native",
 			RunnerEnvironment: "self-hosted",
+			EventName: "push",
 		}},
 		GitHubOIDCPolicy: &GitHubActionsOIDCPolicy{
 			Repository: "Aftergraph/intelligence-systems-research",
+			RepositoryID: "1356862124",
 			Ref: "refs/heads/bootstrap/lenovo-works-native",
 			WorkflowRef: "Aftergraph/intelligence-systems-research/.github/workflows/bootstrap-lenovo-works-native.yml@refs/heads/bootstrap/lenovo-works-native",
 			RunnerEnvironment: "self-hosted",
+			EventName: "push",
 		},
 	}
 	return s, httptest.NewServer(s.Routes())
@@ -59,9 +63,11 @@ func TestGitHubOIDCEnrollmentRejectsWrongRepository(t *testing.T) {
 	s, ts := oidcFixture(); defer ts.Close()
 	s.GitHubOIDCVerifier = stubGitHubOIDCVerifier{claims: GitHubActionsOIDCClaims{
 		Repository:"evil/fork",
+		RepositoryID:"999",
 		Ref:"refs/heads/bootstrap/lenovo-works-native",
 		WorkflowRef:"Aftergraph/intelligence-systems-research/.github/workflows/bootstrap-lenovo-works-native.yml@refs/heads/bootstrap/lenovo-works-native",
 		RunnerEnvironment:"self-hosted",
+		EventName:"push",
 	}}
 	resp := postOIDC(t, ts.URL, map[string]any{"worker_id":"wrkr_jonas_lenovo","oidc_token":"signed"})
 	defer resp.Body.Close()
