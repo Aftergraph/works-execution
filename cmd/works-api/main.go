@@ -34,6 +34,7 @@ func main() {
 		rabControlKey     = flag.String("rab-control-token", envOr("WORKS_RAB_CONTROL_TOKEN", ""), "HMAC key for server-verified RAB control tokens at lease claim (k-062); empty keeps the k-058 presence-only advertisement law")
 		githubOIDCAudience = flag.String("github-oidc-audience", envOr("WORKS_GITHUB_OIDC_AUDIENCE", ""), "GitHub Actions OIDC audience; empty disables OIDC enrollment")
 		githubOIDCRepo = flag.String("github-oidc-repository", envOr("WORKS_GITHUB_OIDC_REPOSITORY", ""), "exact repository claim allowed for OIDC enrollment")
+		githubOIDCRepositoryID = flag.String("github-oidc-repository-id", envOr("WORKS_GITHUB_OIDC_REPOSITORY_ID", ""), "immutable repository_id claim allowed for OIDC enrollment")
 		githubOIDCRef = flag.String("github-oidc-ref", envOr("WORKS_GITHUB_OIDC_REF", ""), "exact ref claim allowed for OIDC enrollment")
 		githubOIDCWorkflowRef = flag.String("github-oidc-workflow-ref", envOr("WORKS_GITHUB_OIDC_WORKFLOW_REF", ""), "exact workflow_ref claim allowed for OIDC enrollment")
 		verifierToken     = flag.String("verifier-token", envOr("WORKS_VERIFIER_TOKEN", ""), "dedicated Sentinel verifier credential for semantic verdict ingest; empty disables ingest")
@@ -80,16 +81,18 @@ func main() {
 		Policy:       policyEngine,
 		AuthEnabled:  true,
 	}
-	if *githubOIDCAudience != "" || *githubOIDCRepo != "" || *githubOIDCRef != "" || *githubOIDCWorkflowRef != "" {
-		if *githubOIDCAudience == "" || *githubOIDCRepo == "" || *githubOIDCRef == "" || *githubOIDCWorkflowRef == "" {
-			logger.Fatalf("GitHub OIDC enrollment requires WORKS_GITHUB_OIDC_AUDIENCE, _REPOSITORY, _REF, and _WORKFLOW_REF together")
+	if *githubOIDCAudience != "" || *githubOIDCRepo != "" || *githubOIDCRepositoryID != "" || *githubOIDCRef != "" || *githubOIDCWorkflowRef != "" {
+		if *githubOIDCAudience == "" || *githubOIDCRepo == "" || *githubOIDCRepositoryID == "" || *githubOIDCRef == "" || *githubOIDCWorkflowRef == "" {
+			logger.Fatalf("GitHub OIDC enrollment requires WORKS_GITHUB_OIDC_AUDIENCE, _REPOSITORY, _REPOSITORY_ID, _REF, and _WORKFLOW_REF together")
 		}
 		srv.GitHubOIDCVerifier = api.RemoteGitHubActionsOIDCVerifier{Audience: *githubOIDCAudience}
 		srv.GitHubOIDCPolicy = &api.GitHubActionsOIDCPolicy{
 			Repository: *githubOIDCRepo,
+			RepositoryID: *githubOIDCRepositoryID,
 			Ref: *githubOIDCRef,
 			WorkflowRef: *githubOIDCWorkflowRef,
 			RunnerEnvironment: "self-hosted",
+			EventName: "push",
 		}
 		logger.Printf("GitHub Actions OIDC enrollment enabled (repository=%s ref=%s workflow_ref=%s runner_environment=self-hosted)", *githubOIDCRepo, *githubOIDCRef, *githubOIDCWorkflowRef)
 	} else {
