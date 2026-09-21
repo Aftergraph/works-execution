@@ -1,0 +1,59 @@
+{
+  "$id": "contract:dispatch.acceptance/2.0",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WORKS dispatch acceptance bound to materialized execution-context/1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "execution_context_id",
+    "runtime_dispatch_id",
+    "attempt_id",
+    "effect_id",
+    "idempotency_key",
+    "budget_ref",
+    "budget_ceiling",
+    "checkpoint_id",
+    "evidence_root",
+    "verification_subject",
+    "causal_id"
+  ],
+  "properties": {
+    "contract": {"const": "dispatch.acceptance/2.0"},
+    "work_id": {"type": "string", "pattern": "^wrk_[a-f0-9]{32}$"},
+    "execution_context_id": {"type": "string", "pattern": "^ctx_[a-f0-9]{32}$"},
+    "trace_id": {"type": "string", "pattern": "^trc_[a-f0-9]{32}$"},
+    "organization_id": {"type": "string", "pattern": "^org_[a-f0-9]{32}$"},
+    "tenant_id": {"type": "string", "pattern": "^ten_[a-f0-9]{32}$"},
+    "principal_id": {"type": "string", "pattern": "^prn_[a-f0-9]{32}$"},
+    "mission_id": {"type": "string", "pattern": "^mis_.+"},
+    "authority_lease_id": {"type": "string", "pattern": "^auth_[a-f0-9]{32}$"},
+    "worker_id": {"type": "string", "pattern": "^wrkr_[a-f0-9]{32}$"},
+    "worker_lease_id": {"type": "string", "pattern": "^lse_[a-f0-9]{32}$"},
+    "admission_decision_id": {"type": "string", "pattern": "^pdr_[a-f0-9]{32}$"},
+    "works_execution_id": {"type": "string", "minLength": 1},
+    "runtime_dispatch_id": {"type": "string", "minLength": 1},
+    "attempt_id": {"type": "string", "minLength": 1},
+    "effect_id": {"type": "string", "minLength": 1},
+    "idempotency_key": {"type": "string", "minLength": 1},
+    "budget_ref": {"type": "string", "minLength": 1},
+    "budget_ceiling": {"type": "integer", "minimum": 0},
+    "checkpoint_id": {"type": "string", "minLength": 1},
+    "evidence_root": {"type": "string", "minLength": 1},
+    "verification_subject": {"type": "string", "minLength": 1},
+    "causal_id": {"type": "string", "minLength": 1},
+    "outcome": {"enum": ["ACCEPTED", "SUCCEEDED", "FAILED", "INDETERMINATE"]},
+    "verified": {"type": "boolean"},
+    "verifier_id": {"type": "string"},
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "subject", "evidence_ref", "recorded_at"],
+      "properties": {
+        "result": {"enum": ["ACCEPT", "REJECT"]},
+        "subject": {"type": "string", "minLength": 1},
+        "evidence_ref": {"type": "string", "minLength": 1},
+        "recorded_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}
