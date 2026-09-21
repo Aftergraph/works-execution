@@ -39,6 +39,7 @@ var (
 	ErrExecutionNotTerminal   = errors.New("dispatch: verification requires terminal execution outcome")
 	ErrMissingVerdictEvidence = errors.New("dispatch: verdict result and evidence reference are required")
 	ErrInvalidVerdict         = errors.New("dispatch: verdict result must be ACCEPT or REJECT")
+	ErrVerdictConflict        = errors.New("dispatch: verifier verdict already recorded with different evidence")
 	ErrV2StoreRequired        = errors.New("dispatch: contextual V2 store required")
 	ErrContextBinding         = errors.New("dispatch: V2 execution-context binding mismatch")
 	ErrWorkerLeaseUnavailable = errors.New("dispatch: V2 worker lease unavailable")
@@ -512,6 +513,84 @@ func (a *Acceptor) RecordVerdict(worksExecutionID, verifierID, subject string, s
 	acc.VerifierID = verifierID
 	acc.Verdict = &VerificationVerdict{
 		Result:      verdictResult,
+		Subject:     subject,
+		EvidenceRef: evidenceRef,
+		RecordedAt:  a.clock(),
+	}
+	return a.store.Save(acc)
+}
+
+// FinalizeVerifiedSuccess atomically promotes one accepted V2 execution to
+// SUCCEEDED + VERIFIED from independent exact-subject evidence. Unlike calling
+// ApplyEffect, Complete and RecordVerdict separately, this transition validates
+// the entire terminal state first and persists it with one Store.Save call so a
+// crash cannot leave a half-accepted Mission.
+//
+// The effect itself remains external; EffectApplied records that WORKS has
+// accepted qualifying evidence for the already-observed consequential effect.
+func (a *Acceptor) FinalizeVerifiedSuccess(
+	worksExecutionID string,
+	verifierID string,
+	subject string,
+	subjectCurrent bool,
+	verifierAvailable bool,
+	evidenceRef string,
+) error {
+	acc, err := a.get(worksExecutionID)
+	if err != nil {
+		return err
+	}
+	if acc.ContractVersion != "dispatch.acceptance/2.0" {
+		return ErrV2StoreRequired
+	}
+	if verifierID == "" || verifierID == acc.Dispatch.RuntimeDispatchID {
+		return ErrSelfVerification
+	}
+	store, ok := a.store.(VerificationSubjectStore)
+	if !ok {
+		return ErrV2StoreRequired
+	}
+	binding, err := store.LoadVerificationSubject(context.Background(), worksExecutionID)
+	if err != nil {
+		return err
+	}
+	if binding == nil || binding.Subject == "" {
+		return ErrSubjectNotBound
+	}
+	if !subjectCurrent || subject != binding.Subject {
+		return fmt.Errorf("%w: %q", ErrStaleSubject, subject)
+	}
+	if !verifierAvailable {
+		return ErrVerifierUnavailable
+	}
+	if acc.Revoked {
+		return ErrRevoked
+	}
+	if strings.TrimSpace(evidenceRef) == "" {
+		return ErrMissingVerdictEvidence
+	}
+	if acc.Outcome != "ACCEPTED" && acc.Outcome != "SUCCEEDED" {
+		return ErrExecutionNotTerminal
+	}
+
+	// Exact replay of the already-committed terminal acceptance is idempotent.
+	if acc.Verdict != nil {
+		if acc.Verified && acc.Outcome == "SUCCEEDED" && acc.EffectApplied &&
+			acc.VerifierID == verifierID &&
+			acc.Verdict.Result == "ACCEPT" &&
+			acc.Verdict.Subject == subject &&
+			acc.Verdict.EvidenceRef == evidenceRef {
+			return nil
+		}
+		return ErrVerdictConflict
+	}
+
+	acc.EffectApplied = true
+	acc.Outcome = "SUCCEEDED"
+	acc.Verified = true
+	acc.VerifierID = verifierID
+	acc.Verdict = &VerificationVerdict{
+		Result:      "ACCEPT",
 		Subject:     subject,
 		EvidenceRef: evidenceRef,
 		RecordedAt:  a.clock(),
