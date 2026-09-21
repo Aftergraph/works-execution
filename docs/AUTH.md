@@ -60,3 +60,11 @@ Manual deletion of the `JonasAbde/__probe__` repository still waits on
 GitHub 2FA — the owner must remove it via the GitHub web UI once 2FA is
 unblocked. Automated deletion is intentionally not attempted (fail-closed:
 nothing on the control plane publicly writes without a secret).
+
+## GitHub Actions OIDC bootstrap enrollment
+
+`POST /v1/workers/enroll/github-actions` is an additive, fail-closed bootstrap path for approved self-hosted GitHub Actions workflows. It removes the need to copy `WORKS_ENROLL_SECRET` onto a bootstrap host.
+
+The API verifies GitHub's OIDC signature and configured audience, then requires exact matches for `repository`, `ref`, `workflow_ref`, and `runner_environment=self-hosted`. Configuration is all-or-nothing: an incomplete policy prevents API startup, and an unconfigured server returns `503 github_oidc_enrollment_disabled`.
+
+This route only authenticates the bootstrap workflow and mints the same short-lived WORKS worker bearer used by the existing enrollment path. It does **not** make GitHub Actions an execution authority, does not bypass WORKS lease/runner authorization, and does not weaken the existing worker-id law.
