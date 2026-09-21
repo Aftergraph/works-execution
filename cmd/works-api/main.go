@@ -36,6 +36,7 @@ func main() {
 		githubOIDCRepo = flag.String("github-oidc-repository", envOr("WORKS_GITHUB_OIDC_REPOSITORY", ""), "exact repository claim allowed for OIDC enrollment")
 		githubOIDCRepositoryID = flag.String("github-oidc-repository-id", envOr("WORKS_GITHUB_OIDC_REPOSITORY_ID", ""), "immutable repository_id claim allowed for OIDC enrollment")
 		githubOIDCRef = flag.String("github-oidc-ref", envOr("WORKS_GITHUB_OIDC_REF", ""), "exact ref claim allowed for OIDC enrollment")
+		githubOIDCWorkflowSHA = flag.String("github-oidc-workflow-sha", envOr("WORKS_GITHUB_OIDC_WORKFLOW_SHA", ""), "exact workflow_sha claim allowed for OIDC enrollment")
 		githubOIDCWorkflowRef = flag.String("github-oidc-workflow-ref", envOr("WORKS_GITHUB_OIDC_WORKFLOW_REF", ""), "exact workflow_ref claim allowed for OIDC enrollment")
 		verifierToken     = flag.String("verifier-token", envOr("WORKS_VERIFIER_TOKEN", ""), "dedicated Sentinel verifier credential for semantic verdict ingest; empty disables ingest")
 	)
@@ -81,9 +82,9 @@ func main() {
 		Policy:       policyEngine,
 		AuthEnabled:  true,
 	}
-	if *githubOIDCAudience != "" || *githubOIDCRepo != "" || *githubOIDCRepositoryID != "" || *githubOIDCRef != "" || *githubOIDCWorkflowRef != "" {
-		if *githubOIDCAudience == "" || *githubOIDCRepo == "" || *githubOIDCRepositoryID == "" || *githubOIDCRef == "" || *githubOIDCWorkflowRef == "" {
-			logger.Fatalf("GitHub OIDC enrollment requires WORKS_GITHUB_OIDC_AUDIENCE, _REPOSITORY, _REPOSITORY_ID, _REF, and _WORKFLOW_REF together")
+	if *githubOIDCAudience != "" || *githubOIDCRepo != "" || *githubOIDCRepositoryID != "" || *githubOIDCRef != "" || *githubOIDCWorkflowSHA != "" || *githubOIDCWorkflowRef != "" {
+		if *githubOIDCAudience == "" || *githubOIDCRepo == "" || *githubOIDCRepositoryID == "" || *githubOIDCRef == "" || *githubOIDCWorkflowSHA == "" || *githubOIDCWorkflowRef == "" {
+			logger.Fatalf("GitHub OIDC enrollment requires WORKS_GITHUB_OIDC_AUDIENCE, _REPOSITORY, _REPOSITORY_ID, _REF, _WORKFLOW_SHA, and _WORKFLOW_REF together")
 		}
 		srv.GitHubOIDCVerifier = &api.RemoteGitHubActionsOIDCVerifier{Audience: *githubOIDCAudience}
 		srv.GitHubOIDCPolicy = &api.GitHubActionsOIDCPolicy{
@@ -91,6 +92,7 @@ func main() {
 			RepositoryID: *githubOIDCRepositoryID,
 			Ref: *githubOIDCRef,
 			WorkflowRef: *githubOIDCWorkflowRef,
+			WorkflowSHA: *githubOIDCWorkflowSHA,
 			RunnerEnvironment: "self-hosted",
 			EventName: "push",
 		}
