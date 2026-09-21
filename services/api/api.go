@@ -57,6 +57,11 @@ type Server struct {
 	// When empty, /v1/workers/enroll returns 503 (fail-closed). Production
 	// must set this from WORKS_ENROLL_SECRET via cmd/works-api.
 	EnrollSecret string
+	// GitHubOIDCVerifier + GitHubOIDCPolicy enable short-lived, secretless
+	// bootstrap enrollment from one exact GitHub Actions workflow identity.
+	// Both must be non-nil; otherwise the route returns 503 fail-closed.
+	GitHubOIDCVerifier GitHubActionsOIDCVerifier
+	GitHubOIDCPolicy *GitHubActionsOIDCPolicy
 	// Metrics is the optional observability registry served at GET /metrics.
 	// When nil, the /metrics route is not mounted.
 	Metrics *observability.Registry
@@ -206,7 +211,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/works/", s.workPathHandler)                                                   // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
 	mux.Handle("POST /v1/works/{id}/verification", http.HandlerFunc(s.workVerificationIngestHandler)) // Sentinel-owned semantic verifier ingest
 	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)                          // GET immutable execution context
-	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)                                             // unauthenticated; issues tokens
+	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)
+	mux.HandleFunc("/v1/workers/enroll/github-actions", s.githubOIDCEnrollHandler)                                             // unauthenticated; issues tokens
 	// /v1/workers/ and /v1/leases/ are mounted through auth middleware.
 	// We can't wrap an http.Handler with a HandleFunc, so we register the
 	// mux's path under a small dispatcher that runs requireBearer first.
