@@ -20,7 +20,7 @@ func commandShell(goos, command string) (string, []string) {
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			command,
+			command + `; $ag_ok=$?; $ag_ec=$LASTEXITCODE; if ($null -ne $ag_ec) { exit $ag_ec }; if (-not $ag_ok) { exit 1 }; exit 0`,
 		}
 	default:
 		return "sh", []string{"-c", command}
