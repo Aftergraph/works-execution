@@ -91,3 +91,16 @@ A fresh V2 acceptance requires a current active WorkerLease.
 The schema lives under `contracts/proposals/` while governance issue #185 is
 open. It MUST NOT be added to the frozen manifest or described as a released
 contract until cross-repo review approves the major-version transition.
+
+
+## P2 evidence requirement
+
+Repository-local green tests are necessary but insufficient. P2 remains open
+until a composed run proves:
+
+`WORK + WorkerLease → V2 acceptance → materialized execution-context → TG/AIE
+action-time allow → observed candidate SHA → one-time subject binding → Sentinel
+exact-subject verdict → verified mission outcome`.
+
+A branch name, base SHA, planned future SHA, or an unbound Sentinel verdict is
+not acceptable evidence for the final coding subject.
