@@ -26,6 +26,7 @@ func oidcFixture() (*Server, *httptest.Server) {
 			RepositoryID: "1356862124",
 			Ref: "refs/heads/bootstrap/lenovo-works-native",
 			WorkflowRef: "Aftergraph/intelligence-systems-research/.github/workflows/bootstrap-lenovo-works-native.yml@refs/heads/bootstrap/lenovo-works-native",
+			WorkflowSHA: "approved-workflow-sha",
 			RunnerEnvironment: "self-hosted",
 			EventName: "push",
 		}},
@@ -66,6 +67,7 @@ func TestGitHubOIDCEnrollmentRejectsWrongRepository(t *testing.T) {
 		RepositoryID:"999",
 		Ref:"refs/heads/bootstrap/lenovo-works-native",
 		WorkflowRef:"Aftergraph/intelligence-systems-research/.github/workflows/bootstrap-lenovo-works-native.yml@refs/heads/bootstrap/lenovo-works-native",
+		WorkflowSHA:"approved-workflow-sha",
 		RunnerEnvironment:"self-hosted",
 		EventName:"push",
 	}}
@@ -106,6 +108,16 @@ func TestGitHubOIDCEnrollmentRejectsNonPushEvent(t *testing.T) {
 	s, ts := oidcFixture(); defer ts.Close()
 	c := s.GitHubOIDCVerifier.(stubGitHubOIDCVerifier).claims
 	c.EventName = "pull_request"
+	s.GitHubOIDCVerifier = stubGitHubOIDCVerifier{claims:c}
+	resp := postOIDC(t, ts.URL, map[string]any{"worker_id":"wrkr_jonas_lenovo","oidc_token":"signed"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden { t.Fatalf("want 403 got %d", resp.StatusCode) }
+}
+
+func TestGitHubOIDCEnrollmentRejectsDifferentWorkflowSHA(t *testing.T) {
+	s, ts := oidcFixture(); defer ts.Close()
+	c := s.GitHubOIDCVerifier.(stubGitHubOIDCVerifier).claims
+	c.WorkflowSHA = "different-workflow-sha"
 	s.GitHubOIDCVerifier = stubGitHubOIDCVerifier{claims:c}
 	resp := postOIDC(t, ts.URL, map[string]any{"worker_id":"wrkr_jonas_lenovo","oidc_token":"signed"})
 	defer resp.Body.Close()
