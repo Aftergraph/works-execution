@@ -102,7 +102,10 @@ current="$(configured_value || true)"
 runtime="$(runtime_source_root || true)"
 if [[ "$current" == "$SOURCE_ROOT" && "$runtime" == "$SOURCE_ROOT" ]]; then
   mkdir -p -- "$SOURCE_PARENT"
+  chown root:root "$SOURCE_PARENT"
   chmod 700 "$SOURCE_PARENT"
+  [[ "$(stat -c '%u:%g' "$SOURCE_PARENT")" == "0:0" ]] || fail "source_parent_not_root_owned"
+  [[ "$(stat -c '%a' "$SOURCE_PARENT")" == "700" ]] || fail "source_parent_mode_invalid"
   printf '{"worker_service":"active","api_health":true,"source_root":"%s","runtime_verified":true,"changed":false}\n' "$SOURCE_ROOT"
   exit 0
 fi
@@ -129,6 +132,8 @@ mv -f -- "$tmp" "$ENV_FILE"
 mkdir -p -- "$SOURCE_PARENT"
 chown root:root "$SOURCE_PARENT"
 chmod 700 "$SOURCE_PARENT"
+[[ "$(stat -c '%u:%g' "$SOURCE_PARENT")" == "0:0" ]] || fail "source_parent_not_root_owned"
+[[ "$(stat -c '%a' "$SOURCE_PARENT")" == "700" ]] || fail "source_parent_mode_invalid"
 
 systemctl restart "$SERVICE"
 
