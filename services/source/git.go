@@ -65,6 +65,9 @@ type Options struct {
 	Ref     string // refs/heads/main or refs/pull/123/head (used only for clone hint)
 	SHA     string // exact 40-char commit to check out
 	Token   string // installation token (not a PAT); "" for public repos
+	// Root is the absolute parent directory for per-Work source checkouts.
+	// Empty preserves the legacy default: os.TempDir()/works-sources.
+	Root string
 }
 
 // randomTokenName returns a 12-char hex string used as a tmpdir
@@ -106,9 +109,15 @@ func Checkout(ctx context.Context, opts Options) (*Source, error) {
 		return nil, fmt.Errorf("SHA must be 40 hex chars, got %d", len(opts.SHA))
 	}
 
-	// Per-Work tmpdir. Includes the random suffix so concurrent
-	// checkouts don't share paths.
-	parent := filepath.Join(os.TempDir(), "works-sources")
+	// Per-Work source root. Production operators may place this on a
+	// durable/executable filesystem independent of host /tmp pressure.
+	// Empty preserves the legacy os.TempDir()/works-sources default.
+	parent := opts.Root
+	if parent == "" {
+		parent = filepath.Join(os.TempDir(), "works-sources")
+	} else if !filepath.IsAbs(parent) {
+		return nil, fmt.Errorf("Root must be absolute: %q", parent)
+	}
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return nil, fmt.Errorf("create sources dir: %w", err)
 	}
