@@ -34,6 +34,7 @@ func main() {
 		enrollSecret   = flag.String("enroll-secret", envOr("WORKS_ENROLL_SECRET", ""), "shared secret for /v1/workers/enroll (Zero-Secret: required)")
 		enrollTTL      = flag.Duration("enroll-ttl", time.Hour, "requested enrollment-token TTL")
 		githubToken    = flag.String("github-token", envOr("WORKS_GITHUB_TOKEN", ""), "GitHub token for work-scoped source checkout")
+		sourceRoot     = flag.String("source-root", envOr("WORKS_SOURCE_ROOT", ""), "absolute parent directory for work-scoped source checkouts; default TMPDIR/works-sources")
 		pool           = flag.String("pool", envOr("WORKS_POOL", ""), "BYOC pool name (RFC-0004); joins pool <name> via label pool:<name>")
 		trust          = flag.String("trust", envOr("WORKS_TRUST_CLASS", ""), "runner trust class override (untrusted|standard|privileged); default standard")
 	)
@@ -114,6 +115,7 @@ func main() {
 		// re-registration (BYOC) interval. Keep the default.
 		HeartbeatEvery: *heartbeatEvery,
 		GitHubToken:    *githubToken,
+		SourceRoot:      *sourceRoot,
 	}
 	// BYOC (RFC-0004): when -pool or -trust is set, the worker
 	// registers itself as a scheduler-visible runner and keeps the
