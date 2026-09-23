@@ -429,6 +429,9 @@ type Worker struct {
 	// GitHubToken is held only in the worker process and is passed to the
 	// per-work source checkout. It is never added to the node environment.
 	GitHubToken string
+	// SourceRoot is the absolute parent for work-scoped source checkouts.
+	// Empty preserves source.Checkout's os.TempDir()/works-sources default.
+	SourceRoot string
 
 	// RunnerIdentity, when non-nil, is registered with the control
 	// plane at startup and re-asserted every HeartbeatEvery (BYOC,
@@ -591,6 +594,7 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 				Ref:     item.Source.Ref,
 				SHA:     item.Source.SHA,
 				Token:   w.GitHubToken,
+				Root:    w.SourceRoot,
 			})
 			if err != nil {
 				res = execResult{
