@@ -2,13 +2,12 @@
 set -euo pipefail
 umask 077
 
-ACTION="\${1:-status}"
+ACTION="${1:-status}"
 case "$ACTION" in status|enable) ;; *) echo "usage: $0 [status|enable]" >&2; exit 2 ;; esac
 
 ENV_FILE=/etc/works/works.env
 SERVICE=works-worker.service
 API_BASE_URL=http://127.0.0.1:18191
-WORKER_BIN=/opt/works/bin/works-worker
 SOURCE_ROOT=/var/lib/works
 SOURCE_PARENT=/var/lib/works/works-sources
 MIN_FREE_KB=1048576
@@ -16,15 +15,31 @@ MIN_FREE_INODES=10000
 
 fail(){ printf 'works-source-root: %s\n' "$*" >&2; exit 2; }
 
+worker_pid() {
+  systemctl show "$SERVICE" -p MainPID --value
+}
+
+worker_exe() {
+  local pid
+  pid="$(worker_pid)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  readlink -f -- "/proc/$pid/exe"
+}
+
 service_contract() {
   systemctl is-active --quiet "$SERVICE" || fail "works_worker_inactive"
-  local env_files exec_start
+
+  local env_files pid exe
   env_files="$(systemctl show "$SERVICE" -p EnvironmentFiles --value)"
-  exec_start="$(systemctl show "$SERVICE" -p ExecStart --value)"
   [[ "$env_files" == *"$ENV_FILE"* ]] || fail "worker_env_file_not_canonical"
-  [[ "$exec_start" == *"$WORKER_BIN"* ]] || fail "worker_exec_not_canonical"
-  [[ -x "$WORKER_BIN" && -f "$WORKER_BIN" && ! -L "$WORKER_BIN" ]] || fail "canonical_worker_binary_missing_or_redirected"
-  "$WORKER_BIN" -h 2>&1 | grep -q -- '-source-root' || fail "worker_binary_missing_source_root_contract"
+
+  pid="$(worker_pid)"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || fail "worker_main_pid_invalid:$pid"
+
+  exe="$(worker_exe || true)"
+  [[ -n "$exe" && -x "$exe" && -f "$exe" ]] || fail "worker_executable_unreadable"
+  [[ "$(basename -- "$exe")" == "works-worker" ]] || fail "worker_executable_unexpected:$exe"
+  "$exe" -h 2>&1 | grep -q -- '-source-root' || fail "worker_binary_missing_source_root_contract"
 }
 
 api_health() {
@@ -52,7 +67,7 @@ configured_value() {
 
 runtime_source_root() {
   local pid
-  pid="$(systemctl show "$SERVICE" -p MainPID --value)"
+  pid="$(worker_pid)"
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   tr '\0' '\n' <"/proc/$pid/environ" | awk -F= '$1=="WORKS_SOURCE_ROOT"{sub(/^[^=]*=/,""); print; exit}'
 }
@@ -60,7 +75,7 @@ runtime_source_root() {
 status_probe() {
   service_contract
   api_health
-  if [[ "\${EUID:-$(id -u)}" -eq 0 && -r "$ENV_FILE" ]]; then
+  if [[ "${EUID:-$(id -u)}" -eq 0 && -r "$ENV_FILE" ]]; then
     local configured runtime
     configured="$(configured_value || true)"
     runtime="$(runtime_source_root || true)"
@@ -72,7 +87,7 @@ status_probe() {
 
 [[ "$ACTION" == status ]] && { status_probe; exit 0; }
 
-[[ "\${EUID:-$(id -u)}" -eq 0 ]] || fail "root_required"
+[[ "${EUID:-$(id -u)}" -eq 0 ]] || fail "root_required"
 [[ -f "$ENV_FILE" && ! -L "$ENV_FILE" ]] || fail "canonical_env_file_missing_or_symlinked"
 [[ "$(readlink -f -- "$ENV_FILE")" == "$ENV_FILE" ]] || fail "canonical_env_file_redirected"
 [[ "$(stat -c '%u:%g' "$ENV_FILE")" == "0:0" ]] || fail "env_file_not_root_owned"
@@ -92,6 +107,7 @@ if [[ "$current" == "$SOURCE_ROOT" && "$runtime" == "$SOURCE_ROOT" ]]; then
   exit 0
 fi
 
+old_pid="$(worker_pid)"
 backup="$(mktemp /run/works.env.before-source-root.XXXXXX)"
 cp -a -- "$ENV_FILE" "$backup"
 rollback(){
@@ -119,8 +135,9 @@ systemctl restart "$SERVICE"
 healthy=false
 for _ in $(seq 1 60); do
   if systemctl is-active --quiet "$SERVICE"; then
+    new_pid="$(worker_pid)"
     runtime="$(runtime_source_root || true)"
-    if [[ "$runtime" == "$SOURCE_ROOT" ]]; then
+    if [[ "$new_pid" =~ ^[1-9][0-9]*$ && "$new_pid" != "$old_pid" && "$runtime" == "$SOURCE_ROOT" ]]; then
       healthy=true
       break
     fi
@@ -129,6 +146,7 @@ for _ in $(seq 1 60); do
 done
 [[ "$healthy" == true ]] || fail "worker_source_root_readback_failed"
 
+service_contract
 api_health
 root_filesystem_contract
 [[ "$(configured_value || true)" == "$SOURCE_ROOT" ]] || fail "env_source_root_readback_failed"
