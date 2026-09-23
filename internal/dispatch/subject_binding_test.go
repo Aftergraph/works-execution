@@ -120,3 +120,14 @@ func TestV2DifferentSubjectRebindFailsClosed(t *testing.T) {
 		t.Fatalf("expected ErrSubjectConflict, got %v", err)
 	}
 }
+
+func (s *subjectStore) SpendIfWithinCeiling(worksExecutionID string, amount int64) (*Acceptance, error) {
+	if s.acceptance == nil || s.acceptance.WorksExecutionID != worksExecutionID {
+		return nil, errors.New("not found")
+	}
+	if s.acceptance.BudgetSpent+amount > s.acceptance.Dispatch.BudgetCeiling {
+		return cloneAcceptance(s.acceptance), errors.New("budget ceiling exceeded")
+	}
+	s.acceptance.BudgetSpent += amount
+	return cloneAcceptance(s.acceptance), nil
+}
