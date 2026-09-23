@@ -265,3 +265,57 @@ func TestWorkSummaries(t *testing.T) {
 		t.Error("UpdatedAt must be parsed")
 	}
 }
+
+// TestListWorkSummariesOptionalSourceFields guards the json_extract COALESCE
+// fix: works whose source_json omits repository/sha must hydrate as ""
+// instead of failing the scan (Codex P1).
+func TestListWorkSummariesOptionalSourceFields(t *testing.T) {
+	s := openSQLiteTemp(t)
+	ctx := context.Background()
+	w := perfWork()
+	w.Source = workgraph.Source{Type: "cli"} // no repository/sha/revision
+	if err := s.CreateWork(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	sums, err := s.ListWorkSummaries(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListWorkSummaries with optional source fields: %v", err)
+	}
+	if len(sums) != 1 {
+		t.Fatalf("got %d summaries, want 1", len(sums))
+	}
+	if sums[0].ID != w.ID || sums[0].Repo != "" || sums[0].SHA != "" || sums[0].Type != "cli" {
+		t.Errorf("summary mismatch: %+v", sums[0])
+	}
+}
+
+// TestAppendWorkEventCollidingIDMissingWork guards the conditional-insert
+// read-back: an event ID that already belongs to a DIFFERENT work must fail
+// closed with ErrNotFound when the requested work does not exist — not
+// return the unrelated event (Codex P2).
+func TestAppendWorkEventCollidingIDMissingWork(t *testing.T) {
+	s := openSQLiteTemp(t)
+	ctx := context.Background()
+	w := perfWork()
+	if err := s.CreateWork(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendWorkEvent(ctx, WorkEvent{
+		ID: "evt-collide", WorkID: w.ID, Type: EventWorkCreated, Data: []byte(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Same event ID, bogus work: must be ErrNotFound, not the other work's event.
+	if _, err := s.AppendWorkEvent(ctx, WorkEvent{
+		ID: "evt-collide", WorkID: "work:missing", Type: EventWorkCreated, Data: []byte(`{}`),
+	}); err != ErrNotFound {
+		t.Errorf("colliding id + missing work: got %v, want ErrNotFound", err)
+	}
+	// Sanity: the original event is untouched.
+	ev, err := s.AppendWorkEvent(ctx, WorkEvent{
+		ID: "evt-collide", WorkID: w.ID, Type: EventWorkCreated, Data: []byte(`{}`),
+	})
+	if err != nil || ev.WorkID != w.ID {
+		t.Errorf("legitimate retry broken: ev=%+v err=%v", ev, err)
+	}
+}

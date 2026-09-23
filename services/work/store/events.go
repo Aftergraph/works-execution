@@ -106,8 +106,25 @@ func (s *SQLiteStore) AppendWorkEvent(ctx context.Context, event WorkEvent) (Wor
 		return WorkEvent{}, fmt.Errorf("journal: insert %s: %w", event.ID, err)
 	}
 	if n, rerr := res.RowsAffected(); rerr == nil && n == 0 {
-		if _, err := s.getWorkEventByID(ctx, event.ID); err != nil {
+		// Zero rows affected: either the Work is missing (fail closed with
+		// ErrNotFound) or the event id already exists. When the surviving
+		// row belongs to a DIFFERENT work, the collision is only benign
+		// if the requested Work itself exists — otherwise a bogus work_id
+		// would silently return an unrelated event (original semantics:
+		// the COUNT existence check caught this).
+		existing, err := s.getWorkEventByID(ctx, event.ID)
+		if err != nil {
 			return WorkEvent{}, ErrNotFound
+		}
+		if existing.WorkID != event.WorkID {
+			var exists int
+			if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM works WHERE id = ?`, event.WorkID).Scan(&exists); err != nil || exists == 0 {
+				return WorkEvent{}, ErrNotFound
+			}
+			// Work exists and a colliding event id belongs to another
+			// work: preserve the original INSERT OR IGNORE + read-back
+			// behavior (the surviving row is authoritative).
+			return existing, nil
 		}
 	}
 

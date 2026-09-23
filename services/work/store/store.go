@@ -1087,10 +1087,13 @@ func (s *SQLiteStore) ListWorkSummaries(ctx context.Context, limit int) ([]WorkS
 	if limit <= 0 {
 		limit = 50
 	}
+	// Source fields are optional in source_json; json_extract yields SQL
+	// NULL for absent keys, which cannot scan into a string. COALESCE all
+	// three projections so optional fields hydrate as "".
 	rows, err := s.readQuery(ctx, `
         SELECT id, state,
-               json_extract(source_json, '$.type'),
-               json_extract(source_json, '$.repository'),
+               COALESCE(json_extract(source_json, '$.type'), ''),
+               COALESCE(json_extract(source_json, '$.repository'), ''),
                COALESCE(json_extract(source_json, '$.sha'), ''),
                updated_at
         FROM works ORDER BY updated_at DESC LIMIT ?`, limit)
