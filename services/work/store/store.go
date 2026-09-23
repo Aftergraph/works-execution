@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, registers itself
@@ -71,6 +73,9 @@ type Store interface {
 	CreateWork(ctx context.Context, w *workgraph.Work) error
 	GetWork(ctx context.Context, id string) (*workgraph.Work, error)
 	ListWorks(ctx context.Context, limit int) ([]*workgraph.Work, error)
+	// ListSchedulableWorks returns only QUEUED/RUNNING works (scheduler
+	// poll path); batched hydration, state-filtered in SQL.
+	ListSchedulableWorks(ctx context.Context, limit int) ([]*workgraph.Work, error)
 	UpdateState(ctx context.Context, id string, to workgraph.State) (*workgraph.Work, error)
 	AppendAttempt(ctx context.Context, workID string, a workgraph.Attempt) (*workgraph.Work, error)
 	AppendEvidence(ctx context.Context, workID string, e workgraph.Evidence) (*workgraph.Work, error)
@@ -86,6 +91,9 @@ type Store interface {
 	ListExpiredLeases(ctx context.Context, limit int) ([]*workgraph.Lease, error)
 	MarkAttemptCancelled(ctx context.Context, attemptID, reason string) error
 	ActiveLeasesByWorkID(ctx context.Context, workID string) (map[string]bool, error)
+	// ActiveLeasesByWorkIDs is the batched form of ActiveLeasesByWorkID
+	// (one query for the whole set). Missing works are omitted.
+	ActiveLeasesByWorkIDs(ctx context.Context, workIDs []string) (map[string]map[string]bool, error)
 	LeasesByWorkID(ctx context.Context, workID string) ([]*workgraph.Lease, error)
 
 	CreateExecutionContext(ctx context.Context, c executioncontext.Context) (*executioncontext.Context, error)
@@ -133,6 +141,14 @@ type Provenance struct {
 // SQLiteStore is the SQLite implementation of Store.
 type SQLiteStore struct {
 	db *sql.DB
+	// readDB is a dedicated read pool. WAL mode allows concurrent readers
+	// alongside the single writer, so read-heavy paths (list endpoints, SSE
+	// snapshots, scheduler polls) no longer queue behind writes and each
+	// other on the writer connection. writeDB routes writes (and reads that
+	// must observe fresh committed state, e.g. inside transactions) to the
+	// single-conn writer pool.
+	readDB  *sql.DB
+	writeDB *sql.DB
 	// Audit emits CloudEvents for every state mutation. May be nil; the
 	// helpers (auditEmit) tolerate that and treat it as "audit disabled".
 	Audit audit.Emitter
@@ -141,23 +157,81 @@ type SQLiteStore struct {
 // Open opens (or creates) a SQLite database at the given path and applies the
 // schema. The caller must Close() when done.
 func Open(path string) (*SQLiteStore, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)", path)
-	db, err := sql.Open("sqlite", dsn)
+	s, db, err := openPools(path)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, err
 	}
-	// SQLite is single-writer; keep the pool small.
-	db.SetMaxOpenConns(1)
-
-	s := &SQLiteStore{db: db}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
+		_ = s.closeReadPool()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	// Default to a SQLite-backed CloudEvents emitter. Tests can swap
 	// in their own via the Audit field before serving traffic.
 	s.Audit = audit.NewSQLiteEmitter(db, nil)
 	return s, nil
+}
+
+// openPools opens the writer (single-conn) and reader (multi-conn) pools
+// against the same database file and applies the initial pragmas.
+func openPools(path string) (*SQLiteStore, *sql.DB, error) {
+	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)", path)
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	// Reader pool: same file, WAL mode already set on the file by the writer
+	// handle (journal_mode is persistent). Cap busy timeout lower so a
+	// wedged writer cannot pin an SSE read forever.
+	// A second pool against :memory: would open a SEPARATE empty database,
+	// not the same one. In-memory stores (tests) fall back to writer-only.
+	if strings.Contains(path, ":memory:") {
+		return &SQLiteStore{db: db, writeDB: db}, db, nil
+	}
+	readDsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(2000)&_pragma=foreign_keys(ON)", path)
+	rdb, err := sql.Open("sqlite", readDsn)
+	if err != nil {
+		_ = db.Close()
+		return nil, nil, fmt.Errorf("open sqlite read pool: %w", err)
+	}
+	readConns := max(4, runtime.NumCPU())
+	rdb.SetMaxOpenConns(readConns)
+	rdb.SetMaxIdleConns(readConns)
+	return &SQLiteStore{db: db, readDB: rdb, writeDB: db}, db, nil
+}
+
+// pools is a small internal accessor that returns the write and read pools.
+func (s *SQLiteStore) pools() (write *sql.DB, read *sql.DB, err error) {
+	if s.readDB == nil || s.writeDB == nil {
+		return nil, nil, errors.New("store: pools not initialized")
+	}
+	return s.writeDB, s.readDB, nil
+}
+
+// closeReadPool closes the reader pool when one is present.
+func (s *SQLiteStore) closeReadPool() error {
+	if s.readDB == nil {
+		return nil
+	}
+	return s.readDB.Close()
+}
+
+// readQuery routes a read to the reader pool when one exists, falling back to
+// the writer pool for stores constructed without one (legacy tests).
+func (s *SQLiteStore) readQuery(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if s.readDB != nil {
+		return s.readDB.QueryContext(ctx, query, args...)
+	}
+	return s.db.QueryContext(ctx, query, args...)
+}
+
+// readQueryRow routes a single-row read to the reader pool when one exists.
+func (s *SQLiteStore) readQueryRow(ctx context.Context, query string, args ...any) *sql.Row {
+	if s.readDB != nil {
+		return s.readDB.QueryRowContext(ctx, query, args...)
+	}
+	return s.db.QueryRowContext(ctx, query, args...)
 }
 
 // schema is intentionally portable so the eventual Postgres migration is
@@ -340,6 +414,7 @@ CREATE TABLE IF NOT EXISTS work_execution_contexts (
     UNIQUE(worker_lease_id, authority_lease_id, admission_decision_id)
 );
 CREATE INDEX IF NOT EXISTS idx_execution_contexts_work ON work_execution_contexts(work_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_works_state_updated ON works(state, updated_at DESC);
 `
 
 func (s *SQLiteStore) migrate() error {
@@ -542,8 +617,13 @@ func (s *SQLiteStore) migrateWorkArtifacts() error {
 	return nil
 }
 
-// Close releases the database handle.
-func (s *SQLiteStore) Close() error { return s.db.Close() }
+// Close releases the database handles, including the read pool.
+func (s *SQLiteStore) Close() error {
+	if s.readDB != nil && s.readDB != s.db {
+		_ = s.readDB.Close()
+	}
+	return s.db.Close()
+}
 
 // DB exposes the underlying handle for co-located subsystems that
 // share the database file (e.g. the RFC-0005 cache store). The cache
@@ -648,7 +728,7 @@ func (s *SQLiteStore) GetWork(ctx context.Context, id string) (*workgraph.Work, 
 	var idemKey, corrID sql.NullString
 	var createdStr, updatedStr string
 
-	err := s.db.QueryRowContext(ctx, `
+	err := s.readQueryRow(ctx, `
         SELECT created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, COALESCE(mission_json,''), idempotency_key, correlation_id
         FROM works WHERE id = ?
     `, id).Scan(
@@ -696,7 +776,7 @@ func (s *SQLiteStore) GetWork(ctx context.Context, id string) (*workgraph.Work, 
 	}
 
 	// Hydrate attempts
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.readQuery(ctx, `
         SELECT id, node_id, COALESCE(worker_id,''), started_at, COALESCE(finished_at,''), exit_code, status, COALESCE(log_ref,''), COALESCE(error,'')
         FROM work_attempts WHERE work_id = ? ORDER BY started_at ASC
     `, id)
@@ -722,7 +802,7 @@ func (s *SQLiteStore) GetWork(ctx context.Context, id string) (*workgraph.Work, 
 	}
 
 	// Hydrate artifacts
-	rows2, err := s.db.QueryContext(ctx, `
+	rows2, err := s.readQuery(ctx, `
         SELECT id, node_id, mime_type, size, path
         FROM work_artifacts WHERE work_id = ?
     `, id)
@@ -742,7 +822,7 @@ func (s *SQLiteStore) GetWork(ctx context.Context, id string) (*workgraph.Work, 
 	}
 
 	// Hydrate evidence
-	rows3, err := s.db.QueryContext(ctx, `
+	rows3, err := s.readQuery(ctx, `
         SELECT id, node_id, attempt_id, type, result, recorded_at, COALESCE(artifact_id,''), COALESCE(signer,''), COALESCE(environment,''), COALESCE(details_json,'')
         FROM work_evidence WHERE work_id = ? ORDER BY recorded_at ASC
     `, id)
@@ -771,31 +851,268 @@ func (s *SQLiteStore) ListWorks(ctx context.Context, limit int) ([]*workgraph.Wo
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM works ORDER BY updated_at DESC LIMIT ?`, limit)
+	return s.listWorksWhere(ctx, "", nil, limit)
+}
+
+// listAllocHintCap bounds slice preallocation on list paths. The LIMIT
+// itself is honored in SQL; only the Go-side allocation hint is capped so
+// a caller-provided limit cannot drive an oversized allocation.
+const listAllocHintCap = 256
+
+// listWorksWhere implements batched list hydration: one query per child
+// table (works, attempts, artifacts, evidence) regardless of result size,
+// instead of one GetWork (4 queries) per row. filterSQL is appended to the
+// works query verbatim; args are bound before LIMIT.
+func (s *SQLiteStore) listWorksWhere(ctx context.Context, filterSQL string, args []any, limit int) ([]*workgraph.Work, error) {
+	query := `SELECT id, created_at, updated_at, state, source_json, objective_json, graph_json,
+	                 requirements_json, policy_json, COALESCE(mission_json,''), idempotency_key, correlation_id
+	          FROM works` + " " + filterSQL + ` ORDER BY updated_at DESC LIMIT ?`
+	rows, err := s.readQuery(ctx, query, append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	// Fixed allocation hint: limit is caller-controlled (up to 5000 on
+	// the DORA path), so it must not drive the preallocation (CodeQL
+	// go/unsafe-slice-cap). The slice grows past the hint as needed.
+	works := make([]*workgraph.Work, 0, listAllocHintCap)
+	for rows.Next() {
+		w := &workgraph.Work{}
+		var stateStr string
+		var sourceJ, objJ, graphJ, reqJ, polJ, missionJ string
+		var idemKey, corrID sql.NullString
+		var createdStr, updatedStr string
+		if err := rows.Scan(&w.ID, &createdStr, &updatedStr, &stateStr,
+			&sourceJ, &objJ, &graphJ, &reqJ, &polJ, &missionJ,
+			&idemKey, &corrID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		w.CreatedAt, _ = parseTime(createdStr)
+		w.UpdatedAt, _ = parseTime(updatedStr)
+		w.State = workgraph.State(stateStr)
+		if err := decodeWorkJSON(w, sourceJ, objJ, graphJ, reqJ, polJ, missionJ); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if idemKey.Valid {
+			w.IdempotencyKey = idemKey.String
+		}
+		if corrID.Valid {
+			w.CorrelationID = corrID.String
+		}
+		works = append(works, w)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if len(works) == 0 {
+		return works, nil
+	}
+	// Batched child hydration: single query per child table, in-memory
+	// distribution to the owning Work.
+	ids := make([]string, len(works))
+	byID := make(map[string]*workgraph.Work, len(works))
+	for i, w := range works {
+		ids[i] = w.ID
+		byID[w.ID] = w
+	}
+	if err := s.hydrateChildren(ctx, ids, byID); err != nil {
+		return nil, err
+	}
+	return works, nil
+}
+
+// decodeWorkJSON unmarshals the per-work JSON columns onto the Work.
+func decodeWorkJSON(w *workgraph.Work, sourceJ, objJ, graphJ, reqJ, polJ, missionJ string) error {
+	if err := json.Unmarshal([]byte(sourceJ), &w.Source); err != nil {
+		return fmt.Errorf("decode source: %w", err)
+	}
+	if err := json.Unmarshal([]byte(objJ), &w.Objective); err != nil {
+		return fmt.Errorf("decode objective: %w", err)
+	}
+	if err := json.Unmarshal([]byte(graphJ), &w.Graph); err != nil {
+		return fmt.Errorf("decode graph: %w", err)
+	}
+	if err := json.Unmarshal([]byte(reqJ), &w.Requirements); err != nil {
+		return fmt.Errorf("decode requirements: %w", err)
+	}
+	if err := json.Unmarshal([]byte(polJ), &w.Policy); err != nil {
+		return fmt.Errorf("decode policy: %w", err)
+	}
+	if missionJ != "" {
+		var m workgraph.MissionContract
+		if err := json.Unmarshal([]byte(missionJ), &m); err != nil {
+			return fmt.Errorf("decode mission: %w", err)
+		}
+		w.Mission = &m
+	}
+	return nil
+}
+
+// hydrateChildren loads attempts, artifacts, and evidence for the given work
+// IDs in three set-based queries and distributes rows to the owning Work.
+// Child ordering matches GetWork exactly (attempts by started_at, evidence by
+// recorded_at) so consumers observe identical hydration.
+func (s *SQLiteStore) hydrateChildren(ctx context.Context, ids []string, byID map[string]*workgraph.Work) error {
+	// chunk to keep the IN clause and bound parameters within SQLite limits.
+	const chunk = 400
+	for base := 0; base < len(ids); base += chunk {
+		end := base + chunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		part := ids[base:end]
+		ph := strings.Repeat("?,", len(part))
+		ph = ph[:len(ph)-1]
+		args := make([]any, len(part))
+		for i, id := range part {
+			args[i] = id
+		}
+		// Attempts
+		rows, err := s.readQuery(ctx,
+			`SELECT id, work_id, node_id, COALESCE(worker_id,''), started_at, COALESCE(finished_at,''), exit_code, status, COALESCE(log_ref,''), COALESCE(error,'')
+			 FROM work_attempts WHERE work_id IN (`+ph+`) ORDER BY started_at ASC`, args...)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var a workgraph.Attempt
+			var wid string
+			var startedStr string
+			var finishedStr string
+			if err := rows.Scan(&a.ID, &wid, &a.NodeID, &a.WorkerID, &startedStr, &finishedStr, &a.ExitCode, &a.Status, &a.LogRef, &a.Error); err != nil {
+				rows.Close()
+				return err
+			}
+			a.StartedAt, _ = time.Parse(time.RFC3339Nano, startedStr)
+			if finishedStr != "" {
+				a.FinishedAt, _ = time.Parse(time.RFC3339Nano, finishedStr)
+			}
+			if w, ok := byID[wid]; ok {
+				w.Attempts = append(w.Attempts, a)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		// Artifacts
+		rows2, err := s.readQuery(ctx,
+			`SELECT work_id, id, node_id, mime_type, size, path
+			 FROM work_artifacts WHERE work_id IN (`+ph+`)`, args...)
+		if err != nil {
+			return err
+		}
+		for rows2.Next() {
+			var art workgraph.Artifact
+			var wid string
+			if err := rows2.Scan(&wid, &art.ID, &art.NodeID, &art.MimeType, &art.Size, &art.Path); err != nil {
+				rows2.Close()
+				return err
+			}
+			if w, ok := byID[wid]; ok {
+				w.Artifacts = append(w.Artifacts, art)
+			}
+		}
+		if err := rows2.Err(); err != nil {
+			rows2.Close()
+			return err
+		}
+		rows2.Close()
+		// Evidence
+		rows3, err := s.readQuery(ctx,
+			`SELECT id, work_id, node_id, attempt_id, type, result, recorded_at, COALESCE(artifact_id,''), COALESCE(signer,''), COALESCE(environment,''), COALESCE(details_json,'')
+			 FROM work_evidence WHERE work_id IN (`+ph+`) ORDER BY recorded_at ASC`, args...)
+		if err != nil {
+			return err
+		}
+		for rows3.Next() {
+			var e workgraph.Evidence
+			var wid string
+			var recordedStr string
+			var details string
+			if err := rows3.Scan(&e.ID, &wid, &e.NodeID, &e.AttemptID, &e.Type, &e.Result, &recordedStr, &e.ArtifactID, &e.Signer, &e.Environment, &details); err != nil {
+				rows3.Close()
+				return err
+			}
+			e.RecordedAt, _ = time.Parse(time.RFC3339Nano, recordedStr)
+			if details != "" {
+				_ = json.Unmarshal([]byte(details), &e.Details)
+			}
+			if w, ok := byID[wid]; ok {
+				w.Evidence = append(w.Evidence, e)
+			}
+		}
+		if err := rows3.Err(); err != nil {
+			rows3.Close()
+			return err
+		}
+		rows3.Close()
+	}
+	return nil
+}
+
+// ListSchedulableWorks returns up to `limit` Works in a state the scheduler
+// considers ready for assignment (QUEUED or RUNNING), most recently updated
+// first. It exists so the scheduler poll path does not pay to hydrate
+// terminal Works it will filter out in Go.
+func (s *SQLiteStore) ListSchedulableWorks(ctx context.Context, limit int) ([]*workgraph.Work, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	return s.listWorksWhere(ctx, `WHERE state IN (?, ?)`, []any{string(workgraph.StateQueued), string(workgraph.StateRunning)}, limit)
+}
+
+// WorkSummary is the lightweight list projection of a Work: identity and
+// display metadata only, no graph/objective/policy JSON decoding. It serves
+// list-shaped consumers (SSE snapshots, dashboards) that never touch the
+// heavy columns.
+type WorkSummary struct {
+	ID        string
+	State     workgraph.State
+	Type      string // source.type
+	Repo      string // source.repository
+	SHA       string // source.sha
+	UpdatedAt time.Time
+}
+
+// ListWorkSummaries returns up to `limit` most-recently-updated Work
+// summaries in a single query over the works table only. This is the cheap
+// path for SSE diffing: no child-table hydration and no JSON decoding of
+// graph/objective/policy columns.
+func (s *SQLiteStore) ListWorkSummaries(ctx context.Context, limit int) ([]WorkSummary, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	// Source fields are optional in source_json; json_extract yields SQL
+	// NULL for absent keys, which cannot scan into a string. COALESCE all
+	// three projections so optional fields hydrate as "".
+	rows, err := s.readQuery(ctx, `
+        SELECT id, state,
+               COALESCE(json_extract(source_json, '$.type'), ''),
+               COALESCE(json_extract(source_json, '$.repository'), ''),
+               COALESCE(json_extract(source_json, '$.sha'), ''),
+               updated_at
+        FROM works ORDER BY updated_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var ids []string
+	out := make([]WorkSummary, 0, listAllocHintCap)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var ws WorkSummary
+		var stateStr, updatedStr string
+		if err := rows.Scan(&ws.ID, &stateStr, &ws.Type, &ws.Repo, &ws.SHA, &updatedStr); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		ws.State = workgraph.State(stateStr)
+		ws.UpdatedAt, _ = parseTime(updatedStr)
+		out = append(out, ws)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	out := make([]*workgraph.Work, 0, len(ids))
-	for _, id := range ids {
-		w, err := s.GetWork(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, w)
-	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // UpdateState atomically transitions the Work to `to` if the transition is
