@@ -54,6 +54,29 @@ func (m *memoryStore) AcceptIfAbsent(a *Acceptance) (*Acceptance, error) {
 	return cloneAcceptance(cp), nil
 }
 
+func (m *memoryStore) SpendIfWithinCeiling(worksExecutionID string, amount int64) (*Acceptance, error) {
+	if amount <= 0 {
+		return nil, errors.New("spend amount must be positive")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc := m.byE[worksExecutionID]
+	if acc == nil || acc.Revoked {
+		return nil, nil
+	}
+	if acc.Dispatch.BudgetCeiling < 0 || acc.BudgetSpent < 0 || acc.BudgetSpent > acc.Dispatch.BudgetCeiling {
+		return nil, nil
+	}
+	if amount > acc.Dispatch.BudgetCeiling-acc.BudgetSpent {
+		return nil, nil
+	}
+	cp := cloneAcceptance(acc)
+	cp.BudgetSpent += amount
+	m.byK[cp.Dispatch.IdempotencyKey] = cp
+	m.byE[worksExecutionID] = cp
+	return cloneAcceptance(cp), nil
+}
+
 func (m *memoryStore) Save(a *Acceptance) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -596,6 +596,12 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 		Image      string                `json:"image,omitempty"` // slice 5: docker image; empty = host subprocess
 		Source     *workgraph.Source     `json:"source,omitempty"`
 		Assignment *scheduler.Assignment `json:"assignment,omitempty"`
+		// SideEffects carries the node's admitted side-effect classes
+		// (manifest.AllowedSideEffects vocabulary) so the worker can
+		// derive the Hermetic Execution Standard network policy at
+		// execution time. The admission gate has already validated the
+		// values; the worker trusts the control plane's record.
+		SideEffects []string `json:"side_effects,omitempty"`
 		// CacheKey (RFC-0005): when non-empty, this node's inputs are
 		// byte-identical to a previously successful execution. The
 		// worker may POST /v1/cache/{key}/claim instead of running
@@ -625,13 +631,14 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 		for _, nid := range work.ReadyNodes(active) {
 			n := work.Graph.Nodes[nid]
 			item := readyItem{
-				WorkID:   work.ID,
-				NodeID:   nid,
-				Run:      n.Run,
-				Env:      n.Env,
-				TimeoutS: n.TimeoutS,
-				Image:    n.Runtime.Image,
-				Source:   &work.Source,
+				WorkID:      work.ID,
+				NodeID:      nid,
+				Run:         n.Run,
+				Env:         n.Env,
+				TimeoutS:    n.TimeoutS,
+				Image:       n.Runtime.Image,
+				Source:      &work.Source,
+				SideEffects: n.SideEffects,
 			}
 
 			// Skip the scheduler when no runners are registered. This
