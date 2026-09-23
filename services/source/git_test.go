@@ -35,6 +35,7 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 func TestCheckout_ExactRef(t *testing.T) {
 	skipIfNoGit(t)
 	repo := t.TempDir()
+	sourceRoot := t.TempDir()
 	gitOutput(t, "", "init", "-b", "main", repo)
 	gitOutput(t, repo, "config", "user.email", "works-test@example.invalid")
 	gitOutput(t, repo, "config", "user.name", "Works Test")
@@ -54,11 +55,15 @@ func TestCheckout_ExactRef(t *testing.T) {
 		RepoURL: repo,
 		Ref:     "refs/heads/feature",
 		SHA:     sha,
+		Root:    sourceRoot,
 	})
 	if err != nil {
 		t.Fatalf("checkout feature ref: %v", err)
 	}
 	defer src.Cleanup()
+	if !strings.HasPrefix(src.WorkDir, filepath.Join(sourceRoot, "works-sources")+string(os.PathSeparator)) {
+		t.Fatalf("WorkDir %q is outside configured source root %q", src.WorkDir, sourceRoot)
+	}
 	marker, err := os.ReadFile(filepath.Join(src.WorkDir, "marker.txt"))
 	if err != nil {
 		t.Fatal(err)
@@ -147,6 +152,20 @@ func TestCheckout_MissingGit(t *testing.T) {
 	t.Logf("got error: %v", err)
 }
 
+func TestCheckout_RelativeSourceRootRejected(t *testing.T) {
+	_, err := Checkout(context.Background(), Options{
+		RepoURL: "https://github.com/JonasAbde/works-execution.git",
+		SHA:     strings.Repeat("a", 40),
+		Root:    "relative/source-root",
+	})
+	if err == nil {
+		t.Fatal("expected error for relative source root")
+	}
+	if !strings.Contains(err.Error(), "source root must be absolute") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // TestCheckout_EmptyRepoURL: empty URL is rejected up front.
 func TestCheckout_EmptyRepoURL(t *testing.T) {
 	_, err := Checkout(context.Background(), Options{
@@ -194,7 +213,7 @@ func TestHostFromURL(t *testing.T) {
 
 // TestSource_Cleanup_Idempotent: Cleanup can be called twice.
 func TestSource_Cleanup_Idempotent(t *testing.T) {
-	src := &Source{WorkDir: "/tmp/works-sources/test-cleanup", Cleaned: false}
+	src := &Source{WorkDir: filepath.Join(t.TempDir(), "works-sources", "test-cleanup"), Cleaned: false}
 	// Create the dir so Cleanup has something to remove.
 	_ = os.MkdirAll(src.WorkDir, 0o700)
 	if err := src.Cleanup(); err != nil {
