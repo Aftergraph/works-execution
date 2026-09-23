@@ -68,6 +68,57 @@ func TestCheckout_ExactRef(t *testing.T) {
 	}
 }
 
+// TestCheckout_CustomRoot verifies production can keep source checkouts
+// off host /tmp while preserving exact-SHA checkout semantics.
+func TestCheckout_CustomRoot(t *testing.T) {
+	skipIfNoGit(t)
+	repo := t.TempDir()
+	gitOutput(t, "", "init", "-b", "main", repo)
+	gitOutput(t, repo, "config", "user.email", "works-test@example.invalid")
+	gitOutput(t, repo, "config", "user.name", "Works Test")
+	if err := os.WriteFile(filepath.Join(repo, "marker.txt"), []byte("custom-root\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "marker.txt")
+	gitOutput(t, repo, "commit", "-m", "custom root fixture")
+	sha := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	root := filepath.Join(t.TempDir(), "source-root")
+	src, err := Checkout(context.Background(), Options{
+		RepoURL: repo,
+		SHA:     sha,
+		Root:    root,
+	})
+	if err != nil {
+		t.Fatalf("checkout with custom root: %v", err)
+	}
+	workdir := src.WorkDir
+	if !strings.HasPrefix(workdir, root+string(os.PathSeparator)) {
+		t.Fatalf("workdir %q is outside configured root %q", workdir, root)
+	}
+	if err := src.Cleanup(); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if _, err := os.Stat(workdir); !os.IsNotExist(err) {
+		t.Fatalf("workdir should be removed after cleanup, stat err=%v", err)
+	}
+}
+
+func TestCheckout_CustomRootRequiresAbsolute(t *testing.T) {
+	skipIfNoGit(t)
+	_, err := Checkout(context.Background(), Options{
+		RepoURL: "file:///does/not/matter",
+		SHA:     strings.Repeat("a", 40),
+		Root:    "relative/works-sources",
+	})
+	if err == nil {
+		t.Fatal("expected relative source root to fail closed")
+	}
+	if !strings.Contains(err.Error(), "Root must be absolute") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // TestCheckout_PublicRepo_NoToken: a public repo with no token
 // clones successfully and HEAD matches the requested SHA.
 func TestCheckout_PublicRepo_NoToken(t *testing.T) {
