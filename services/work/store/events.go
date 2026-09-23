@@ -92,20 +92,23 @@ func (s *SQLiteStore) AppendWorkEvent(ctx context.Context, event WorkEvent) (Wor
 
 	// The referenced Work must exist: work_events.work_id carries a real
 	// foreign key (ON DELETE CASCADE), so a bogus work_id is a caller bug
-	// and must fail here, not linger as an orphan row.
-	var exists int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM works WHERE id = ?`, event.WorkID).Scan(&exists); err != nil {
-		return WorkEvent{}, fmt.Errorf("journal: check work %s: %w", event.WorkID, err)
-	}
-	if exists == 0 {
-		return WorkEvent{}, ErrNotFound
-	}
-
-	if _, err := s.db.ExecContext(ctx, `
+	// and must fail here, not linger as an orphan row. The conditional
+	// INSERT enforces that in the same statement — no separate COUNT
+	// round-trip on the hot journal path. A no-op insert means either a
+	// duplicate event id (idempotent retry) or a missing Work; the
+	// read-back below distinguishes them.
+	res, err := s.db.ExecContext(ctx, `
         INSERT OR IGNORE INTO work_events (id, work_id, type, observed_at, data_json)
-        VALUES (?, ?, ?, ?, ?)
-    `, event.ID, event.WorkID, event.Type, event.ObservedAt.UTC().Format(time.RFC3339Nano), data); err != nil {
+        SELECT ?, ?, ?, ?, ?
+        WHERE EXISTS (SELECT 1 FROM works WHERE id = ?)
+    `, event.ID, event.WorkID, event.Type, event.ObservedAt.UTC().Format(time.RFC3339Nano), data, event.WorkID)
+	if err != nil {
 		return WorkEvent{}, fmt.Errorf("journal: insert %s: %w", event.ID, err)
+	}
+	if n, rerr := res.RowsAffected(); rerr == nil && n == 0 {
+		if _, err := s.getWorkEventByID(ctx, event.ID); err != nil {
+			return WorkEvent{}, ErrNotFound
+		}
 	}
 
 	// Read the surviving row back by ID: identical payload for retries and
@@ -117,7 +120,7 @@ func (s *SQLiteStore) AppendWorkEvent(ctx context.Context, event WorkEvent) (Wor
 func (s *SQLiteStore) getWorkEventByID(ctx context.Context, id string) (WorkEvent, error) {
 	var ev WorkEvent
 	var observed, data string
-	err := s.db.QueryRowContext(ctx, `
+	err := s.readQueryRow(ctx, `
         SELECT sequence, id, work_id, type, observed_at, data_json
         FROM work_events WHERE id = ?
     `, id).Scan(&ev.Sequence, &ev.ID, &ev.WorkID, &ev.Type, &observed, &data)
@@ -142,7 +145,7 @@ func (s *SQLiteStore) ListWorkEventsAfter(ctx context.Context, workID string, af
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.readQuery(ctx, `
         SELECT sequence, id, work_id, type, observed_at, data_json
         FROM work_events
         WHERE work_id = ? AND sequence > ?
@@ -183,14 +186,14 @@ func (s *SQLiteStore) LatestWorkEventSequence(ctx context.Context, workID string
 
 func (s *SQLiteStore) workEventBoundary(ctx context.Context, workID, agg string) (int64, error) {
 	var exists int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM works WHERE id = ?`, workID).Scan(&exists); err != nil {
+	if err := s.readQueryRow(ctx, `SELECT COUNT(*) FROM works WHERE id = ?`, workID).Scan(&exists); err != nil {
 		return 0, fmt.Errorf("journal: boundary check %s: %w", workID, err)
 	}
 	if exists == 0 {
 		return 0, ErrNotFound
 	}
 	var seq sql.NullInt64
-	if err := s.db.QueryRowContext(ctx,
+	if err := s.readQueryRow(ctx,
 		`SELECT `+agg+` FROM work_events WHERE work_id = ?`, workID,
 	).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("journal: boundary %s %s: %w", workID, agg, err)

@@ -558,9 +558,24 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	list, err := s.Store.ListWorks(r.Context(), 100)
+	// Scheduler poll fast path: only QUEUED/RUNNING works are schedulable,
+	// so hydrate exactly those (state-filtered in SQL, batched child
+	// hydration) instead of the general ListWorks plus a Go-side filter.
+	list, err := s.Store.ListSchedulableWorks(r.Context(), 100)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list_failed", err.Error())
+		return
+	}
+	// Active leases for the whole candidate set in ONE query (previously
+	// one query per Work). Works with no active lease are simply absent
+	// from the map; ReadyNodes treats nil as an empty set.
+	workIDs := make([]string, 0, len(list))
+	for _, work := range list {
+		workIDs = append(workIDs, work.ID)
+	}
+	activeByWork, err := s.Store.ActiveLeasesByWorkIDs(r.Context(), workIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "leases_failed", err.Error())
 		return
 	}
 
@@ -613,16 +628,9 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 	var skipped []unschedulable
 
 	for _, work := range list {
-		if work.State != workgraph.StateQueued && work.State != workgraph.StateRunning {
-			continue
-		}
 		// Honor active leases: don't return a node another worker is leasing.
-		active, err := s.Store.ActiveLeasesByWorkID(r.Context(), work.ID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "leases_failed", err.Error())
-			return
-		}
-		for _, nid := range work.ReadyNodes(active) {
+		// (Batched into one query above; nil means "no active leases".)
+		for _, nid := range work.ReadyNodes(activeByWork[work.ID]) {
 			n := work.Graph.Nodes[nid]
 			item := readyItem{
 				WorkID:   work.ID,

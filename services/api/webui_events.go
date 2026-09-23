@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
+	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
 // contextWithTimeout is a tiny indirection so the SSE handler can cap
@@ -198,7 +199,25 @@ func (s *Server) takeSnapshot(r *http.Request) sseSnapshot {
 	ctx, cancel := contextWithTimeout(r, 1500*time.Millisecond)
 	defer cancel()
 
-	if list, err := s.Store.ListWorks(ctx, 50); err == nil {
+	// Summary projection: one query over the works table only — no
+	// child hydration, no graph JSON decode. Stores that don't implement
+	// it (non-SQLite fakes) fall back to the full ListWorks path.
+	if sum, ok := s.Store.(interface {
+		ListWorkSummaries(ctx context.Context, limit int) ([]store.WorkSummary, error)
+	}); ok {
+		if list, err := sum.ListWorkSummaries(ctx, 50); err == nil {
+			for _, ws := range list {
+				snap.works[ws.ID] = workEvent{
+					ID:        ws.ID,
+					State:     string(ws.State),
+					Type:      ws.Type,
+					Repo:      ws.Repo,
+					SHA:       shortSHA(ws.SHA),
+					UpdatedAt: ws.UpdatedAt.UTC().Format(time.RFC3339),
+				}
+			}
+		}
+	} else if list, err := s.Store.ListWorks(ctx, 50); err == nil {
 		for _, wk := range list {
 			if wk == nil {
 				continue

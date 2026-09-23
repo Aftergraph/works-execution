@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
@@ -449,7 +450,7 @@ func (s *SQLiteStore) transitionLeaseAttempt(ctx context.Context, leaseID string
 func (s *SQLiteStore) GetLease(ctx context.Context, leaseID string) (*workgraph.Lease, error) {
 	var l workgraph.Lease
 	var statusStr, grantedStr, expiresStr, beatStr string
-	err := s.db.QueryRowContext(ctx, `
+	err := s.readQueryRow(ctx, `
         SELECT id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status
         FROM work_leases WHERE id = ?
     `, leaseID).Scan(&l.ID, &l.WorkID, &l.NodeID, &l.WorkerID, &l.AttemptID,
@@ -474,7 +475,7 @@ func (s *SQLiteStore) ListExpiredLeases(ctx context.Context, limit int) ([]*work
 		limit = 100
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.readQuery(ctx, `
         SELECT id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status
         FROM work_leases WHERE status = ? AND expires_at < ? LIMIT ?
     `, string(workgraph.LeaseActive), now, limit)
@@ -514,7 +515,7 @@ func (s *SQLiteStore) MarkAttemptCancelled(ctx context.Context, attemptID, reaso
 // ACTIVE lease for the given work. Used by the scheduler to filter ready
 // nodes.
 func (s *SQLiteStore) ActiveLeasesByWorkID(ctx context.Context, workID string) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.readQuery(ctx, `
         SELECT node_id FROM work_leases WHERE work_id = ? AND status = ?
     `, workID, string(workgraph.LeaseActive))
 	if err != nil {
@@ -530,6 +531,54 @@ func (s *SQLiteStore) ActiveLeasesByWorkID(ctx context.Context, workID string) (
 		out[n] = true
 	}
 	return out, rows.Err()
+}
+
+// ActiveLeasesByWorkIDs returns, for each Work ID given, the set of node IDs
+// that currently have an ACTIVE lease on it. IDs without a Work row are
+// omitted. One query for the whole batch: the scheduler poll path calls
+// this instead of ActiveLeasesByWorkID per Work.
+func (s *SQLiteStore) ActiveLeasesByWorkIDs(ctx context.Context, workIDs []string) (map[string]map[string]bool, error) {
+	out := make(map[string]map[string]bool, len(workIDs))
+	if len(workIDs) == 0 {
+		return out, nil
+	}
+	const chunk = 400
+	for base := 0; base < len(workIDs); base += chunk {
+		end := base + chunk
+		if end > len(workIDs) {
+			end = len(workIDs)
+		}
+		part := workIDs[base:end]
+		ph := strings.Repeat("?,", len(part))
+		ph = ph[:len(ph)-1]
+		args := make([]any, len(part))
+		for i, id := range part {
+			args[i] = id
+		}
+		rows, err := s.readQuery(ctx,
+			`SELECT work_id, node_id FROM work_leases WHERE work_id IN (`+ph+`) AND status = ?`,
+			append(args, string(workgraph.LeaseActive))...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var wid, nid string
+			if err := rows.Scan(&wid, &nid); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if out[wid] == nil {
+				out[wid] = map[string]bool{}
+			}
+			out[wid][nid] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
 }
 
 // LeasesByWorkID returns every lease (any status) associated with the given
