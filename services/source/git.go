@@ -39,8 +39,8 @@ var ErrNoGit = errors.New("git binary not on PATH")
 
 // Source is the per-Work handle to a checked-out repository.
 // The caller MUST call Cleanup when done. The workspace is on a
-// tmpfs-equivalent path (os.TempDir) and will be removed on
-// Cleanup; any work that needs persistence should have already
+// configured source root (or os.TempDir when no root is configured) and
+// will be removed on Cleanup; any work that needs persistence should have already
 // copied evidence into the work's artifact directory.
 type Source struct {
 	// WorkDir is the absolute path to the checked-out tree.
@@ -65,6 +65,7 @@ type Options struct {
 	Ref     string // refs/heads/main or refs/pull/123/head (used only for clone hint)
 	SHA     string // exact 40-char commit to check out
 	Token   string // installation token (not a PAT); "" for public repos
+	Root    string // optional absolute checkout root; empty falls back to os.TempDir()
 }
 
 // randomTokenName returns a 12-char hex string used as a tmpdir
@@ -106,9 +107,17 @@ func Checkout(ctx context.Context, opts Options) (*Source, error) {
 		return nil, fmt.Errorf("SHA must be 40 hex chars, got %d", len(opts.SHA))
 	}
 
-	// Per-Work tmpdir. Includes the random suffix so concurrent
-	// checkouts don't share paths.
-	parent := filepath.Join(os.TempDir(), "works-sources")
+	// Per-Work source root. Production workers can pin this to a durable,
+	// executable filesystem so source checkout does not depend on host /tmp
+	// capacity or mount policy. Empty keeps the legacy os.TempDir behavior.
+	sourceRoot := opts.Root
+	if sourceRoot == "" {
+		sourceRoot = os.TempDir()
+	}
+	if !filepath.IsAbs(sourceRoot) {
+		return nil, fmt.Errorf("source root must be absolute: %q", sourceRoot)
+	}
+	parent := filepath.Join(filepath.Clean(sourceRoot), "works-sources")
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return nil, fmt.Errorf("create sources dir: %w", err)
 	}
