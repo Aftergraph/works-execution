@@ -854,6 +854,11 @@ func (s *SQLiteStore) ListWorks(ctx context.Context, limit int) ([]*workgraph.Wo
 	return s.listWorksWhere(ctx, "", nil, limit)
 }
 
+// listAllocHintCap bounds slice preallocation on list paths. The LIMIT
+// itself is honored in SQL; only the Go-side allocation hint is capped so
+// a caller-provided limit cannot drive an oversized allocation.
+const listAllocHintCap = 256
+
 // listWorksWhere implements batched list hydration: one query per child
 // table (works, attempts, artifacts, evidence) regardless of result size,
 // instead of one GetWork (4 queries) per row. filterSQL is appended to the
@@ -866,7 +871,10 @@ func (s *SQLiteStore) listWorksWhere(ctx context.Context, filterSQL string, args
 	if err != nil {
 		return nil, err
 	}
-	works := make([]*workgraph.Work, 0, limit)
+	// Cap the allocation hint: limit is caller-controlled (up to 5000 on
+	// the DORA path); preallocating the full slice from a user-provided
+	// size is an unbounded allocation (CodeQL go/unsafe-slice-cap).
+	works := make([]*workgraph.Work, 0, min(limit, listAllocHintCap))
 	for rows.Next() {
 		w := &workgraph.Work{}
 		var stateStr string
@@ -1090,7 +1098,7 @@ func (s *SQLiteStore) ListWorkSummaries(ctx context.Context, limit int) ([]WorkS
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]WorkSummary, 0, limit)
+	out := make([]WorkSummary, 0, min(limit, listAllocHintCap))
 	for rows.Next() {
 		var ws WorkSummary
 		var stateStr, updatedStr string
