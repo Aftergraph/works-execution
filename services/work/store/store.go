@@ -871,10 +871,10 @@ func (s *SQLiteStore) listWorksWhere(ctx context.Context, filterSQL string, args
 	if err != nil {
 		return nil, err
 	}
-	// Cap the allocation hint: limit is caller-controlled (up to 5000 on
-	// the DORA path); preallocating the full slice from a user-provided
-	// size is an unbounded allocation (CodeQL go/unsafe-slice-cap).
-	works := make([]*workgraph.Work, 0, min(limit, listAllocHintCap))
+	// Fixed allocation hint: limit is caller-controlled (up to 5000 on
+	// the DORA path), so it must not drive the preallocation (CodeQL
+	// go/unsafe-slice-cap). The slice grows past the hint as needed.
+	works := make([]*workgraph.Work, 0, listAllocHintCap)
 	for rows.Next() {
 		w := &workgraph.Work{}
 		var stateStr string
@@ -1098,7 +1098,7 @@ func (s *SQLiteStore) ListWorkSummaries(ctx context.Context, limit int) ([]WorkS
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]WorkSummary, 0, min(limit, listAllocHintCap))
+	out := make([]WorkSummary, 0, listAllocHintCap)
 	for rows.Next() {
 		var ws WorkSummary
 		var stateStr, updatedStr string
