@@ -1,0 +1,64 @@
+name: Integrity Fabric benchmark
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/evidence/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/integrity-bench.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: [self-hosted, linux, x64, aftergraph-ci]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Record controlled host
+        shell: bash
+        run: |
+          {
+            echo "sha=\${GITHUB_SHA}"
+            echo "runner_name=\${RUNNER_NAME}"
+            echo "runner_os=\${RUNNER_OS}"
+            echo "runner_arch=\${RUNNER_ARCH}"
+            go version
+            uname -a
+            lscpu | grep -E 'Model name|CPU\\(s\\)|Thread|Core|Socket|Flags' || true
+          } | tee integrity-bench-host.txt
+
+      - name: Test evidence package
+        run: go test ./services/evidence -count=1
+
+      - name: Benchmark before/after digest paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./services/evidence \
+            -run '^$' \
+            -bench 'BenchmarkDigest(SHA256|BLAKE3|Set)_(1KiB|1MiB|16MiB)$' \
+            -benchmem \
+            -count=5 | tee integrity-bench.txt
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: integrity-bench-\${{ github.run_id }}-\${{ github.run_attempt }}
+          path: |
+            integrity-bench.txt
+            integrity-bench-host.txt
+          if-no-files-found: error
