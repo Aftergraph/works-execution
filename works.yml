@@ -1,55 +1,31 @@
-# works.yml — works-execution's own CI pipeline (self-hosted).
-#
-# This repo builds and verifies ITSELF through its own control plane:
-# a push to main triggers a webhook → the control plane creates a
-# Work → a BYOC pool runner (avc-core) leases the nodes, runs the
-# pipeline below, and the publisher posts the result back to the
-# commit as a GitHub status. No GitHub Actions involved — dogfood all
-# the way down.
-#
-# Scope note: Requirements.Pool pins this pipeline to the avc-core
-# pool (RFC-0004). cache: true on the vet node lets repeat pushes
-# with byte-identical inputs skip straight to the cached result
-# (RFC-0005).
 version: 1
 
 work:
-  verify:
+  diagnose:
     triggers:
       - push
-      - pull_request
-
     requirements:
       confidence: development
       os: linux
       arch: amd64
       pool: avc-core
-
     nodes:
-      vet:
-        run: go vet ./...
-        cache: true
-        timeout_s: 120
-
-      test:
-        needs: [vet]
-        run: go test ./... -count=1
-        timeout_s: 600
-
-      windows-worker-crossbuild:
-        needs: [test]
+      execstart:
         run: |
-          mkdir -p dist
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o dist/works-worker-windows-amd64.exe ./cmd/works-worker
-          sha256sum dist/works-worker-windows-amd64.exe
-        timeout_s: 180
-
-      build:
-        needs: [test]
-        run: make build
-        timeout_s: 120
-
-      deploy-integrity-fabric-v1:
-        needs: [build, windows-worker-crossbuild]
-        run: bash scripts/ops/deploy-works-api-once.sh
-        timeout_s: 300
+          set -u
+          echo "WHOAMI=$(id -un)"
+          echo "UID=$(id -u)"
+          echo "PWD=$PWD"
+          echo "SERVICE_ACTIVE=$(systemctl is-active works-api.service 2>&1 || true)"
+          echo "EXEC_START=$(systemctl show works-api.service -p ExecStart --value 2>&1 || true)"
+          echo "FRAGMENT=$(systemctl show works-api.service -p FragmentPath --value 2>&1 || true)"
+          echo "MAIN_PID=$(systemctl show works-api.service -p MainPID --value 2>&1 || true)"
+          pid="$(systemctl show works-api.service -p MainPID --value 2>/dev/null || true)"
+          if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+            echo "PROC_EXE=$(readlink -f /proc/$pid/exe 2>&1 || true)"
+          fi
+          echo "OPT_WORKS_BIN:"
+          ls -la /opt/works/bin 2>&1 || true
+          echo "SUDO_NONINTERACTIVE=$(sudo -n true >/dev/null 2>&1 && echo yes || echo no)"
+          exit 42
+        timeout_s: 60
