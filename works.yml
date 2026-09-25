@@ -5,6 +5,7 @@ work:
   bootstrap-live-integrity:
     triggers:
       - push
+      - pull_request
     requirements:
       confidence: development
       os: linux
