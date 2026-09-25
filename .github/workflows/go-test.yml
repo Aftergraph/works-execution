@@ -24,3 +24,23 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./... -count=1
+      - name: Integrity before/after benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "=== controlled host ==="
+            echo "sha=${GITHUB_SHA}"
+            echo "runner_name=${RUNNER_NAME}"
+            echo "runner_os=${RUNNER_OS}"
+            echo "runner_arch=${RUNNER_ARCH}"
+            go version
+            uname -a
+            lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket|Flags' || true
+            echo "=== benchmark ==="
+            go test ./services/evidence \
+              -run "a^" \
+              -bench "Benchmark(Digest|IntegrityPipeline)" \
+              -benchmem \
+              -count=5
+          } | tee integrity-bench.txt
