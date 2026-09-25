@@ -13,33 +13,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fetch public WORKS state by source SHA
+      - name: Verify live Integrity Fabric surface
         shell: bash
         env:
-          SOURCE_SHA: 643eff7c4b43fcc48362db3284a379ed873dd967
+          WORK_ID: wrk_3995b52a8e30d244dc83f6413bba0df2
           WORKS_BASE: https://works.rendetalje.dk
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --max-time 15 \
-            "$WORKS_BASE/v1/works" > /tmp/works.json
+            "$WORKS_BASE/v1/works/$WORK_ID/evidence" > /tmp/evidence.json
           python3 - <<'PY'
-          import json, os
-          p=json.load(open('/tmp/works.json'))
-          items=p if isinstance(p,list) else (p.get('works') or p.get('items') or [])
-          sha=os.environ['SOURCE_SHA']
-          matches=[]
-          for w in items:
-              if ((w.get('source') or {}).get('sha') == sha):
-                  matches.append(w)
-          print('MATCH_COUNT=' + str(len(matches)))
-          for w in matches:
-              print('WORK_ID=' + str(w.get('id','')))
-              print('STATE=' + str(w.get('state','')))
-              print('UPDATED_AT=' + str(w.get('updated_at','')))
-              for ev in w.get('evidence') or []:
-                  d=ev.get('details') or {}
-                  print('EVIDENCE node=%s result=%s exit_code=%s' % (
-                      ev.get('node_id',''), ev.get('result',''), d.get('exit_code','')))
-                  if d.get('error'):
-                      print('ERROR=' + ' '.join(str(d['error']).split())[-1800:])
+          import json
+          p=json.load(open('/tmp/evidence.json'))
+          print('BUNDLE_ID=' + str(p.get('bundle_id','')))
+          integ=p.get('integrity')
+          print('INTEGRITY_PRESENT=' + str(bool(integ)).lower())
+          if integ:
+              print('CANONICALIZATION=' + str(integ.get('canonicalization','')))
+              ds=integ.get('digests') or {}
+              primary=ds.get('primary') or {}
+              alts=ds.get('alternatives') or []
+              print('PRIMARY_ALGORITHM=' + str(primary.get('algorithm','')))
+              print('ALTERNATES=' + ','.join(str(x.get('algorithm','')) for x in alts))
+          print('SIGNATURE_ALGORITHMS=' + ','.join(str(x.get('algorithm','')) for x in (p.get('signatures') or [])))
           PY
