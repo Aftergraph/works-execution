@@ -90,6 +90,49 @@ func git(ctx context.Context, dir string, env []string, args ...string) error {
 	return nil
 }
 
+// hasCommit reports whether sha is already present in the local object
+// database. Ref is only a transport hint; the exact SHA is the integrity
+// identity, so an already-present commit must not be rejected because a
+// short-lived remote ref disappeared (for example GitHub merge-queue refs).
+func hasCommit(ctx context.Context, dir string, env []string, sha string) bool {
+	cmd := exec.CommandContext(ctx, "git", "cat-file", "-e", sha+"^{commit}")
+	cmd.Dir = dir
+	cmd.Env = env
+	return cmd.Run() == nil
+}
+
+// fetchExactSource ensures the requested SHA exists locally. It first uses
+// Ref as a bounded shallow-fetch hint, then falls back to an exact-SHA fetch
+// when the hint is stale or ephemeral. The caller still performs detached
+// checkout + HEAD equality verification, so this fallback cannot silently
+// substitute another commit.
+func fetchExactSource(ctx context.Context, dir string, env []string, ref, sha string) error {
+	if hasCommit(ctx, dir, env, sha) {
+		return nil
+	}
+
+	var refErr error
+	if ref != "" {
+		refErr = git(ctx, dir, env, "fetch", "--no-tags", "--depth", "1", "origin", ref)
+		if refErr == nil && hasCommit(ctx, dir, env, sha) {
+			return nil
+		}
+	}
+
+	shaErr := git(ctx, dir, env, "fetch", "--no-tags", "--depth", "1", "origin", sha)
+	if shaErr == nil && hasCommit(ctx, dir, env, sha) {
+		return nil
+	}
+
+	if refErr != nil {
+		return fmt.Errorf("fetch ref %s failed: %v; exact SHA %s failed: %v", ref, refErr, sha, shaErr)
+	}
+	if shaErr != nil {
+		return fmt.Errorf("fetch exact SHA %s: %w", sha, shaErr)
+	}
+	return fmt.Errorf("requested SHA %s absent after fetch", sha)
+}
+
 // Checkout clones the repo at the given ref, then checks out the
 // exact SHA. Returns a Source whose WorkDir is ready for use. The
 // caller must call Source.Cleanup when done.
@@ -211,14 +254,14 @@ func Checkout(ctx context.Context, opts Options) (*Source, error) {
 		}
 	}
 
-	// A shallow clone starts from the default branch. Fetch the exact
-	// webhook ref before checking out its SHA so feature branches and
-	// pull-request heads cannot accidentally verify the default branch.
-	if opts.Ref != "" {
-		if err := git(ctx, workdir, env, "fetch", "--no-tags", "--depth", "1", "origin", opts.Ref); err != nil {
-			_ = os.RemoveAll(workdir)
-			return nil, fmt.Errorf("fetch %s: %w", opts.Ref, err)
-		}
+	// A shallow clone starts from the default branch. Ref is a transport
+	// hint, while SHA is the authoritative execution identity. If the SHA
+	// is already present (common after a merge-queue candidate lands on
+	// main), a vanished ephemeral ref must not make the work fail. When the
+	// SHA is absent we fetch the ref first, then the exact SHA as a fallback.
+	if err := fetchExactSource(ctx, workdir, env, opts.Ref, opts.SHA); err != nil {
+		_ = os.RemoveAll(workdir)
+		return nil, err
 	}
 
 	// Sanity: did we get a repo?
