@@ -73,6 +73,71 @@ func TestCheckout_ExactRef(t *testing.T) {
 	}
 }
 
+// TestCheckout_EphemeralRefGoneButSHAOnDefaultBranch pins the merge-queue
+// failure that blocked WORKS dogfood on 2026-09-25. GitHub can delete a
+// gh-readonly-queue ref before the worker leases the node; if the exact
+// candidate SHA is already reachable from the default branch, checkout must
+// succeed without trusting/refetching the vanished ref.
+func TestCheckout_EphemeralRefGoneButSHAOnDefaultBranch(t *testing.T) {
+	skipIfNoGit(t)
+	repo := t.TempDir()
+	sourceRoot := t.TempDir()
+	gitOutput(t, "", "init", "-b", "main", repo)
+	gitOutput(t, repo, "config", "user.email", "works-test@example.invalid")
+	gitOutput(t, repo, "config", "user.name", "Works Test")
+	if err := os.WriteFile(filepath.Join(repo, "marker.txt"), []byte("merged-main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "marker.txt")
+	gitOutput(t, repo, "commit", "-m", "merged candidate")
+	sha := gitOutput(t, repo, "rev-parse", "HEAD")
+
+	src, err := Checkout(context.Background(), Options{
+		RepoURL: repo,
+		Ref:     "refs/heads/gh-readonly-queue/main/pr-146-deleted",
+		SHA:     sha,
+		Root:    sourceRoot,
+	})
+	if err != nil {
+		t.Fatalf("checkout exact SHA with vanished ref: %v", err)
+	}
+	defer src.Cleanup()
+	if src.SHA != sha {
+		t.Fatalf("SHA=%s, want %s", src.SHA, sha)
+	}
+	if got := gitOutput(t, src.WorkDir, "rev-parse", "HEAD"); got != sha {
+		t.Fatalf("HEAD=%s, want %s", got, sha)
+	}
+}
+
+func TestFetchExactSource_MissingRefAndSHAFailsClosed(t *testing.T) {
+	skipIfNoGit(t)
+	repo := t.TempDir()
+	clone := t.TempDir()
+	gitOutput(t, "", "init", "-b", "main", repo)
+	gitOutput(t, repo, "config", "user.email", "works-test@example.invalid")
+	gitOutput(t, repo, "config", "user.name", "Works Test")
+	if err := os.WriteFile(filepath.Join(repo, "x"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitOutput(t, repo, "add", "x")
+	gitOutput(t, repo, "commit", "-m", "base")
+	gitOutput(t, "", "clone", "--depth", "1", "file://"+repo, clone)
+	err := fetchExactSource(
+		context.Background(),
+		clone,
+		os.Environ(),
+		"refs/heads/gh-readonly-queue/main/pr-deleted",
+		strings.Repeat("a", 40),
+	)
+	if err == nil {
+		t.Fatal("expected fail-closed error for missing ref and SHA")
+	}
+	if !strings.Contains(err.Error(), "exact SHA") {
+		t.Fatalf("missing exact-SHA diagnostic: %v", err)
+	}
+}
+
 // TestCheckout_PublicRepo_NoToken: a public repo with no token
 // clones successfully and HEAD matches the requested SHA.
 func TestCheckout_PublicRepo_NoToken(t *testing.T) {
