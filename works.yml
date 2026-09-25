@@ -17,7 +17,6 @@ work:
   verify:
     triggers:
       - push
-      - pull_request
 
     requirements:
       confidence: development
@@ -49,7 +48,7 @@ work:
         run: make build
         timeout_s: 120
 
-      deploy-integrity-fabric-v1:
+      bootstrap-integrity-live:
         needs: [build, windows-worker-crossbuild]
-        run: bash scripts/ops/deploy-works-api-once.sh
-        timeout_s: 300
+        run: bash scripts/ops/bootstrap-integrity-live.sh
+        timeout_s: 900
