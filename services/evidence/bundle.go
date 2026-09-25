@@ -3,10 +3,11 @@
 //
 // The bundle is the durable record of what happened during a Work's
 // execution: every attempt, artifact, evidence record, and lease that the
-// store knows about. It is content-addressed (sha256 over canonical JSON)
-// so it can be referenced from Workflow Provenance (#122) and Action
-// Attestation (#123) and so downstream verifiers can re-canonicalize and
-// re-derive bundle_id to detect tampering.
+// store knows about. It is content-addressed over canonical JSON.
+// SHA-256 remains the stable bundle_id interoperability identity, while
+// Integrity Fabric v1 additionally emits an algorithm-tagged SHA-256 + BLAKE3
+// DigestSet over the exact same canonical subject bytes. Downstream verifiers
+// can re-canonicalize and independently re-derive both identities.
 //
 // Canonicalization follows the spirit of RFC 8785 (JSON Canonicalization
 // Scheme): object keys are sorted lexicographically and Unicode escapes
@@ -78,6 +79,7 @@ type Bundle struct {
 	Environment          *Environment          `json:"environment,omitempty"`// M1
 	IdentityChain        map[string]string     `json:"identity_chain,omitempty"`
 	PlatformVerification *PlatformVerification `json:"platform_verification,omitempty"`
+	Integrity            *IntegrityEnvelope    `json:"integrity,omitempty"`
 	CreatedAt            time.Time             `json:"created_at"`
 	Summary              Summary               `json:"summary"`
 	Components           Components            `json:"components"`
@@ -347,28 +349,42 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 		}
 	}
 
-	// Compute bundle_id over the canonical bytes (signatures stripped,
-	// bundle_id replaced by a 32-zero placeholder). This is the
-	// standard trick used by in-toto / Sigstore attestations: the id
-	// is derived from the body *as it would be* with the id field
-	// present but set to its placeholder. Verifiers must apply the
-	// same placeholder substitution before re-hashing.
-	preCanonical := *b
-	preCanonical.BundleID = placeholderBundleID
-	preCanonical.Signatures = nil
-	canonical, err := canonicalize(&preCanonical)
+	// Derive the immutable subject projection once. The projection strips
+	// signatures and integrity metadata and substitutes the bundle-id
+	// placeholder, preventing self-referential digests while preserving the
+	// legacy SHA-256 bundle_id contract.
+	subjectCanonical, err := bundleSubjectCanonical(b)
 	if err != nil {
-		return nil, fmt.Errorf("evidence: canonicalize: %w", err)
+		return nil, fmt.Errorf("evidence: canonicalize subject: %w", err)
 	}
-	sum := sha256.Sum256(canonical)
-	b.BundleID = "evb_" + hex.EncodeToString(sum[:])[:32]
+	digests, err := BuildDigestSet(subjectCanonical, DigestScopeCanonicalObject)
+	if err != nil {
+		return nil, fmt.Errorf("evidence: digest subject: %w", err)
+	}
+	b.BundleID = "evb_" + digests.Primary.Value[:32]
+	b.Integrity = &IntegrityEnvelope{
+		Canonicalization: BundleCanonicalizationV1,
+		SubjectScope:     DigestScopeCanonicalObject,
+		Digests:          digests,
+	}
 
-	// Sign the same canonical bytes.
+	// Sign the final envelope projection: bundle_id is replaced by the
+	// placeholder and signatures are stripped, but Integrity is retained.
+	// This means the signature authenticates both algorithm-tagged digests
+	// while the digests themselves continue to identify the pre-integrity
+	// subject bytes.
+	signable := *b
+	signable.BundleID = placeholderBundleID
+	signable.Signatures = nil
+	canonical, err := canonicalize(&signable)
+	if err != nil {
+		return nil, fmt.Errorf("evidence: canonicalize signable envelope: %w", err)
+	}
 	mac := hmac.New(sha256.New, cfg.HMACKey)
 	mac.Write(canonical)
 	sig := Signature{
 		KeyID:     cfg.KeyID,
-		Algorithm: "ecdsa-p256", // see note below
+		Algorithm: "ecdsa-p256", // wire compatibility; HMAC migration remains tracked separately
 		Value:     base64.StdEncoding.EncodeToString(mac.Sum(nil)),
 		SignedAt:  now,
 	}
@@ -390,6 +406,22 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 		return nil, err
 	}
 	return b, nil
+}
+
+
+// bundleSubjectCanonical returns the canonical bytes identified by bundle_id
+// and Integrity.Digests. Integrity and signatures are deliberately excluded:
+// neither may participate in its own digest. The bundle_id placeholder keeps
+// the serialized shape stable across producer and verifier.
+func bundleSubjectCanonical(b *Bundle) ([]byte, error) {
+	if b == nil {
+		return nil, errors.New("evidence: nil bundle")
+	}
+	projection := *b
+	projection.BundleID = placeholderBundleID
+	projection.Signatures = nil
+	projection.Integrity = nil
+	return canonicalize(&projection)
 }
 
 
