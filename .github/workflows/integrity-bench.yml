@@ -31,10 +31,10 @@ jobs:
         shell: bash
         run: |
           {
-            echo "sha=\${GITHUB_SHA}"
-            echo "runner_name=\${RUNNER_NAME}"
-            echo "runner_os=\${RUNNER_OS}"
-            echo "runner_arch=\${RUNNER_ARCH}"
+            echo "sha=${GITHUB_SHA}"
+            echo "runner_name=${RUNNER_NAME}"
+            echo "runner_os=${RUNNER_OS}"
+            echo "runner_arch=${RUNNER_ARCH}"
             go version
             uname -a
             lscpu | grep -E 'Model name|CPU\\(s\\)|Thread|Core|Socket|Flags' || true
@@ -57,7 +57,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: integrity-bench-\${{ github.run_id }}-\${{ github.run_attempt }}
+          name: integrity-bench-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             integrity-bench.txt
             integrity-bench-host.txt
