@@ -18,6 +18,7 @@ import (
 	"github.com/JonasAbde/works-execution/internal/dispatch"
 	"github.com/JonasAbde/works-execution/packages/cache"
 	"github.com/JonasAbde/works-execution/services/api"
+	"github.com/JonasAbde/works-execution/services/evidence"
 	"github.com/JonasAbde/works-execution/services/publisher"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
@@ -75,6 +76,22 @@ func main() {
 		EnrollSecret: *enrollSecret,
 		Policy:       policyEngine,
 		AuthEnabled:  true,
+	}
+
+	evidenceCfg, err := evidenceConfigFromValues(
+		envOr("WORKS_EVIDENCE_KEY_ID", "works-evidence-v1"),
+		envOr("WORKS_EVIDENCE_HMAC_KEY", ""),
+		envOr("WORKS_EVIDENCE_RUNNER_ID", "works-api"),
+	)
+	if err != nil {
+		logger.Fatalf("evidence configuration: %v", err)
+	}
+	srv.EvidenceConfig = evidenceCfg
+	if evidenceCfg != nil {
+		logger.Printf("evidence producer enabled (/v1/works/{id}/evidence, key_id=%s, runner_id=%s)",
+			evidenceCfg.KeyID, evidenceCfg.Runner.ID)
+	} else {
+		logger.Printf("evidence producer unavailable (no WORKS_EVIDENCE_HMAC_KEY)")
 	}
 	if *webhookSecret != "" {
 		srv.WebhookConfig = &api.WebhookConfig{
@@ -224,6 +241,32 @@ func main() {
 		logger.Fatalf("listen: %v", err)
 	}
 	logger.Printf("works-api stopped")
+}
+
+
+func evidenceConfigFromValues(keyID, hmacKey, runnerID string) (*api.EvidenceConfig, error) {
+	if hmacKey == "" {
+		return nil, nil
+	}
+	if len([]byte(hmacKey)) < 32 {
+		return nil, errors.New("WORKS_EVIDENCE_HMAC_KEY must be at least 32 bytes when configured")
+	}
+	keyID = strings.TrimSpace(keyID)
+	if keyID == "" {
+		return nil, errors.New("WORKS_EVIDENCE_KEY_ID must not be empty when evidence signing is enabled")
+	}
+	runnerID = strings.TrimSpace(runnerID)
+	if runnerID == "" {
+		return nil, errors.New("WORKS_EVIDENCE_RUNNER_ID must not be empty when evidence signing is enabled")
+	}
+	return &api.EvidenceConfig{
+		KeyID:   keyID,
+		HMACKey: []byte(hmacKey),
+		Runner: evidence.Runner{
+			ID:         runnerID,
+			TrustClass: "standard",
+		},
+	}, nil
 }
 
 func allowedReposFromEnv() map[string]bool {
