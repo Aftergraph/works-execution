@@ -11,6 +11,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -76,6 +77,29 @@ func (m *dispatchMemStore) AcceptIfAbsent(a *dispatch.Acceptance) (*dispatch.Acc
 	cp := cloneDispatchAcceptForTest(a)
 	m.byKey[a.Dispatch.IdempotencyKey] = cp
 	m.byEx[a.WorksExecutionID] = cp
+	return cloneDispatchAcceptForTest(cp), nil
+}
+
+func (m *dispatchMemStore) SpendIfWithinCeiling(worksExecutionID string, amount int64) (*dispatch.Acceptance, error) {
+	if amount <= 0 {
+		return nil, errors.New("spend amount must be positive")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc := m.byEx[worksExecutionID]
+	if acc == nil || acc.Revoked {
+		return nil, nil
+	}
+	if acc.Dispatch.BudgetCeiling < 0 || acc.BudgetSpent < 0 || acc.BudgetSpent > acc.Dispatch.BudgetCeiling {
+		return nil, nil
+	}
+	if amount > acc.Dispatch.BudgetCeiling-acc.BudgetSpent {
+		return nil, nil
+	}
+	cp := cloneDispatchAcceptForTest(acc)
+	cp.BudgetSpent += amount
+	m.byKey[cp.Dispatch.IdempotencyKey] = cp
+	m.byEx[worksExecutionID] = cp
 	return cloneDispatchAcceptForTest(cp), nil
 }
 

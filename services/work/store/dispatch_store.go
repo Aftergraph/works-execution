@@ -162,6 +162,71 @@ func loadAcceptance(q queryRower, query string, arg string) (*dispatch.Acceptanc
 	return &accepted, nil
 }
 
+// SpendIfWithinCeiling atomically adds amount to BudgetSpent only when the
+// record exists, is not revoked, and spent+amount stays within the ceiling.
+// The check and the increment happen inside one transaction on the JSON
+// payload, so concurrent spends cannot interleave load-modify-save past the
+// ceiling. Returns (nil, nil) when the conditional update did not apply;
+// the caller re-loads to classify the rejection.
+func (s *dispatchAcceptanceStore) SpendIfWithinCeiling(worksExecutionID string, amount int64) (*dispatch.Acceptance, error) {
+	if amount <= 0 {
+		return nil, errors.New("dispatch acceptance: spend amount must be positive")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("dispatch acceptance begin spend: %w", err)
+	}
+	defer tx.Rollback()
+	acc, err := loadAcceptance(tx,
+		`SELECT works_execution_id, idempotency_key, causal_id, acceptance_json
+			 FROM dispatch_acceptances WHERE works_execution_id = ?`,
+		worksExecutionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if acc == nil {
+		return nil, nil
+	}
+	if acc.Revoked {
+		return nil, nil
+	}
+	if acc.Dispatch.BudgetCeiling < 0 || acc.BudgetSpent < 0 || acc.BudgetSpent > acc.Dispatch.BudgetCeiling {
+		return nil, nil
+	}
+	// Subtraction form so an overflowing amount cannot wrap below the ceiling.
+	if amount > acc.Dispatch.BudgetCeiling-acc.BudgetSpent {
+		return nil, nil
+	}
+	acc.BudgetSpent += amount
+	payload, err := json.Marshal(acc)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch acceptance encode spend: %w", err)
+	}
+	result, err := tx.Exec(`
+		UPDATE dispatch_acceptances
+			SET acceptance_json = ?, updated_at = ?
+			WHERE works_execution_id = ?`,
+		string(payload),
+		time.Now().UTC().Format(time.RFC3339Nano),
+		worksExecutionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("dispatch acceptance spend: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("dispatch acceptance spend rows affected: %w", err)
+	}
+	if rows == 0 {
+		return nil, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("dispatch acceptance commit spend: %w", err)
+	}
+	return cloneDispatchAcceptance(acc), nil
+}
+
 func (s *dispatchAcceptanceStore) Save(accepted *dispatch.Acceptance) error {
 	if accepted == nil {
 		return errors.New("dispatch acceptance: nil record")

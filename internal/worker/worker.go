@@ -138,6 +138,9 @@ type ReadyItem struct {
 	TimeoutS int               `json:"timeout_s,omitempty"`
 	Image    string            `json:"image,omitempty"` // slice 5: docker image; empty = host subprocess
 	Source   *workgraph.Source `json:"source,omitempty"`
+	// SideEffects carries the node's admitted side-effect classes so the
+	// worker derives the sandbox network policy at execution time.
+	SideEffects []string `json:"side_effects,omitempty"`
 	// CacheKey (RFC-0005): non-empty when the node's inputs are
 	// cache-enabled and the scheduler computed a fingerprint. The
 	// worker may claim a prior identical result via CacheLookup.
@@ -613,7 +616,14 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 			if item.Image != "" {
 				res = runDocker(ctx, item.Image, item.Run, item.Env, timeout, killCh)
 			} else {
-				res = runCommand(ctx, item.Run, item.Env, timeout, killCh, sourceDir, nil)
+				// Hermetic Execution Standard (#111): production leases
+				// ALWAYS execute under a derived sandbox manifest. The
+				// manifest's env allow-list is the node's declared Env
+				// keys only — the worker's own process environment
+					// (credentials, control-plane config) never crosses
+					// the execution boundary.
+				m := workerSandboxManifest(item, sourceDir)
+				res = runCommand(ctx, item.Run, item.Env, timeout, killCh, sourceDir, &m)
 			}
 		}
 	}
@@ -802,7 +812,13 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 
 	var prepared *sandbox.Prepared
 	if len(manifest) > 0 && manifest[0] != nil {
-		p, prepErr := sandbox.Prepare(cctx, command, env, *manifest[0])
+		// ProbeNetwork=false: the worker records the network policy
+		// decision (Prepared.NetworkBlocked) instead of refusing work
+		// on hosts with a default route. Egress AUTHORITY is enforced
+		// upstream (scheduler hard filter on network capability);
+		// syscall-level blocking is the V2 netns concern per
+		// internal/sandbox/hermetic.go.
+		p, prepErr := sandbox.Prepare(cctx, command, env, *manifest[0], sandbox.Options{ProbeNetwork: false})
 		if prepErr != nil {
 			return execResult{
 				Status:      "failed",
@@ -859,13 +875,18 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 		return res
 	}
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			res.ExitCode = ee.ExitCode()
-		} else if errors.Is(cctx.Err(), context.DeadlineExceeded) {
+		// Timeout classification MUST be checked before the ExitError:
+		// exec.CommandContext kills the process on deadline, so cmd.Run()
+		// returns an *exec.ExitError for timeouts too. Checking ExitError
+		// first silently misrecords every timeout as a plain failure.
+		if errors.Is(cctx.Err(), context.DeadlineExceeded) {
 			res.Status = "timed_out"
 			res.ExitCode = -1
 			return res
+		}
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			res.ExitCode = ee.ExitCode()
 		} else {
 			res.ExitCode = -1
 		}
@@ -969,7 +990,7 @@ func evidenceResult(status string) string {
 	switch status {
 	case "succeeded":
 		return "pass"
-	case "failed", "timed_out", "cancelled":
+	case "failed", "timed_out", "cancelled", "oom_killed":
 		return "fail"
 	}
 	return "skip"

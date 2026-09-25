@@ -96,6 +96,12 @@ type Store interface {
 	// AcceptIfAbsent must atomically insert on the idempotency key and return
 	// the winner when another request already inserted the same key.
 	AcceptIfAbsent(a *Acceptance) (*Acceptance, error)
+	// SpendIfWithinCeiling must atomically add amount to BudgetSpent only
+	// when the record exists, is not revoked, and spent+amount stays within
+	// the ceiling. It returns the updated record on success; (nil, nil)
+	// means the spend was rejected (exhausted, revoked, or unknown id) and
+	// the caller must re-load to classify the rejection.
+	SpendIfWithinCeiling(worksExecutionID string, amount int64) (*Acceptance, error)
 	Save(a *Acceptance) error
 }
 
@@ -173,28 +179,42 @@ func (a *Acceptor) Revoke(worksExecutionID string) error {
 
 // Spend charges budget. Over-ceiling spend fails closed and can never
 // autonomously retry around the ceiling: only a new dispatched budget
-// reference (new idempotency key) can continue.
+// reference (new idempotency key) can continue. The ceiling check and the
+// BudgetSpent increment happen atomically in the store (Store.
+// SpendIfWithinCeiling) so concurrent spends cannot race past the ceiling
+// via a load-modify-save interleave.
 func (a *Acceptor) Spend(worksExecutionID string, amount int64) error {
 	if amount <= 0 {
 		return fmt.Errorf("%w: amount %d", ErrInvalidSpend, amount)
 	}
-	acc, err := a.get(worksExecutionID)
+	updated, err := a.store.SpendIfWithinCeiling(worksExecutionID, amount)
 	if err != nil {
 		return err
 	}
-	if acc.Revoked {
+	if updated == nil {
+		// The conditional spend lost the race (or the record is
+		// revoked/invalid). Re-load to classify the rejection exactly.
+		acc, err := a.get(worksExecutionID)
+		if err != nil {
+			return err
+		}
+		if acc.Revoked {
+			return ErrRevoked
+		}
+		if acc.Dispatch.BudgetCeiling < 0 || acc.BudgetSpent < 0 || acc.BudgetSpent > acc.Dispatch.BudgetCeiling {
+			return ErrInvalidBudget
+		}
+		// Use subtraction rather than spent+amount so an overflowing amount cannot
+		// wrap below the hard ceiling.
+		if amount > acc.Dispatch.BudgetCeiling-acc.BudgetSpent {
+			return fmt.Errorf("%w: spent %d + %d > ceiling %d", ErrBudgetExhausted, acc.BudgetSpent, amount, acc.Dispatch.BudgetCeiling)
+		}
+		// Not exhausted and not revoked but the spend did not apply — the
+		// record changed between the atomic attempt and this re-load (e.g.
+		// a concurrent revoke+save). Fail closed rather than guess.
 		return ErrRevoked
 	}
-	if acc.Dispatch.BudgetCeiling < 0 || acc.BudgetSpent < 0 || acc.BudgetSpent > acc.Dispatch.BudgetCeiling {
-		return ErrInvalidBudget
-	}
-	// Use subtraction rather than spent+amount so an overflowing amount cannot
-	// wrap below the hard ceiling.
-	if amount > acc.Dispatch.BudgetCeiling-acc.BudgetSpent {
-		return fmt.Errorf("%w: spent %d + %d > ceiling %d", ErrBudgetExhausted, acc.BudgetSpent, amount, acc.Dispatch.BudgetCeiling)
-	}
-	acc.BudgetSpent += amount
-	return a.store.Save(acc)
+	return nil
 }
 
 // ApplyEffect records an externally visible effect exactly once. A second

@@ -108,7 +108,17 @@ func TestSlow(t *testing.T) {
 	}
 	bodyBytes, _ := json.Marshal(body)
 	hc := &http.Client{Timeout: 5 * time.Second}
-	resp, err := hc.Post(apiURL+"/v1/works", "application/json", bytes.NewReader(bodyBytes))
+	// The API runs with AuthEnabled (slice-4 law): POST /v1/works
+	// requires a bearer token. Enroll with the same shared challenge
+	// the worker uses so the test client authenticates like a real one.
+	tok := enrollChaosReal(t, hc, apiURL)
+	req, err := http.NewRequest(http.MethodPost, apiURL+"/v1/works", bytes.NewReader(bodyBytes))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := hc.Do(req)
 	if err != nil {
 		t.Fatalf("POST /v1/works: %v", err)
 	}
@@ -258,6 +268,35 @@ func startTestAPI(t *testing.T) (int, string, *exec.Cmd) {
 }
 
 // startTestWorker starts the works-worker binary in the background.
+// enrollChaosReal mints a short-lived worker token from the test API so
+// the test client can POST /v1/works behind requireBearer (slice-4 law:
+// the API is always auth-enabled; the shared challenge matches
+// startTestAPI's -enroll-secret flag).
+func enrollChaosReal(t *testing.T, hc *http.Client, apiURL string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{
+		"worker_id":   "wrkr_chaos_real_client",
+		"challenge":   "e2e-chaos-real-secret",
+		"ttl_seconds": 600,
+	})
+	resp, err := hc.Post(apiURL+"/v1/workers/enroll", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		out, _ := io.ReadAll(resp.Body)
+		t.Fatalf("enroll: status=%d body=%s", resp.StatusCode, string(out))
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || out.Token == "" {
+		t.Fatalf("enroll decode: %v token=%q", err, out.Token)
+	}
+	return out.Token
+}
+
 func startTestWorker(t *testing.T, apiURL, workerID, artDir string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(findRepoFile(t, "bin/works-worker"),
