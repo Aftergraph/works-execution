@@ -16,7 +16,7 @@ jobs:
       - name: Fetch public WORKS failure evidence
         shell: bash
         env:
-          WORK_ID: wrk_a73dff35c79d9f52a9b6802ae829bf4b
+          WORK_ID: wrk_70a680cc87180a2c776766bc72ff1ed9
           WORKS_BASE: https://works.rendetalje.dk
         run: |
           set -euo pipefail
