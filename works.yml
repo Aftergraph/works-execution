@@ -1,7 +1,7 @@
-# Temporary bootstrap diagnostic pipeline. Never merge.
+# Temporary one-shot bootstrap pipeline. Never merge.
 version: 1
 work:
-  bootstrap-diagnostic:
+  bootstrap:
     triggers:
       - push
     requirements:
@@ -10,13 +10,6 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      inspect-go-toolchain:
-        run: |
-          set -euo pipefail
-          echo "go_path=$(command -v go)"
-          echo "git_path=$(command -v git)"
-          echo "curl_path=$(command -v curl)"
-          echo "sha256sum_path=$(command -v sha256sum)"
-          go version
-          go env GOROOT GOPATH
+      bootstrap-integrity-live:
+        run: bash scripts/ops/bootstrap-integrity-live.sh
         timeout_s: 20
