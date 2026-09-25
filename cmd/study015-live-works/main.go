@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -103,6 +104,49 @@ func recoverFixture(
 	return w, lease, nil
 }
 
+func study015Handler(st *store.SQLiteStore, bridgeSecret string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/study015/execution-policy-correlation" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		presented := r.Header.Get("X-Works-Platform-Bridge")
+		if len(presented) != len(bridgeSecret) ||
+			subtle.ConstantTimeCompare([]byte(presented), []byte(bridgeSecret)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		executionContextID := strings.TrimSpace(r.URL.Query().Get("execution_context_id"))
+		if executionContextID == "" {
+			http.Error(w, "execution_context_id_required", http.StatusBadRequest)
+			return
+		}
+		rec, err := st.GetExecutionPolicyCorrelation(r.Context(), executionContextID)
+		if err != nil {
+			http.Error(w, "correlation_read_failed", http.StatusInternalServerError)
+			return
+		}
+		if rec == nil {
+			http.Error(w, "not_found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"schema":               "study015.execution-policy-correlation/1.0",
+			"work_id":              rec.WorkID,
+			"execution_context_id": rec.ExecutionContextID,
+			"execution_pdr_id":     rec.ExecutionPDRID,
+			"binding_digest":       rec.BindingDigest,
+			"recorded_at":          rec.RecordedAt.UTC().Format(time.RFC3339Nano),
+		})
+	})
+}
+
 func createFixture(ctx context.Context, st *store.SQLiteStore) (*workgraph.Work, *workgraph.Lease, error) {
 	workerID := "wrkr_" + strings.Repeat("7", 32)
 	w := &workgraph.Work{
@@ -149,7 +193,7 @@ func main() {
 	}
 
 	platformToken := requiredSecret("WORKS_API_TOKEN")
-	_ = requiredSecret("WORKS_PLATFORM_BRIDGE_SECRET")
+	bridgeSecret := requiredSecret("WORKS_PLATFORM_BRIDGE_SECRET")
 	verifierToken := requiredSecret("WORKS_VERIFIER_TOKEN")
 
 	var prior fixtureReceipt
@@ -232,7 +276,7 @@ func main() {
 	fmt.Fprintf(os.Stdout, "STUDY015_WORKS_READY %s recovered=%t\n", baseURL, recovered)
 
 	httpServer := &http.Server{
-		Handler:           srv.Routes(),
+		Handler:           study015Handler(st, bridgeSecret, srv.Routes()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	stop, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

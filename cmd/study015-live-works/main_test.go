@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/JonasAbde/works-execution/packages/executioncontext"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
@@ -159,5 +162,87 @@ func TestRecoverFixtureAllowsRelocatedDatabaseOnlyWhenIdentityExists(t *testing.
 	}
 	if gotWork.ID != w.ID || gotLease.ID != lease.ID || gotLease.WorkerID != lease.WorkerID {
 		t.Fatalf("relocated recovery rebound identity: work=%s lease=%s worker=%s", gotWork.ID, gotLease.ID, gotLease.WorkerID)
+	}
+}
+
+
+func TestStudy015CorrelationReadReturnsDurablePDR(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "works.db")
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	w, lease, err := createFixture(ctx, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platformCtx, err := st.CreateExecutionContext(ctx, executioncontext.Context{
+		Schema:              "execution-context/1.0",
+		OrganizationID:      "org_11111111111111111111111111111111",
+		TenantID:            "ten_22222222222222222222222222222222",
+		PrincipalID:         "prn_33333333333333333333333333333333",
+		MissionID:           "mis_study015_test",
+		AuthorityLeaseID:    "auth_44444444444444444444444444444444",
+		WorkID:              w.ID,
+		WorkerLeaseID:       lease.ID,
+		AdmissionDecisionID: "pdr_55555555555555555555555555555555",
+		TraceID:             "trc_66666666666666666666666666666666",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pdr = "pdr_88888888888888888888888888888888"
+	if _, _, err := st.RecordExecutionPolicyCorrelation(ctx, store.ExecutionPolicyCorrelation{
+		WorkID:             w.ID,
+		ExecutionContextID: platformCtx.ID,
+		ExecutionPDRID:     pdr,
+		BindingDigest:      "study015-test-binding",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	const secret = "bridge-secret-00000000000000000000000000000000"
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/study015/execution-policy-correlation?execution_context_id="+platformCtx.ID,
+		nil,
+	)
+	req.Header.Set("X-Works-Platform-Bridge", secret)
+	rec := httptest.NewRecorder()
+	study015Handler(st, secret, http.NotFoundHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["work_id"] != w.ID || body["execution_context_id"] != platformCtx.ID || body["execution_pdr_id"] != pdr {
+		t.Fatalf("wrong durable correlation: %#v", body)
+	}
+}
+
+func TestStudy015CorrelationReadRequiresBridgeSecret(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "works.db")
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	const secret = "bridge-secret-00000000000000000000000000000000"
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/study015/execution-policy-correlation?execution_context_id=ctx_11111111111111111111111111111111",
+		nil,
+	)
+	req.Header.Set("X-Works-Platform-Bridge", "wrong")
+	rec := httptest.NewRecorder()
+	study015Handler(st, secret, http.NotFoundHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
