@@ -173,7 +173,7 @@ worker_pid="$(systemctl show works-worker.service -p MainPID --value)"
 [ "$(sha256sum "/proc/$api_pid/exe" | awk '{print $1}')" = "$api_hash" ]
 [ "$(sha256sum "/proc/$worker_pid/exe" | awk '{print $1}')" = "$worker_hash" ]
 
-"$CLI_TARGET" runners | grep -q wrkr_prod
+WORKS_API="$API" "$CLI_TARGET" runners | grep -q wrkr_prod
 
 smoke="$(curl -fsS --max-time 8 "$API/v1/works/$SMOKE_WORK_ID/evidence")"
 grep -Fq '"canonicalization":"aftergraph-json-canonical/1"' <<<"$smoke"
