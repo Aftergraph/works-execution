@@ -37,7 +37,7 @@ jobs:
             echo "runner_arch=${RUNNER_ARCH}"
             go version
             uname -a
-            lscpu | grep -E 'Model name|CPU\\(s\\)|Thread|Core|Socket|Flags' || true
+            lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket|Flags' || true
           } | tee integrity-bench-host.txt
 
       - name: Test evidence package
