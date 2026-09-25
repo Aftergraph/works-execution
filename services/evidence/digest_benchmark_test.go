@@ -197,16 +197,10 @@ func BenchmarkIntegrityPipelineV1_64KiB(b *testing.B) {
 			SubjectScope: DigestScopeCanonicalObject,
 			Digests: digests,
 		}
-		signable := projection
-		signable.BundleID = placeholderBundleID
-		signable.Signatures = nil
-		canonical, err := canonicalize(&signable)
+		benchmarkMAC, err = signatureMACFromSubject(&projection, subject, []byte("benchmark-key"))
 		if err != nil {
 			b.Fatal(err)
 		}
-		mac := hmac.New(sha256.New, []byte("benchmark-key"))
-		_, _ = mac.Write(canonical)
-		benchmarkMAC = mac.Sum(nil)
 		benchmarkBundleID = projection.BundleID
 	}
 }
