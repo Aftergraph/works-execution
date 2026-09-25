@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   benchmark:
-    runs-on: [self-hosted, linux, x64, aftergraph-ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -27,6 +27,7 @@ jobs:
           go-version: '1.23'
           cache: true
 
+      # PR benchmark is same-host comparative evidence. Final live-main verification remains WORKS-native.
       - name: Record controlled host
         shell: bash
         run: |
