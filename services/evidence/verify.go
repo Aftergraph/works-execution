@@ -4,9 +4,7 @@ package evidence
 
 import (
 	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,11 +12,13 @@ import (
 
 // BundleVerificationResult holds the outcome of VerifyBundle.
 type BundleVerificationResult struct {
-	Valid            bool
-	SignatureValid   bool
-	ContentHashValid bool
+	Valid               bool
+	SignatureValid      bool
+	ContentHashValid    bool
+	IntegrityPresent    bool
+	IntegrityValid      bool
 	CorrelationComplete bool
-	Errors           []string
+	Errors              []string
 }
 
 // ErrBundleVerification combines multiple verification errors.
@@ -32,11 +32,13 @@ var ErrBundleVerification = errors.New("bundle verification failed")
 //      evidence_id/bundle_id)
 func VerifyBundle(b *Bundle, keyID string, hmacKey []byte) (*BundleVerificationResult, error) {
 	result := &BundleVerificationResult{
-		Valid:           false,
-		SignatureValid:  false,
-		ContentHashValid: false,
+		Valid:               false,
+		SignatureValid:      false,
+		ContentHashValid:    false,
+		IntegrityPresent:    b != nil && b.Integrity != nil,
+		IntegrityValid:      false,
 		CorrelationComplete: false,
-		Errors:          []string{},
+		Errors:              []string{},
 	}
 
 	if b == nil {
@@ -51,11 +53,22 @@ func VerifyBundle(b *Bundle, keyID string, hmacKey []byte) (*BundleVerificationR
 		result.SignatureValid = true
 	}
 
-	// Check content-addressed bundle_id
+	// Check content-addressed bundle_id.
 	if err := verifyBundleID(b); err != nil {
 		result.Errors = append(result.Errors, "bundle_id invalid: "+err.Error())
 	} else {
 		result.ContentHashValid = true
+	}
+
+	// Integrity Fabric v1 is additive/N-1 compatible: legacy bundles without
+	// an integrity envelope still verify, while any present envelope is
+	// mandatory-to-validate and fail-closed.
+	if b.Integrity == nil {
+		result.IntegrityValid = true
+	} else if err := verifyIntegrity(b); err != nil {
+		result.Errors = append(result.Errors, "integrity invalid: "+err.Error())
+	} else {
+		result.IntegrityValid = true
 	}
 
 	// Check correlation-ID completeness
@@ -66,7 +79,7 @@ func VerifyBundle(b *Bundle, keyID string, hmacKey []byte) (*BundleVerificationR
 	}
 
 	// Overall validity: all checks must pass
-	result.Valid = result.SignatureValid && result.ContentHashValid && result.CorrelationComplete
+	result.Valid = result.SignatureValid && result.ContentHashValid && result.IntegrityValid && result.CorrelationComplete
 
 	return result, nil
 }
@@ -82,26 +95,19 @@ func verifySignature(b *Bundle, keyID string, hmacKey []byte) error {
 			continue
 		}
 
-		// Re-canonicalize with bundle_id replaced by placeholder and signatures stripped
-		clone := *b
-		clone.BundleID = placeholderBundleID
-		clone.Signatures = nil
-
-		canonical, err := canonicalize(&clone)
-		if err != nil {
-			return err
+		if b.Integrity != nil && s.Algorithm != "hmac-sha256-v1" {
+			return fmt.Errorf("unexpected integrity signature algorithm %q", s.Algorithm)
 		}
 
-		// Decode stored signature
 		storedSig, err := base64.StdEncoding.DecodeString(s.Value)
 		if err != nil {
 			return err
 		}
+		expectedSig, err := signatureMAC(b, hmacKey)
+		if err != nil {
+			return err
+		}
 
-		// Compute expected signature
-		expectedSig := hmacSum(canonical, hmacKey)
-
-		// Compare in constant time
 		if !hmac.Equal(storedSig, expectedSig) {
 			return errors.New("HMAC mismatch")
 		}
@@ -117,24 +123,57 @@ func verifyBundleID(b *Bundle) error {
 	if b.BundleID == "" {
 		return errors.New("bundle_id is empty")
 	}
-
-	// Compute expected bundle_id using the same method as Produce
-	preCanonical := *b
-	preCanonical.BundleID = placeholderBundleID
-	preCanonical.Signatures = nil
-
-	canonical, err := canonicalize(&preCanonical)
+	canonical, err := bundleSubjectCanonical(b)
 	if err != nil {
 		return err
 	}
-
-	sum := sha256.Sum256(canonical)
-	expectedBundleID := "evb_" + hex.EncodeToString(sum[:])[:32]
-
+	ref, err := DigestBytes(canonical, DigestSHA256, DigestScopeCanonicalObject)
+	if err != nil {
+		return err
+	}
+	expectedBundleID := "evb_" + ref.Value[:32]
 	if b.BundleID != expectedBundleID {
 		return errors.New("bundle_id hash mismatch")
 	}
+	return nil
+}
 
+// verifyIntegrity validates the algorithm-tagged DigestSet against the same
+// immutable subject projection used by bundle_id. Integrity Fabric v1
+// requires SHA-256 primary plus a BLAKE3 alternate.
+func verifyIntegrity(b *Bundle) error {
+	if b.Integrity == nil {
+		return nil
+	}
+	if b.Integrity.Canonicalization != BundleCanonicalizationV1 {
+		return fmt.Errorf("unsupported canonicalization %q", b.Integrity.Canonicalization)
+	}
+	if b.Integrity.SubjectScope != DigestScopeCanonicalObject {
+		return fmt.Errorf("unexpected subject scope %q", b.Integrity.SubjectScope)
+	}
+	set := b.Integrity.Digests
+	if set.Primary.Algorithm != DigestSHA256 || set.Primary.Scope != b.Integrity.SubjectScope {
+		return errors.New("sha256 canonical-object primary digest required")
+	}
+	hasBLAKE3 := false
+	for _, ref := range set.Alternatives {
+		if ref.Algorithm == DigestBLAKE3 {
+			hasBLAKE3 = true
+		}
+	}
+	if !hasBLAKE3 {
+		return errors.New("blake3 alternate digest required")
+	}
+	canonical, err := bundleSubjectCanonical(b)
+	if err != nil {
+		return err
+	}
+	if err := VerifyDigestSet(canonical, set); err != nil {
+		return err
+	}
+	if b.BundleID != "evb_"+set.Primary.Value[:32] {
+		return errors.New("bundle_id does not bind integrity primary")
+	}
 	return nil
 }
 
