@@ -35,6 +35,8 @@ type fixtureReceipt struct {
 	WorkerID      string `json:"worker_id"`
 	DBPath        string `json:"db_path"`
 	Recovered     bool   `json:"recovered"`
+	Relocated     bool   `json:"relocated"`
+	PriorDBPath   string `json:"prior_db_path,omitempty"`
 }
 
 func requiredSecret(name string) string {
@@ -60,15 +62,26 @@ func readFixture(path string) (fixtureReceipt, error) {
 	return prior, nil
 }
 
+func validateResumePath(priorPath, dbPath string, allowRelocated bool) error {
+	if filepath.Clean(priorPath) == filepath.Clean(dbPath) {
+		return nil
+	}
+	if allowRelocated {
+		return nil
+	}
+	return errors.New("resume fixture DB path mismatch")
+}
+
 func recoverFixture(
 	ctx context.Context,
 	st *store.SQLiteStore,
 	prior fixtureReceipt,
 	dbPath string,
 	now time.Time,
+	allowRelocated bool,
 ) (*workgraph.Work, *workgraph.Lease, error) {
-	if filepath.Clean(prior.DBPath) != filepath.Clean(dbPath) {
-		return nil, nil, errors.New("resume fixture DB path mismatch")
+	if err := validateResumePath(prior.DBPath, dbPath, allowRelocated); err != nil {
+		return nil, nil, err
 	}
 	w, err := st.GetWork(ctx, prior.WorkID)
 	if err != nil {
@@ -116,10 +129,12 @@ func createFixture(ctx context.Context, st *store.SQLiteStore) (*workgraph.Work,
 
 func main() {
 	var addr, dbPath, fixtureOut, resumeFixture string
+	var resumeRelocated bool
 	flag.StringVar(&addr, "addr", "127.0.0.1:0", "loopback listen address")
 	flag.StringVar(&dbPath, "db", "", "SQLite path (default: temp dir)")
 	flag.StringVar(&fixtureOut, "fixture-out", "", "required non-secret fixture receipt path")
 	flag.StringVar(&resumeFixture, "resume-fixture", "", "existing fixture receipt to recover without minting new work/lease")
+	flag.BoolVar(&resumeRelocated, "resume-relocated", false, "permit resume from the same durable identities at a different host-local DB path")
 	flag.Parse()
 
 	if fixtureOut == "" {
@@ -168,7 +183,7 @@ func main() {
 	var lease *workgraph.Lease
 	recovered := false
 	if resumeFixture != "" {
-		w, lease, err = recoverFixture(ctx, st, prior, dbPath, time.Now().UTC())
+		w, lease, err = recoverFixture(ctx, st, prior, dbPath, time.Now().UTC(), resumeRelocated)
 		if err != nil {
 			log.Fatalf("recover durable fixture: %v", err)
 		}
@@ -195,13 +210,17 @@ func main() {
 
 	baseURL := "http://" + listener.Addr().String()
 	receipt := fixtureReceipt{
-		Schema:        "study015.live-works-fixture/1.1",
+		Schema:        "study015.live-works-fixture/1.2",
 		BaseURL:       baseURL,
 		WorkID:        w.ID,
 		WorkerLeaseID: lease.ID,
 		WorkerID:      lease.WorkerID,
 		DBPath:        dbPath,
 		Recovered:     recovered,
+		Relocated:     recovered && resumeRelocated && filepath.Clean(prior.DBPath) != filepath.Clean(dbPath),
+	}
+	if receipt.Relocated {
+		receipt.PriorDBPath = prior.DBPath
 	}
 	raw, err := json.Marshal(receipt)
 	if err != nil {
