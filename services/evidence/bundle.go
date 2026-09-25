@@ -368,24 +368,17 @@ func Produce(ctx context.Context, st store.Store, workID string, cfg ProducerCon
 		Digests:          digests,
 	}
 
-	// Sign the final envelope projection: bundle_id is replaced by the
-	// placeholder and signatures are stripped, but Integrity is retained.
-	// This means the signature authenticates both algorithm-tagged digests
-	// while the digests themselves continue to identify the pre-integrity
-	// subject bytes.
-	signable := *b
-	signable.BundleID = placeholderBundleID
-	signable.Signatures = nil
-	canonical, err := canonicalize(&signable)
+	// Authenticate the subject plus the small Integrity envelope without
+	// serializing the entire bundle a second time. This keeps Integrity v1
+	// additive in CPU/memory cost instead of doubling canonicalization work.
+	sigBytes, err := signatureMACFromSubject(b, subjectCanonical, cfg.HMACKey)
 	if err != nil {
-		return nil, fmt.Errorf("evidence: canonicalize signable envelope: %w", err)
+		return nil, fmt.Errorf("evidence: sign integrity envelope: %w", err)
 	}
-	mac := hmac.New(sha256.New, cfg.HMACKey)
-	mac.Write(canonical)
 	sig := Signature{
 		KeyID:     cfg.KeyID,
-		Algorithm: "ecdsa-p256", // wire compatibility; HMAC migration remains tracked separately
-		Value:     base64.StdEncoding.EncodeToString(mac.Sum(nil)),
+		Algorithm: "hmac-sha256-v1",
+		Value:     base64.StdEncoding.EncodeToString(sigBytes),
 		SignedAt:  now,
 	}
 	b.Signatures = []Signature{sig}
@@ -422,6 +415,56 @@ func bundleSubjectCanonical(b *Bundle) ([]byte, error) {
 	projection.Signatures = nil
 	projection.Integrity = nil
 	return canonicalize(&projection)
+}
+
+
+var integritySignatureDomain = []byte("aftergraph-evidence-signature/1\x00")
+var integritySignatureSeparator = []byte("\x00integrity\x00")
+
+// signatureMACFromSubject authenticates the immutable subject bytes plus the
+// algorithm-tagged Integrity envelope using unambiguous domain-separated
+// framing. The large subject is streamed directly into HMAC, avoiding a
+// second full-bundle canonicalization/allocation.
+func signatureMACFromSubject(b *Bundle, subjectCanonical, key []byte) ([]byte, error) {
+	if b == nil {
+		return nil, errors.New("evidence: nil bundle")
+	}
+	if b.Integrity == nil {
+		// N-1 signing compatibility: legacy bundles sign the canonical bundle
+		// projection exactly as before.
+		legacy := *b
+		legacy.BundleID = placeholderBundleID
+		legacy.Signatures = nil
+		canonical, err := canonicalize(&legacy)
+		if err != nil {
+			return nil, err
+		}
+		return hmacSum(canonical, key), nil
+	}
+	integrityCanonical, err := canonicalize(b.Integrity)
+	if err != nil {
+		return nil, err
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(integritySignatureDomain)
+	_, _ = mac.Write(subjectCanonical)
+	_, _ = mac.Write(integritySignatureSeparator)
+	_, _ = mac.Write(integrityCanonical)
+	return mac.Sum(nil), nil
+}
+
+func signatureMAC(b *Bundle, key []byte) ([]byte, error) {
+	if b == nil {
+		return nil, errors.New("evidence: nil bundle")
+	}
+	if b.Integrity == nil {
+		return signatureMACFromSubject(b, nil, key)
+	}
+	subject, err := bundleSubjectCanonical(b)
+	if err != nil {
+		return nil, err
+	}
+	return signatureMACFromSubject(b, subject, key)
 }
 
 
@@ -590,20 +633,15 @@ func Verify(b *Bundle, keyID string, hmacKey []byte) bool {
 		if s.KeyID != keyID {
 			continue
 		}
-		// Re-canonicalize with bundle_id replaced by the placeholder
-		// and signatures stripped (matches what Produce signed).
-		clone := *b
-		clone.BundleID = placeholderBundleID
-		clone.Signatures = nil
-		canonical, err := canonicalize(&clone)
-		if err != nil {
-			return false
-		}
 		mac, err := base64.StdEncoding.DecodeString(s.Value)
 		if err != nil {
 			return false
 		}
-		return hmac.Equal(mac, hmacSum(canonical, hmacKey))
+		expected, err := signatureMAC(b, hmacKey)
+		if err != nil {
+			return false
+		}
+		return hmac.Equal(mac, expected)
 	}
 	return false
 }
