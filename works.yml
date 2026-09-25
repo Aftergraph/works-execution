@@ -1,7 +1,7 @@
-# Temporary post-bootstrap root-cause diagnostic. Never merge.
+# Temporary one-shot bootstrap pipeline. Never merge.
 version: 1
 work:
-  diagnose-promotion:
+  bootstrap:
     triggers:
       - push
     requirements:
@@ -10,19 +10,6 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      diagnose-promotion:
-        run: |
-          set -u
-          echo '=== receipt ==='
-          cat /var/lib/works/deployments/works-bootstrap-548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06.json 2>&1 || true
-          echo '=== promotion journal ==='
-          journalctl -u aftergraph-works-bootstrap-548c03bd2f77.service             --since '2026-09-25 22:26:00 CEST' --until '2026-09-25 22:27:10 CEST' --no-pager -n 240 2>&1 || true
-          echo '=== binary metadata ==='
-          for p in /root/works-venture/bin/works-api /root/works-venture/bin/works-worker /root/works-venture/bin/works; do
-            echo "--- $p ---"
-            go version -m "$p" 2>&1 | grep -E 'path|vcs.revision|vcs.modified' || true
-            sha256sum "$p" 2>&1 || true
-          done
-          echo '=== backups ==='
-          find /var/lib/works/deployments/backups/548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06             -maxdepth 1 -type f -printf '%M %U:%G %f %s bytes\n' 2>/dev/null || true
+      bootstrap-integrity-live:
+        run: bash scripts/ops/bootstrap-integrity-live.sh
         timeout_s: 20
