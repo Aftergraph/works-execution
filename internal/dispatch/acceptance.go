@@ -117,22 +117,16 @@ func NewAcceptor(store Store, clock Clock) *Acceptor {
 	return &Acceptor{store: store, clock: clock}
 }
 
-// Accept durably records a Runtime dispatch. Same idempotency key + same
-// causal identity returns the existing acceptance (safe retry / duplicate
-// dispatch / Runtime-died-after-accept replay). Same key + different causal
-// identity fails closed. Stale authority epoch fails closed.
-func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
+// buildAcceptance validates the frozen dispatch identity and creates the
+// candidate WORKS-owned record. Callers still need an atomic persistence path;
+// minting before a losing insert is safe because only the winning record is
+// returned and persisted.
+func (a *Acceptor) buildAcceptance(d Dispatch) (*Acceptance, error) {
 	if d.MissionID == "" || d.AuthorityRef == "" || d.RuntimeDispatchID == "" || d.IdempotencyKey == "" {
 		return nil, ErrMissingBinding
 	}
-	if d.AuthorityEpoch < currentEpoch {
-		return nil, fmt.Errorf("%w: dispatch epoch %d < current %d", ErrStaleAuthority, d.AuthorityEpoch, currentEpoch)
-	}
-	// WORKS mints the correlation identity here. On a duplicate/retry the store
-	// returns the existing winner and these freshly-minted IDs are discarded, so
-	// the execution context stays stable across replay rather than being reminted.
 	ctxID, trcID := executioncontext.MintCorrelationIDs()
-	acc := &Acceptance{
+	return &Acceptance{
 		WorksExecutionID:   "wexec/" + d.IdempotencyKey,
 		Dispatch:           d,
 		AcceptedAt:         a.clock(),
@@ -140,6 +134,33 @@ func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
 		Outcome:            "ACCEPTED",
 		ExecutionContextID: ctxID,
 		TraceID:            trcID,
+	}, nil
+}
+
+func validateAcceptedIdentity(accepted *Acceptance, d Dispatch) error {
+	if accepted == nil {
+		return errors.New("dispatch: store returned nil acceptance")
+	}
+	if accepted.Dispatch.IdempotencyKey != d.IdempotencyKey ||
+		accepted.Dispatch.CausalID != d.CausalID ||
+		accepted.Dispatch.AuthorityEpoch != d.AuthorityEpoch ||
+		accepted.Dispatch.MissionID != d.MissionID {
+		return fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
+	}
+	return nil
+}
+
+// Accept durably records a Runtime dispatch using the legacy numeric-epoch
+// freshness path retained for dispatch.acceptance/1.0 compatibility. New
+// production composition must use AcceptanceService so Runtime cannot supply
+// the freshness fact that authorizes its own dispatch.
+func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
+	if d.AuthorityEpoch < currentEpoch {
+		return nil, fmt.Errorf("%w: dispatch epoch %d < current %d", ErrStaleAuthority, d.AuthorityEpoch, currentEpoch)
+	}
+	acc, err := a.buildAcceptance(d)
+	if err != nil {
+		return nil, err
 	}
 	// The persistence adapter owns the atomic insert/unique-key race. A
 	// load-then-save sequence is not sufficient: two Runtime retries can pass
@@ -148,14 +169,8 @@ func (a *Acceptor) Accept(d Dispatch, currentEpoch int64) (*Acceptance, error) {
 	if err != nil {
 		return nil, err
 	}
-	if accepted == nil {
-		return nil, errors.New("dispatch: store returned nil acceptance")
-	}
-	if accepted.Dispatch.IdempotencyKey != d.IdempotencyKey ||
-		accepted.Dispatch.CausalID != d.CausalID ||
-		accepted.Dispatch.AuthorityEpoch != d.AuthorityEpoch ||
-		accepted.Dispatch.MissionID != d.MissionID {
-		return nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
+	if err := validateAcceptedIdentity(accepted, d); err != nil {
+		return nil, err
 	}
 	return accepted, nil
 }

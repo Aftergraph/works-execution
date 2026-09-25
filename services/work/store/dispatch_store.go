@@ -25,6 +25,15 @@ CREATE TABLE IF NOT EXISTS dispatch_acceptances (
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_acceptances_causal
 ON dispatch_acceptances(causal_id);
+
+CREATE TABLE IF NOT EXISTS dispatch_authority_bindings (
+    idempotency_key TEXT PRIMARY KEY,
+    action_id       TEXT NOT NULL,
+    binding_digest  TEXT NOT NULL,
+    dispatch_digest TEXT NOT NULL,
+    evidence_ref    TEXT NOT NULL,
+    revalidated_at  TEXT NOT NULL
+);
 `
 
 func (s *SQLiteStore) migrateDispatchAcceptance() error {
@@ -192,4 +201,138 @@ func (s *dispatchAcceptanceStore) Save(accepted *dispatch.Acceptance) error {
 		return fmt.Errorf("dispatch acceptance save: %w", err)
 	}
 	return nil
+}
+
+// LoadAuthorityBinding returns the independently-owned authority identity that
+// was atomically bound to the winning acceptance. It is intentionally stored
+// outside acceptance_json so dispatch.acceptance/1.0 remains wire-frozen.
+func (s *dispatchAcceptanceStore) LoadAuthorityBinding(idempotencyKey string) (*dispatch.AuthorityBinding, error) {
+	return loadAuthorityBinding(
+		s.db,
+		`SELECT action_id, binding_digest, dispatch_digest, evidence_ref
+		 FROM dispatch_authority_bindings WHERE idempotency_key = ?`,
+		idempotencyKey,
+	)
+}
+
+func loadAuthorityBinding(q queryRower, query, idempotencyKey string) (*dispatch.AuthorityBinding, error) {
+	var actionID, bindingDigest, dispatchDigest, evidenceRef string
+	err := q.QueryRow(query, idempotencyKey).Scan(&actionID, &bindingDigest, &dispatchDigest, &evidenceRef)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &dispatch.AuthorityBinding{
+		ActionID:       actionID,
+		BindingDigest:  bindingDigest,
+		DispatchDigest: dispatchDigest,
+		EvidenceRef:    evidenceRef,
+	}, nil
+}
+
+// AcceptRevalidatedIfAbsent commits the authority proof and acceptance in one
+// SQLite transaction. A crash can therefore leave neither or both, never an
+// accepted execution without the exact action/binding evidence that authorized
+// it. A duplicate governed request returns the original winner.
+func (s *dispatchAcceptanceStore) AcceptRevalidatedIfAbsent(
+	accepted *dispatch.Acceptance,
+	binding dispatch.AuthorityBinding,
+) (*dispatch.Acceptance, *dispatch.AuthorityBinding, error) {
+	if accepted == nil {
+		return nil, nil, errors.New("dispatch acceptance: nil governed record")
+	}
+	if accepted.WorksExecutionID == "" || accepted.Dispatch.IdempotencyKey == "" || accepted.Dispatch.CausalID == "" {
+		return nil, nil, errors.New("dispatch acceptance: missing governed identity binding")
+	}
+	if binding.ActionID == "" || binding.BindingDigest == "" || binding.DispatchDigest == "" || binding.EvidenceRef == "" {
+		return nil, nil, errors.New("dispatch acceptance: incomplete authority binding")
+	}
+
+	payload, err := json.Marshal(accepted)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dispatch acceptance encode: %w", err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, nil, fmt.Errorf("dispatch governed acceptance begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	bindingResult, err := tx.Exec(`
+		INSERT INTO dispatch_authority_bindings
+			(idempotency_key, action_id, binding_digest, dispatch_digest, evidence_ref, revalidated_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(idempotency_key) DO NOTHING`,
+		accepted.Dispatch.IdempotencyKey,
+		binding.ActionID,
+		binding.BindingDigest,
+		binding.DispatchDigest,
+		binding.EvidenceRef,
+		now,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dispatch authority binding insert: %w", err)
+	}
+	bindingRows, err := bindingResult.RowsAffected()
+	if err != nil {
+		return nil, nil, fmt.Errorf("dispatch authority binding rows affected: %w", err)
+	}
+
+	if bindingRows == 0 {
+		// Another governed caller may have won. It is only a valid replay when
+		// the matching acceptance exists in the same durable state. A lone
+		// binding is corruption/stale partial state and must not authorize work.
+		existing, err := loadAcceptance(tx,
+			`SELECT works_execution_id, idempotency_key, causal_id, acceptance_json
+			 FROM dispatch_acceptances WHERE idempotency_key = ?`,
+			accepted.Dispatch.IdempotencyKey,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		existingBinding, err := loadAuthorityBinding(tx,
+			`SELECT action_id, binding_digest, dispatch_digest, evidence_ref
+			 FROM dispatch_authority_bindings WHERE idempotency_key = ?`,
+			accepted.Dispatch.IdempotencyKey,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		if existing == nil || existingBinding == nil {
+			return nil, nil, errors.New("dispatch acceptance: orphan authority binding")
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, nil, fmt.Errorf("dispatch governed acceptance commit duplicate: %w", err)
+		}
+		return existing, existingBinding, nil
+	}
+
+	acceptanceResult, err := tx.Exec(`
+		INSERT INTO dispatch_acceptances
+			(works_execution_id, idempotency_key, causal_id, acceptance_json, updated_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(idempotency_key) DO NOTHING`,
+		accepted.WorksExecutionID,
+		accepted.Dispatch.IdempotencyKey,
+		accepted.Dispatch.CausalID,
+		string(payload),
+		now,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dispatch governed acceptance insert: %w", err)
+	}
+	acceptanceRows, err := acceptanceResult.RowsAffected()
+	if err != nil {
+		return nil, nil, fmt.Errorf("dispatch governed acceptance rows affected: %w", err)
+	}
+	if acceptanceRows != 1 {
+		return nil, nil, errors.New("dispatch acceptance: legacy/governed idempotency collision")
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("dispatch governed acceptance commit: %w", err)
+	}
+	return cloneDispatchAcceptance(accepted), &binding, nil
 }
