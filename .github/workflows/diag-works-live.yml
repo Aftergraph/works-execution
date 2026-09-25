@@ -13,28 +13,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fetch public WORKS failure evidence
+      - name: Fetch public WORKS state by source SHA
         shell: bash
         env:
-          WORK_ID: wrk_70a680cc87180a2c776766bc72ff1ed9
+          SOURCE_SHA: 643eff7c4b43fcc48362db3284a379ed873dd967
           WORKS_BASE: https://works.rendetalje.dk
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --max-time 15 \
-            "$WORKS_BASE/v1/works/$WORK_ID" > /tmp/work.json
+            "$WORKS_BASE/v1/works" > /tmp/works.json
           python3 - <<'PY'
           import json, os
-          p=json.load(open('/tmp/work.json'))
-          print('WORK_ID=' + str(p.get('id','')))
-          print('STATE=' + str(p.get('state','')))
-          print('SOURCE_SHA=' + str((p.get('source') or {}).get('sha','')))
-          for ev in p.get('evidence') or []:
-              details=ev.get('details') or {}
-              err=details.get('error')
-              print('EVIDENCE node=%s result=%s exit_code=%s lease_lost=%s' % (
-                  ev.get('node_id',''), ev.get('result',''),
-                  details.get('exit_code',''), details.get('lease_lost','')))
-              if err:
-                  compact=' '.join(str(err).split())
-                  print('ERROR=' + compact[-1800:])
+          p=json.load(open('/tmp/works.json'))
+          items=p if isinstance(p,list) else (p.get('works') or p.get('items') or [])
+          sha=os.environ['SOURCE_SHA']
+          matches=[]
+          for w in items:
+              if ((w.get('source') or {}).get('sha') == sha):
+                  matches.append(w)
+          print('MATCH_COUNT=' + str(len(matches)))
+          for w in matches:
+              print('WORK_ID=' + str(w.get('id','')))
+              print('STATE=' + str(w.get('state','')))
+              print('UPDATED_AT=' + str(w.get('updated_at','')))
+              for ev in w.get('evidence') or []:
+                  d=ev.get('details') or {}
+                  print('EVIDENCE node=%s result=%s exit_code=%s' % (
+                      ev.get('node_id',''), ev.get('result',''), d.get('exit_code','')))
+                  if d.get('error'):
+                      print('ERROR=' + ' '.join(str(d['error']).split())[-1800:])
           PY
