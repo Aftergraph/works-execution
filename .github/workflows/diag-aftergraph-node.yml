@@ -1,0 +1,33 @@
+name: Diagnose Aftergraph node
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/diag-aftergraph-node.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, linux, x64, aftergraph-ci]
+    timeout-minutes: 5
+    steps:
+      - name: Bounded host probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "HOST=$(hostname)"
+          echo "WHOAMI=$(id -un)"
+          echo "KERNEL=$(uname -srmo)"
+          if systemctl status works-api.service --no-pager >/dev/null 2>&1; then
+            echo "WORKS_API_SERVICE=present"
+            systemctl show works-api.service -p ActiveState -p SubState -p MainPID -p ExecStart --no-pager               | sed -E 's/(Environment=).*/\1[REDACTED]/'
+          else
+            echo "WORKS_API_SERVICE=absent_or_unreadable"
+          fi
+          if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+            echo "SUDO_NONINTERACTIVE=true"
+          else
+            echo "SUDO_NONINTERACTIVE=false"
+          fi
