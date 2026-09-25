@@ -148,6 +148,10 @@
         }
       },
       "description": "Producer-level V2.1 provenance completeness. The HTTP API may refine this to pending/verified/failed after combining with an independent verifier verdict."
+    },
+    "integrity": {
+      "$ref": "#/$defs/integrity",
+      "description": "Integrity Fabric v1 algorithm-tagged digest set over the immutable canonical subject projection. Optional for N-1 read compatibility; new producers emit it."
     }
   },
   "$defs": {
@@ -335,6 +339,7 @@
         "algorithm": {
           "type": "string",
           "enum": [
+            "hmac-sha256-v1",
             "ed25519",
             "ecdsa-p256",
             "rsa-pss"
@@ -342,7 +347,7 @@
         },
         "value": {
           "type": "string",
-          "description": "Base64 signature over canonicalized bundle."
+          "description": "Base64 signature/MAC over the versioned evidence signature frame."
         },
         "signed_at": {
           "type": "string",
@@ -351,6 +356,79 @@
         "certificate": {
           "type": "string",
           "description": "Optional x509 chain (PEM)."
+        }
+      }
+    },
+    "digestRef": {
+      "type": "object",
+      "required": [
+        "algorithm",
+        "scope",
+        "encoding",
+        "value"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "enum": [
+            "sha256",
+            "blake3"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "raw-bytes",
+            "canonical-object",
+            "merkle-root"
+          ]
+        },
+        "encoding": {
+          "const": "hex"
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "digestSet": {
+      "type": "object",
+      "required": [
+        "primary"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "primary": {
+          "$ref": "#/$defs/digestRef"
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/digestRef"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "required": [
+        "canonicalization",
+        "subject_scope",
+        "digests"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "canonicalization": {
+          "const": "aftergraph-json-canonical/1"
+        },
+        "subject_scope": {
+          "const": "canonical-object"
+        },
+        "digests": {
+          "$ref": "#/$defs/digestSet"
         }
       }
     }
