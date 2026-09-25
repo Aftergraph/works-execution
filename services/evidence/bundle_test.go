@@ -147,19 +147,67 @@ func TestProduce_BundleIDEqualsSHA256OfCanonical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Produce: %v", err)
 	}
-	// Re-derive: clone without signatures, substitute placeholder
-	// bundle_id (matches what Produce signed), canonicalize, sha256.
-	clone := *b
-	clone.BundleID = placeholderBundleID
-	clone.Signatures = nil
-	canonical, err := canonicalize(&clone)
+	// Re-derive from the immutable subject projection. Integrity metadata
+	// is excluded from its own digest by contract.
+	canonical, err := bundleSubjectCanonical(b)
 	if err != nil {
-		t.Fatalf("canonicalize: %v", err)
+		t.Fatalf("bundleSubjectCanonical: %v", err)
 	}
 	sum := sha256.Sum256(canonical)
 	want := "evb_" + hex.EncodeToString(sum[:])[:32]
 	if b.BundleID != want {
 		t.Errorf("bundle_id mismatch:\n got  %s\n want %s", b.BundleID, want)
+	}
+}
+
+
+func TestProduce_IntegrityEnvelope(t *testing.T) {
+	st := openStore(t)
+	w := seedSucceeded(t, st)
+	b, err := Produce(context.Background(), st, w.ID, ProducerConfig{
+		KeyID: "k", HMACKey: testKey(t), Runner: Runner{ID: "r"},
+		Now: func() time.Time { return time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("Produce: %v", err)
+	}
+	if b.Integrity == nil {
+		t.Fatal("expected integrity envelope")
+	}
+	if b.Integrity.Canonicalization != BundleCanonicalizationV1 {
+		t.Fatalf("canonicalization = %q", b.Integrity.Canonicalization)
+	}
+	if b.Integrity.Digests.Primary.Algorithm != DigestSHA256 {
+		t.Fatalf("primary algorithm = %q", b.Integrity.Digests.Primary.Algorithm)
+	}
+	if len(b.Integrity.Digests.Alternatives) != 1 ||
+		b.Integrity.Digests.Alternatives[0].Algorithm != DigestBLAKE3 {
+		t.Fatalf("alternatives = %#v", b.Integrity.Digests.Alternatives)
+	}
+	canonical, err := bundleSubjectCanonical(b)
+	if err != nil {
+		t.Fatalf("subject canonicalization: %v", err)
+	}
+	if err := VerifyDigestSet(canonical, b.Integrity.Digests); err != nil {
+		t.Fatalf("VerifyDigestSet: %v", err)
+	}
+	if err := verifyIntegrity(b); err != nil {
+		t.Fatalf("verifyIntegrity: %v", err)
+	}
+}
+
+func TestProduce_IntegrityTamperFails(t *testing.T) {
+	st := openStore(t)
+	w := seedSucceeded(t, st)
+	b, err := Produce(context.Background(), st, w.ID, ProducerConfig{
+		KeyID: "k", HMACKey: testKey(t), Runner: Runner{ID: "r"},
+	})
+	if err != nil {
+		t.Fatalf("Produce: %v", err)
+	}
+	b.Integrity.Digests.Alternatives[0].Value = strings.Repeat("0", 64)
+	if err := verifyIntegrity(b); err == nil {
+		t.Fatal("expected tampered BLAKE3 digest to fail")
 	}
 }
 
