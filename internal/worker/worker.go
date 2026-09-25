@@ -727,7 +727,10 @@ func (w *Worker) logf(format string, args ...any) {
 // Node-specific secrets must arrive as secret:// refs in ReadyItem.Env and are
 // resolved separately at execution time.
 var workerPrivateEnv = map[string]struct{}{
-	"WORKS_ENROLL_SECRET": {},
+	"WORKS_ENROLL_SECRET":          {},
+	"WORKS_TOKEN":                  {},
+	"ACTIONS_ID_TOKEN_REQUEST_TOKEN": {},
+	"ACTIONS_ID_TOKEN_REQUEST_URL":   {},
 	"WORKS_GITHUB_TOKEN":  {},
 	"GITHUB_TOKEN":        {},
 	"GH_TOKEN":            {},

@@ -32,6 +32,12 @@ func main() {
 		webhookProduction = flag.Bool("webhook-production-access", envBool("WORKS_WEBHOOK_PRODUCTION_ACCESS", false), "mark webhook-derived Works with policy.production_access=true (requires approved evidence at lease-grant; leave false for M1 verify works)")
 		webUIPublic       = flag.Bool("webui-public", envBool("WORKS_WEBUI_PUBLIC", false), "serve /v1/ui execution view without a Bearer token (read-only)")
 		rabControlKey     = flag.String("rab-control-token", envOr("WORKS_RAB_CONTROL_TOKEN", ""), "HMAC key for server-verified RAB control tokens at lease claim (k-062); empty keeps the k-058 presence-only advertisement law")
+		githubOIDCAudience = flag.String("github-oidc-audience", envOr("WORKS_GITHUB_OIDC_AUDIENCE", ""), "GitHub Actions OIDC audience; empty disables OIDC enrollment")
+		githubOIDCRepo = flag.String("github-oidc-repository", envOr("WORKS_GITHUB_OIDC_REPOSITORY", ""), "exact repository claim allowed for OIDC enrollment")
+		githubOIDCRepositoryID = flag.String("github-oidc-repository-id", envOr("WORKS_GITHUB_OIDC_REPOSITORY_ID", ""), "immutable repository_id claim allowed for OIDC enrollment")
+		githubOIDCRef = flag.String("github-oidc-ref", envOr("WORKS_GITHUB_OIDC_REF", ""), "exact ref claim allowed for OIDC enrollment")
+		githubOIDCWorkflowSHA = flag.String("github-oidc-workflow-sha", envOr("WORKS_GITHUB_OIDC_WORKFLOW_SHA", ""), "exact workflow_sha claim allowed for OIDC enrollment")
+		githubOIDCWorkflowRef = flag.String("github-oidc-workflow-ref", envOr("WORKS_GITHUB_OIDC_WORKFLOW_REF", ""), "exact workflow_ref claim allowed for OIDC enrollment")
 		verifierToken     = flag.String("verifier-token", envOr("WORKS_VERIFIER_TOKEN", ""), "dedicated Sentinel verifier credential for semantic verdict ingest; empty disables ingest")
 	)
 	flag.Parse()
@@ -76,6 +82,25 @@ func main() {
 		Policy:       policyEngine,
 		AuthEnabled:  true,
 	}
+	if *githubOIDCAudience != "" || *githubOIDCRepo != "" || *githubOIDCRepositoryID != "" || *githubOIDCRef != "" || *githubOIDCWorkflowSHA != "" || *githubOIDCWorkflowRef != "" {
+		if *githubOIDCAudience == "" || *githubOIDCRepo == "" || *githubOIDCRepositoryID == "" || *githubOIDCRef == "" || *githubOIDCWorkflowSHA == "" || *githubOIDCWorkflowRef == "" {
+			logger.Fatalf("GitHub OIDC enrollment requires WORKS_GITHUB_OIDC_AUDIENCE, _REPOSITORY, _REPOSITORY_ID, _REF, _WORKFLOW_SHA, and _WORKFLOW_REF together")
+		}
+		srv.GitHubOIDCVerifier = &api.RemoteGitHubActionsOIDCVerifier{Audience: *githubOIDCAudience}
+		srv.GitHubOIDCPolicy = &api.GitHubActionsOIDCPolicy{
+			Repository: *githubOIDCRepo,
+			RepositoryID: *githubOIDCRepositoryID,
+			Ref: *githubOIDCRef,
+			WorkflowRef: *githubOIDCWorkflowRef,
+			WorkflowSHA: *githubOIDCWorkflowSHA,
+			RunnerEnvironment: "self-hosted",
+			EventName: "push",
+		}
+		logger.Printf("GitHub Actions OIDC enrollment enabled (repository=%s ref=%s workflow_ref=%s runner_environment=self-hosted)", *githubOIDCRepo, *githubOIDCRef, *githubOIDCWorkflowRef)
+	} else {
+		logger.Printf("GitHub Actions OIDC enrollment disabled")
+	}
+
 	if *webhookSecret != "" {
 		srv.WebhookConfig = &api.WebhookConfig{
 			Secret:           *webhookSecret,
