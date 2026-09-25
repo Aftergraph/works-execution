@@ -66,8 +66,27 @@ grep -Fq "$TARGET" <<<"$exec_start" || fail "unexpected_exec_start"
 sudo test -x "$TARGET" || fail "canonical_target_missing"
 
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
 candidate="$tmpdir/works-api"
+backup=""
+mutated=false
+
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  set +e
+  if [[ "$rc" -ne 0 && "$mutated" == true && -n "$backup" ]] && sudo test -f "$backup"; then
+    sudo cp -a "$backup" "$TARGET"
+    sudo systemctl restart "$SERVICE"
+    for _ in $(seq 1 40); do
+      health_ok && break
+      sleep 0.5
+    done
+    printf 'works-api-live-deploy: rollback=true rc=%s sha=%s\n' "$rc" "$sha" >&2
+  fi
+  rm -rf "$tmpdir"
+  exit "$rc"
+}
+trap cleanup EXIT
 
 CGO_ENABLED=0 go build -trimpath -o "$candidate" ./cmd/works-api
 candidate_revision="$(revision_of "$candidate")"
@@ -87,24 +106,6 @@ fi
 
 backup="$TARGET.rollback.$short_sha"
 next="$TARGET.next.$short_sha"
-mutated=false
-
-rollback() {
-  local rc=$?
-  trap - ERR
-  set +e
-  if [[ "$mutated" == true ]] && sudo test -f "$backup"; then
-    sudo cp -a "$backup" "$TARGET"
-    sudo systemctl restart "$SERVICE"
-    for _ in $(seq 1 40); do
-      health_ok && break
-      sleep 0.5
-    done
-  fi
-  printf 'works-api-live-deploy: rollback=%s rc=%s sha=%s\n' "$mutated" "$rc" "$sha" >&2
-  exit "$rc"
-}
-trap rollback ERR
 
 sudo cp -a "$TARGET" "$backup"
 sudo install -m 0755 "$candidate" "$next"
@@ -153,7 +154,6 @@ EOF
 sudo install -d -m 0750 "$RECEIPT_DIR"
 sudo install -m 0640 "$receipt_local" "$RECEIPT_DIR/works-api-$sha.json"
 
-trap - ERR
 mutated=false
 
 printf '{"deployment":"verified","changed":true,"sha":"%s","binary_sha256":"%s","pid":%s,"integrity_smoke":true,"receipt":"%s"}\n' \
