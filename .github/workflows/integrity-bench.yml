@@ -49,7 +49,20 @@ jobs:
           set -euo pipefail
           go test ./services/evidence \
             -run '^$' \
-            -bench 'BenchmarkDigest(SHA256|BLAKE3|Set)_(1KiB|1MiB|16MiB)$' \
+            -bench 'Benchmark(Digest(SHA256|BLAKE3|Set)_(1KiB|1MiB|16MiB)|IntegrityPipeline(Legacy|V1)_64KiB)
+            -benchmem \
+            -count=5 | tee integrity-bench.txt
+
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: integrity-bench-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            integrity-bench.txt
+            integrity-bench-host.txt
+          if-no-files-found: error
+ \
             -benchmem \
             -count=5 | tee integrity-bench.txt
 
