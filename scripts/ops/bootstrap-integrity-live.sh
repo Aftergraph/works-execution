@@ -3,7 +3,6 @@ set -euo pipefail
 umask 077
 
 TARGET_SHA='548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06'
-REMOTE='https://github.com/Aftergraph/works-execution.git'
 SHORT="$(printf '%s' "$TARGET_SHA" | cut -c1-12)"
 UNIT="aftergraph-works-bootstrap-$SHORT"
 STAGE="/run/$UNIT"
@@ -14,23 +13,90 @@ fail() {
   exit 2
 }
 
+[ "$(id -u)" -eq 0 ] || fail "root_worker_required"
+
+# Critical invariant: the leased WORKS process performs no long-lived work.
+# It only launches a detached root oneshot. This avoids coupling deployment
+# survival to the 25 s worker lease or to the API/worker restart being deployed.
+rm -rf "$STAGE"
+install -d -m 0700 "$STAGE"
+
+cat >"$PAYLOAD" <<'PROMOTE'
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+TARGET_SHA='548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06'
+SHORT="$(printf '%s' "$TARGET_SHA" | cut -c1-12)"
+REMOTE='https://github.com/Aftergraph/works-execution.git'
+STAGE="/run/aftergraph-works-bootstrap-$SHORT"
+RECEIPT_DIR='/var/lib/works/deployments'
+BACKUP_DIR="$RECEIPT_DIR/backups/$TARGET_SHA"
+SMOKE_WORK_ID='wrk_3995b52a8e30d244dc83f6413bba0df2'
+API='http://127.0.0.1:18191'
+mutated=false
+tmp=''
+
 revision_of() {
   go version -m "$1" 2>/dev/null |
     sed -n 's/^[[:space:]]*build[[:space:]]*vcs\.revision=//p' |
     head -n 1
 }
 
-[ "$(id -u)" -eq 0 ] || fail "root_worker_required"
+service_path() {
+  local raw path
+  raw="$(systemctl show "$1" -p ExecStart --value)"
+  path="$(sed -n 's/.*path=\([^ ;}]*\).*/\1/p' <<<"$raw" | head -n1)"
+  [ -n "$path" ] && [ "$(printf '%s' "$path" | cut -c1)" = "/" ]
+  printf '%s\n' "$path"
+}
+
+atomic_install() {
+  local src="$1" dst="$2" next
+  next="$dst.next.$SHORT"
+  install -m 0755 "$src" "$next"
+  mv -f "$next" "$dst"
+}
+
+write_receipt() {
+  local state="$1" reason="$2" out tmpout
+  install -d -m 0750 "$RECEIPT_DIR"
+  out="$RECEIPT_DIR/works-bootstrap-$TARGET_SHA.json"
+  tmpout="$out.tmp"
+  printf '{"schema":"aftergraph.works-bootstrap/1","target_sha":"%s","state":"%s","reason":"%s","observed_at":"%s"}\n' \
+    "$TARGET_SHA" "$state" "$reason" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$tmpout"
+  mv -f "$tmpout" "$out"
+  chmod 0640 "$out"
+}
+
+rollback() {
+  local rc=$?
+  trap - ERR
+  set +e
+  if [ "$mutated" = true ]; then
+    [ -f "$BACKUP_DIR/works-api" ] && atomic_install "$BACKUP_DIR/works-api" "$API_TARGET"
+    [ -f "$BACKUP_DIR/works-worker" ] && atomic_install "$BACKUP_DIR/works-worker" "$WORKER_TARGET"
+    [ -f "$BACKUP_DIR/works" ] && atomic_install "$BACKUP_DIR/works" "$CLI_TARGET"
+    systemctl restart works-api.service works-worker.service works-worker-2.service works-worker-3.service
+  fi
+  write_receipt FAILED_ROLLED_BACK "exit_$rc"
+  [ -z "$tmp" ] || rm -rf "$tmp"
+  rm -rf "$STAGE"
+  exit "$rc"
+}
+trap rollback ERR
+
+sleep 3
+
+# Exact-main freshness gate immediately before any build/mutation.
 remote_main="$(git ls-remote "$REMOTE" refs/heads/main | awk 'NR==1{print $1}')"
-[ "$remote_main" = "$TARGET_SHA" ] || fail "main_moved:$remote_main"
+[ "$remote_main" = "$TARGET_SHA" ]
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
 git -C "$tmp" init -q
 git -C "$tmp" remote add origin "$REMOTE"
 git -C "$tmp" fetch -q --no-tags --depth=1 origin main
-fetched="$(git -C "$tmp" rev-parse FETCH_HEAD)"
-[ "$fetched" = "$TARGET_SHA" ] || fail "fetch_mismatch:$fetched"
+[ "$(git -C "$tmp" rev-parse FETCH_HEAD)" = "$TARGET_SHA" ]
 git -C "$tmp" checkout -q --detach FETCH_HEAD
 
 (
@@ -43,128 +109,50 @@ git -C "$tmp" checkout -q --detach FETCH_HEAD
 )
 
 for b in works-api works-worker works; do
-  rev="$(revision_of "$tmp/$b")"
-  [ "$rev" = "$TARGET_SHA" ] || fail "$b revision mismatch:$rev"
+  [ "$(revision_of "$tmp/$b")" = "$TARGET_SHA" ]
 done
 
-rm -rf "$STAGE"
-install -d -m 0700 "$STAGE"
-install -m 0755 "$tmp/works-api" "$STAGE/works-api"
-install -m 0755 "$tmp/works-worker" "$STAGE/works-worker"
-install -m 0755 "$tmp/works" "$STAGE/works"
-
-cat >"$PAYLOAD" <<'PROMOTE'
-#!/usr/bin/env bash
-set -euo pipefail
-umask 077
-
-TARGET_SHA='548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06'
-SHORT="$(printf '%s' "$TARGET_SHA" | cut -c1-12)"
-STAGE="/run/aftergraph-works-bootstrap-$SHORT"
-RECEIPT_DIR='/var/lib/works/deployments'
-BACKUP_DIR="$RECEIPT_DIR/backups/$TARGET_SHA"
-SMOKE_WORK_ID='wrk_3995b52a8e30d244dc83f6413bba0df2'
-API='http://127.0.0.1:18191'
-REMOTE='https://github.com/Aftergraph/works-execution.git'
-mutated=false
-
-revision_of() {
-  go version -m "$1" 2>/dev/null |
-    sed -n 's/^[[:space:]]*build[[:space:]]*vcs\.revision=//p' |
-    head -n 1
-}
-
-service_path() {
-  raw="$(systemctl show "$1" -p ExecStart --value)"
-  path="$(sed -n 's/.*path=\([^ ;}]*\).*/\1/p' <<<"$raw" | head -n1)"
-  [ -n "$path" ] && [ "$(printf '%s' "$path" | cut -c1)" = "/" ]
-  printf '%s\n' "$path"
-}
-
-atomic_install() {
-  src="$1"
-  dst="$2"
-  next="$dst.next.$SHORT"
-  install -m 0755 "$src" "$next"
-  mv -f "$next" "$dst"
-}
-
-write_receipt() {
-  state="$1"
-  reason="$2"
-  install -d -m 0750 "$RECEIPT_DIR"
-  out="$RECEIPT_DIR/works-bootstrap-$TARGET_SHA.json"
-  tmpout="$out.tmp"
-  printf '{"schema":"aftergraph.works-bootstrap/1","target_sha":"%s","state":"%s","reason":"%s","observed_at":"%s"}\n' \
-    "$TARGET_SHA" "$state" "$reason" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$tmpout"
-  mv -f "$tmpout" "$out"
-  chmod 0640 "$out"
-}
-
-rollback() {
-  rc=$?
-  trap - ERR
-  set +e
-  if [ "$mutated" = true ]; then
-    [ -f "$BACKUP_DIR/works-api" ] && atomic_install "$BACKUP_DIR/works-api" "$API_TARGET"
-    [ -f "$BACKUP_DIR/works-worker" ] && atomic_install "$BACKUP_DIR/works-worker" "$WORKER_TARGET"
-    [ -f "$BACKUP_DIR/works" ] && atomic_install "$BACKUP_DIR/works" "$CLI_TARGET"
-    systemctl restart works-api.service works-worker.service works-worker-2.service works-worker-3.service
-  fi
-  write_receipt FAILED_ROLLED_BACK "exit_$rc"
-  rm -rf "$STAGE"
-  exit "$rc"
-}
-trap rollback ERR
-
-sleep 8
-remote_main="$(git ls-remote "$REMOTE" refs/heads/main | awk 'NR==1{print $1}')"
-[ "$remote_main" = "$TARGET_SHA" ]
+# Revalidate main after the potentially long build, before mutation.
+[ "$(git ls-remote "$REMOTE" refs/heads/main | awk 'NR==1{print $1}')" = "$TARGET_SHA" ]
 
 API_TARGET="$(service_path works-api.service)"
 WORKER_TARGET="$(service_path works-worker.service)"
 [ "$(basename "$API_TARGET")" = works-api ]
 [ "$(basename "$WORKER_TARGET")" = works-worker ]
 CLI_TARGET="$(dirname "$WORKER_TARGET")/works"
-
-[ -x "$API_TARGET" ]
-[ -x "$WORKER_TARGET" ]
-[ -x "$CLI_TARGET" ]
-
-for b in works-api works-worker works; do
-  [ "$(revision_of "$STAGE/$b")" = "$TARGET_SHA" ]
-done
+[ -x "$API_TARGET" ] && [ -x "$WORKER_TARGET" ] && [ -x "$CLI_TARGET" ]
 
 install -d -m 0700 "$BACKUP_DIR"
 cp -a "$API_TARGET" "$BACKUP_DIR/works-api"
 cp -a "$WORKER_TARGET" "$BACKUP_DIR/works-worker"
 cp -a "$CLI_TARGET" "$BACKUP_DIR/works"
 
-atomic_install "$STAGE/works-api" "$API_TARGET"
-atomic_install "$STAGE/works-worker" "$WORKER_TARGET"
-atomic_install "$STAGE/works" "$CLI_TARGET"
+api_hash="$(sha256sum "$tmp/works-api" | awk '{print $1}')"
+worker_hash="$(sha256sum "$tmp/works-worker" | awk '{print $1}')"
+cli_hash="$(sha256sum "$tmp/works" | awk '{print $1}')"
+
+atomic_install "$tmp/works-api" "$API_TARGET"
+atomic_install "$tmp/works-worker" "$WORKER_TARGET"
+atomic_install "$tmp/works" "$CLI_TARGET"
 mutated=true
 
-api_hash="$(sha256sum "$STAGE/works-api" | awk '{print $1}')"
-worker_hash="$(sha256sum "$STAGE/works-worker" | awk '{print $1}')"
-cli_hash="$(sha256sum "$STAGE/works" | awk '{print $1}')"
 [ "$(sha256sum "$API_TARGET" | awk '{print $1}')" = "$api_hash" ]
 [ "$(sha256sum "$WORKER_TARGET" | awk '{print $1}')" = "$worker_hash" ]
 [ "$(sha256sum "$CLI_TARGET" | awk '{print $1}')" = "$cli_hash" ]
 
 systemctl restart works-api.service
-ok=false
+healthy=false
 for _ in $(seq 1 80); do
   if curl -fsS --max-time 2 "$API/healthz" >/dev/null 2>&1; then
-    ok=true
+    healthy=true
     break
   fi
   sleep 0.5
 done
-[ "$ok" = true ]
+[ "$healthy" = true ]
 
 systemctl restart works-worker.service works-worker-2.service works-worker-3.service
-sleep 2
+sleep 3
 
 [ "$(revision_of "$API_TARGET")" = "$TARGET_SHA" ]
 [ "$(revision_of "$WORKER_TARGET")" = "$TARGET_SHA" ]
@@ -172,8 +160,7 @@ sleep 2
 
 api_pid="$(systemctl show works-api.service -p MainPID --value)"
 worker_pid="$(systemctl show works-worker.service -p MainPID --value)"
-[ -n "$api_pid" ]
-[ -n "$worker_pid" ]
+[ "$api_pid" -gt 0 ] && [ "$worker_pid" -gt 0 ]
 [ "$(sha256sum "/proc/$api_pid/exe" | awk '{print $1}')" = "$api_hash" ]
 [ "$(sha256sum "/proc/$worker_pid/exe" | awk '{print $1}')" = "$worker_hash" ]
 
@@ -194,10 +181,11 @@ mv -f "$tmpout" "$out"
 chmod 0640 "$out"
 
 mutated=false
-rm -rf "$STAGE"
+rm -rf "$tmp" "$STAGE"
 PROMOTE
 chmod 0700 "$PAYLOAD"
 
+# Replace any stale transient unit name from a prior failed bootstrap.
+systemctl reset-failed "$UNIT.service" >/dev/null 2>&1 || true
 systemd-run --unit="$UNIT" --collect --property=Type=oneshot "$PAYLOAD"
-systemctl is-active --quiet "$UNIT" || systemctl is-activating --quiet "$UNIT" || fail "detached_unit_not_started"
-printf 'works-bootstrap: scheduled unit=%s target_sha=%s\n' "$UNIT" "$TARGET_SHA"
+printf 'works-bootstrap: detached unit scheduled unit=%s target_sha=%s\n' "$UNIT" "$TARGET_SHA"
