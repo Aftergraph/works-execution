@@ -4,6 +4,7 @@ umask 077
 export PATH='/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 export GOPATH='/var/lib/works/gopath'
 export GOMODCACHE='/var/lib/works/gomodcache'
+export GOCACHE='/var/lib/works/gocache'
 
 TARGET_SHA='548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06'
 SHORT="$(printf '%s' "$TARGET_SHA" | cut -c1-12)"
@@ -31,6 +32,7 @@ umask 077
 export PATH='/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 export GOPATH='/var/lib/works/gopath'
 export GOMODCACHE='/var/lib/works/gomodcache'
+export GOCACHE='/var/lib/works/gocache'
 
 TARGET_SHA='548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06'
 SHORT="$(printf '%s' "$TARGET_SHA" | cut -c1-12)"
@@ -98,6 +100,7 @@ sleep 3
 remote_main="$(git ls-remote "$REMOTE" refs/heads/main | awk 'NR==1{print $1}')"
 [ "$remote_main" = "$TARGET_SHA" ]
 
+install -d -m 0755 "$GOCACHE" "$GOMODCACHE" "$GOPATH"
 tmp="$(mktemp -d)"
 git -C "$tmp" init -q
 git -C "$tmp" remote add origin "$REMOTE"
