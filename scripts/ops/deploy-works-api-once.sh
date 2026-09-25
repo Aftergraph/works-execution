@@ -4,7 +4,7 @@ umask 077
 
 MARKER='[deploy-works-api]'
 SERVICE='works-api.service'
-TARGET='/opt/works/bin/works-api'
+TARGET=''
 BASE_URL='http://127.0.0.1:18191'
 SMOKE_WORK_ID='wrk_3995b52a8e30d244dc83f6413bba0df2'
 RECEIPT_DIR='/var/lib/works/deployments'
@@ -62,8 +62,10 @@ fi
 sudo -n true >/dev/null 2>&1 || fail "noninteractive_deploy_authority_unavailable"
 sudo systemctl is-active --quiet "$SERVICE" || fail "works_api_not_active"
 exec_start="$(sudo systemctl show "$SERVICE" -p ExecStart --value)"
-grep -Fq "$TARGET" <<<"$exec_start" || fail "unexpected_exec_start"
-sudo test -x "$TARGET" || fail "canonical_target_missing"
+TARGET="$(sed -n 's/.*path=\([^ ;}]*\).*/\1/p' <<<"$exec_start" | head -n 1)"
+[[ "$TARGET" == /* ]] || fail "exec_start_path_unresolved"
+[[ "$(basename -- "$TARGET")" == "works-api" ]] || fail "exec_start_not_works_api:$TARGET"
+sudo test -x "$TARGET" || fail "canonical_target_missing:$TARGET"
 
 tmpdir="$(mktemp -d)"
 candidate="$tmpdir/works-api"
