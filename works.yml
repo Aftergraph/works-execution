@@ -10,15 +10,13 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      inspect-detached-unit:
+      inspect-go-toolchain:
         run: |
           set -euo pipefail
-          echo '=== unit status ==='
-          systemctl status aftergraph-works-bootstrap-548c03bd2f77.service --no-pager -l || true
-          echo '=== unit properties ==='
-          systemctl show aftergraph-works-bootstrap-548c03bd2f77.service -p LoadState -p ActiveState -p SubState -p Result -p ExecMainCode -p ExecMainStatus -p ExecStart -p FragmentPath --no-pager || true
-          echo '=== stage ==='
-          find /run/aftergraph-works-bootstrap-548c03bd2f77 -maxdepth 2 -printf '%M %U:%G %p\n' 2>/dev/null || true
-          echo '=== journal ==='
-          journalctl -u aftergraph-works-bootstrap-548c03bd2f77.service --since '2026-09-25 22:19:00 CEST' --no-pager -n 120 || true
+          echo "go_path=$(command -v go)"
+          echo "git_path=$(command -v git)"
+          echo "curl_path=$(command -v curl)"
+          echo "sha256sum_path=$(command -v sha256sum)"
+          go version
+          go env GOROOT GOPATH
         timeout_s: 20
