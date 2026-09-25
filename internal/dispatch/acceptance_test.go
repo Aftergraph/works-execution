@@ -118,6 +118,36 @@ func TestAccept_DuplicateDispatchReturnsSameRecord(t *testing.T) {
 	}
 }
 
+// A lost acceptance response may be replayed after authority freshness has
+// advanced. That replay is a readback of the already-committed winner, not a
+// new authorization decision, so it must return the same durable acceptance.
+// A NEW idempotency key at the old epoch is still rejected below.
+func TestAccept_CommittedReplaySurvivesLaterEpochAdvance(t *testing.T) {
+	a := newAcceptor()
+	d := testDispatch()
+	first, err := a.Accept(d, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := a.Accept(d, 9)
+	if err != nil {
+		t.Fatalf("committed replay must survive later epoch advance: %v", err)
+	}
+	if replayed.WorksExecutionID != first.WorksExecutionID ||
+		replayed.ExecutionContextID != first.ExecutionContextID ||
+		replayed.TraceID != first.TraceID {
+		t.Fatalf("replay did not return committed winner: first=%+v replay=%+v", first, replayed)
+	}
+
+	fresh := d
+	fresh.IdempotencyKey = "idem/fresh-after-advance"
+	fresh.CausalID = "causal/fresh-after-advance"
+	fresh.RuntimeDispatchID = "rdisp/fresh-after-advance"
+	if _, err := a.Accept(fresh, 9); !errors.Is(err, ErrStaleAuthority) {
+		t.Fatalf("new stale dispatch must still fail: %v", err)
+	}
+}
+
 // 12. Same idempotency key, different causal identity: fail closed.
 func TestAccept_CausalMismatchFailsClosed(t *testing.T) {
 	a := newAcceptor()
@@ -327,8 +357,19 @@ func TestAccept_RestartPreservesAuthorityBounds(t *testing.T) {
 	if err := restarted.Spend(acc.WorksExecutionID, 50); !errors.Is(err, ErrBudgetExhausted) {
 		t.Fatalf("restart must not reset budget, got %v", err)
 	}
-	if _, err := restarted.Accept(testDispatch(), 9); !errors.Is(err, ErrStaleAuthority) {
-		t.Fatalf("restart must not erase epoch, got %v", err)
+	replayed, err := restarted.Accept(testDispatch(), 9)
+	if err != nil {
+		t.Fatalf("restart replay must return the committed acceptance: %v", err)
+	}
+	if replayed.WorksExecutionID != acc.WorksExecutionID {
+		t.Fatalf("restart replay changed execution identity: %q != %q", replayed.WorksExecutionID, acc.WorksExecutionID)
+	}
+	fresh := testDispatch()
+	fresh.IdempotencyKey = "idem/restart-fresh"
+	fresh.CausalID = "causal/restart-fresh"
+	fresh.RuntimeDispatchID = "rdisp/restart-fresh"
+	if _, err := restarted.Accept(fresh, 9); !errors.Is(err, ErrStaleAuthority) {
+		t.Fatalf("restart must preserve freshness gate for NEW dispatches, got %v", err)
 	}
 }
 
