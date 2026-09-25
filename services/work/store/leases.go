@@ -414,6 +414,15 @@ func (s *SQLiteStore) RevokeLease(ctx context.Context, leaseID, reason string) e
 	return s.transitionLeaseAttempt(ctx, leaseID, workgraph.LeaseRevoked, "cancelled", reason)
 }
 
+// ExpireLease marks the lease EXPIRED and the underlying attempt 'cancelled'.
+// Used by the reaper when a lease's TTL elapses without a heartbeat. This is
+// distinct from RevokeLease (explicit/administrative cancellation): EXPIRED is
+// the timeout path, REVOKED is the operator path. transitionLeaseAttempt
+// validates that only an ACTIVE lease can move to a terminal status.
+func (s *SQLiteStore) ExpireLease(ctx context.Context, leaseID, reason string) error {
+	return s.transitionLeaseAttempt(ctx, leaseID, workgraph.LeaseExpired, "cancelled", reason)
+}
+
 func (s *SQLiteStore) transitionLeaseAttempt(ctx context.Context, leaseID string, to workgraph.LeaseStatus, attemptStatus, reason string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
