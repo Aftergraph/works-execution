@@ -339,6 +339,7 @@
         "algorithm": {
           "type": "string",
           "enum": [
+            "hmac-sha256-v1",
             "ed25519",
             "ecdsa-p256",
             "rsa-pss"
@@ -346,7 +347,7 @@
         },
         "value": {
           "type": "string",
-          "description": "Base64 signature over canonicalized bundle."
+          "description": "Base64 signature/MAC over the versioned evidence signature frame."
         },
         "signed_at": {
           "type": "string",
