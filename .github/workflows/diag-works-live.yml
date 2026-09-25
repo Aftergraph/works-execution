@@ -12,18 +12,32 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Read bounded public WORKS failure evidence
+      - name: Read bounded public WORKS bootstrap evidence
         shell: bash
         env:
           WORKS_BASE: https://works.rendetalje.dk
-          WORK_ID: wrk_70a680cc87180a2c776766bc72ff1ed9
+          SOURCE_REF: refs/heads/ops/bootstrap-main-548c03bd
         run: |
           set -euo pipefail
-          curl -fsS --max-time 20 "$WORKS_BASE/v1/works/$WORK_ID" > /tmp/work.json
+          curl -fsS --max-time 20 "$WORKS_BASE/v1/works" > /tmp/works.json
           python3 - <<'PY'
-          import json, os, re
+          import json, os, re, urllib.request
 
-          work = json.load(open('/tmp/work.json', encoding='utf-8'))
+          base=os.environ['WORKS_BASE']
+          ref=os.environ['SOURCE_REF']
+          payload=json.load(open('/tmp/works.json', encoding='utf-8'))
+          rows=payload if isinstance(payload,list) else payload.get('works',[])
+          matches=[w for w in rows if (w.get('source') or {}).get('ref') == ref]
+          if not matches:
+              print('BOOTSTRAP_FOUND=false')
+              raise SystemExit(0)
+          work=matches[0]
+          wid=work.get('id')
+          print('BOOTSTRAP_FOUND=true')
+          print('WORK_ID='+str(wid))
+          with urllib.request.urlopen(base+'/v1/works/'+wid, timeout=20) as r:
+              work=json.load(r)
+
           secret_patterns = [
               re.compile(r'gh[pousr]_[A-Za-z0-9]{20,}'),
               re.compile(r'sk-[A-Za-z0-9_-]{20,}'),
@@ -32,40 +46,25 @@ jobs:
               re.compile(r'AKIA[A-Z0-9]{16}'),
               re.compile(r'Bearer\s+[A-Za-z0-9._~+/=-]{20,}', re.I),
           ]
-
           def safe(v, limit=1800):
-              s = str(v)
+              s=str(v)
               for p in secret_patterns:
-                  s = p.sub('[REDACTED]', s)
+                  s=p.sub('[REDACTED]',s)
               return s[-limit:]
 
-          print('WORK_ID=' + safe(work.get('id', '')))
-          print('STATE=' + safe(work.get('state', '')))
-          src = work.get('source') or {}
-          print('SOURCE_SHA=' + safe(src.get('sha', '')))
-          print('SOURCE_REF=' + safe(src.get('ref', '')))
-
-          for attempt in work.get('attempts') or []:
-              print('ATTEMPT=' + json.dumps({
-                  'id': attempt.get('id'),
-                  'node_id': attempt.get('node_id'),
-                  'status': attempt.get('status'),
-                  'exit_code': attempt.get('exit_code'),
-                  'worker_id': attempt.get('worker_id'),
-              }, sort_keys=True))
-
+          print('STATE='+safe(work.get('state','')))
+          print('SOURCE_SHA='+safe((work.get('source') or {}).get('sha','')))
+          for a in work.get('attempts') or []:
+              print('ATTEMPT='+json.dumps({
+                  'id':a.get('id'),'node_id':a.get('node_id'),'status':a.get('status'),
+                  'exit_code':a.get('exit_code'),'worker_id':a.get('worker_id')
+              },sort_keys=True))
           for ev in work.get('evidence') or []:
-              details = ev.get('details') or {}
-              row = {
-                  'id': ev.get('id'),
-                  'node_id': ev.get('node_id'),
-                  'result': ev.get('result'),
-                  'signer': ev.get('signer'),
-                  'exit_code': details.get('exit_code'),
-                  'duration_ms': details.get('duration_ms'),
-                  'command': safe(details.get('command', ''), 500),
-                  'error': safe(details.get('error', ''), 1800),
-                  'lease_lost': details.get('lease_lost'),
-              }
-              print('EVIDENCE=' + json.dumps(row, sort_keys=True))
+              d=ev.get('details') or {}
+              print('EVIDENCE='+json.dumps({
+                  'node_id':ev.get('node_id'),'result':ev.get('result'),'signer':ev.get('signer'),
+                  'exit_code':d.get('exit_code'),'duration_ms':d.get('duration_ms'),
+                  'command':safe(d.get('command',''),500),'error':safe(d.get('error',''),1800),
+                  'lease_lost':d.get('lease_lost')
+              },sort_keys=True))
           PY
