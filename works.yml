@@ -1,4 +1,4 @@
-# bootstrap synchronize trigger after API health verified; branch-only, never merge
+# bootstrap synchronize trigger after ready-for-review; branch-only, never merge
 version: 1
 
 work:
