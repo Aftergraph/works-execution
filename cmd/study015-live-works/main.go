@@ -45,10 +45,12 @@ func requiredSecret(name string) string {
 }
 
 func main() {
-	var addr, dbPath, fixtureOut string
+	var addr, dbPath, fixtureOut, resumeWorkID, resumeLeaseID string
 	flag.StringVar(&addr, "addr", "127.0.0.1:0", "loopback listen address")
 	flag.StringVar(&dbPath, "db", "", "SQLite path (default: temp dir)")
 	flag.StringVar(&fixtureOut, "fixture-out", "", "required non-secret fixture receipt path")
+	flag.StringVar(&resumeWorkID, "resume-work-id", "", "existing work id to reopen without reseeding")
+	flag.StringVar(&resumeLeaseID, "resume-worker-lease-id", "", "existing worker lease id to reopen without reseeding")
 	flag.Parse()
 
 	if fixtureOut == "" {
@@ -83,24 +85,46 @@ func main() {
 
 	ctx := context.Background()
 	workerID := "wrkr_" + strings.Repeat("7", 32)
-	w := &workgraph.Work{
-		ID:        workgraph.NewID("wrk"),
-		State:     workgraph.StateCreated,
-		Source:    workgraph.Source{Type: "study015"},
-		Objective: workgraph.Objective{Type: "verify_change"},
-		Graph: workgraph.Graph{Nodes: map[string]workgraph.Node{
-			"effect": {ID: "effect", Run: "true"},
-		}},
-	}
-	if err := st.CreateWork(ctx, w); err != nil {
-		log.Fatalf("create fixture work: %v", err)
-	}
-	if _, err := st.UpdateState(ctx, w.ID, workgraph.StateQueued); err != nil {
-		log.Fatalf("queue fixture work: %v", err)
-	}
-	lease, _, err := st.GrantLease(ctx, w.ID, "effect", workerID, 30*time.Minute)
-	if err != nil {
-		log.Fatalf("grant fixture WorkerLease: %v", err)
+	var w *workgraph.Work
+	var lease *workgraph.Lease
+
+	resumeRequested := resumeWorkID != "" || resumeLeaseID != ""
+	if resumeRequested {
+		if resumeWorkID == "" || resumeLeaseID == "" {
+			log.Fatal("--resume-work-id and --resume-worker-lease-id must be supplied together")
+		}
+		w, err = st.GetWork(ctx, resumeWorkID)
+		if err != nil {
+			log.Fatalf("resume fixture work: %v", err)
+		}
+		lease, err = st.GetLease(ctx, resumeLeaseID)
+		if err != nil {
+			log.Fatalf("resume fixture WorkerLease: %v", err)
+		}
+		if lease.WorkID != w.ID {
+			log.Fatalf("resume binding mismatch: lease work %s != requested work %s", lease.WorkID, w.ID)
+		}
+		workerID = lease.WorkerID
+	} else {
+		w = &workgraph.Work{
+			ID:        workgraph.NewID("wrk"),
+			State:     workgraph.StateCreated,
+			Source:    workgraph.Source{Type: "study015"},
+			Objective: workgraph.Objective{Type: "verify_change"},
+			Graph: workgraph.Graph{Nodes: map[string]workgraph.Node{
+				"effect": {ID: "effect", Run: "true"},
+			}},
+		}
+		if err := st.CreateWork(ctx, w); err != nil {
+			log.Fatalf("create fixture work: %v", err)
+		}
+		if _, err := st.UpdateState(ctx, w.ID, workgraph.StateQueued); err != nil {
+			log.Fatalf("queue fixture work: %v", err)
+		}
+		lease, _, err = st.GrantLease(ctx, w.ID, "effect", workerID, 30*time.Minute)
+		if err != nil {
+			log.Fatalf("grant fixture WorkerLease: %v", err)
+		}
 	}
 
 	srv := &api.Server{
