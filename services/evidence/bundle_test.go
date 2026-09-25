@@ -196,6 +196,28 @@ func TestProduce_IntegrityEnvelope(t *testing.T) {
 	}
 }
 
+func TestProduce_IntegrityEnvelopeIsAuthenticated(t *testing.T) {
+	st := openStore(t)
+	w := seedSucceeded(t, st)
+	key := testKey(t)
+	b, err := Produce(context.Background(), st, w.ID, ProducerConfig{
+		KeyID: "k", HMACKey: key, Runner: Runner{ID: "r"},
+	})
+	if err != nil {
+		t.Fatalf("Produce: %v", err)
+	}
+	if got := b.Signatures[0].Algorithm; got != "hmac-sha256-v1" {
+		t.Fatalf("signature algorithm = %q", got)
+	}
+	if !Verify(b, "k", key) {
+		t.Fatal("fresh Integrity v1 bundle signature did not verify")
+	}
+	b.Integrity.Canonicalization = "aftergraph-json-canonical/tampered"
+	if Verify(b, "k", key) {
+		t.Fatal("integrity metadata tamper was not authenticated")
+	}
+}
+
 func TestProduce_IntegrityTamperFails(t *testing.T) {
 	st := openStore(t)
 	w := seedSucceeded(t, st)
