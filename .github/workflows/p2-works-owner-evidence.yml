@@ -1,0 +1,110 @@
+name: P2 works-execution owner evidence
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/p2-works-owner-evidence.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    env:
+      OWNER_SUBJECT: ${{ github.event.pull_request.head.sha || github.sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          clean: true
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25"
+          cache: false
+      - name: WORKS V2 dispatch + exact-subject suite
+        run: |
+          matches="$(go test ./services/api -list '^TestDispatchV2' | grep '^TestDispatchV2' || true)"
+          if [ -z "$matches" ]; then
+            echo "FAIL: no TestDispatchV2 tests exist; refusing vacuous PASS" >&2
+            exit 1
+          fi
+          printf '%s\n' "$matches"
+          go test ./services/api -run '^TestDispatchV2(MaterializesResolvableExecutionContext|SubjectBindingIsExactOnceAndIdempotent|ReplayReturnsSameCorrelation)
+      - name: Emit evidence
+        env:
+          OUT: ${{ runner.temp }}/owner-evidence.json
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          base={
+            "schema":"steward.p2.owner-evidence/1.0",
+            "owner":"Aftergraph/works-execution",
+            "subject":os.environ["OWNER_SUBJECT"],
+            "suite":"non-vacuous dispatch-v2 exact-subject + e2e work write/readback",
+            "result":"PASS",
+            "production_effect":False,
+          }
+          canonical=json.dumps(base,sort_keys=True,separators=(",",":")).encode()
+          base["content_sha256"]=hashlib.sha256(canonical).hexdigest()
+          open(os.environ["OUT"],"w",encoding="utf-8").write(json.dumps(base,indent=2,sort_keys=True)+"\n")
+          print(json.dumps(base,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p2-works-execution-owner-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/owner-evidence.json
+          if-no-files-found: error
+ -count=1 -v
+          go test -tags=e2e ./e2e -run '^TestE2E_WorkSucceeds
+      - name: Emit evidence
+        env:
+          OUT: ${{ runner.temp }}/owner-evidence.json
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          base={
+            "schema":"steward.p2.owner-evidence/1.0",
+            "owner":"Aftergraph/works-execution",
+            "subject":os.environ["OWNER_SUBJECT"],
+            "suite":"dispatch-v2 exact-subject + e2e work write/readback",
+            "result":"PASS",
+            "production_effect":False,
+          }
+          canonical=json.dumps(base,sort_keys=True,separators=(",",":")).encode()
+          base["content_sha256"]=hashlib.sha256(canonical).hexdigest()
+          open(os.environ["OUT"],"w",encoding="utf-8").write(json.dumps(base,indent=2,sort_keys=True)+"\n")
+          print(json.dumps(base,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p2-works-execution-owner-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/owner-evidence.json
+          if-no-files-found: error
+ -count=1 -v
+      - name: Emit evidence
+        env:
+          OUT: ${{ runner.temp }}/owner-evidence.json
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          base={
+            "schema":"steward.p2.owner-evidence/1.0",
+            "owner":"Aftergraph/works-execution",
+            "subject":os.environ["OWNER_SUBJECT"],
+            "suite":"dispatch-v2 exact-subject + e2e work write/readback",
+            "result":"PASS",
+            "production_effect":False,
+          }
+          canonical=json.dumps(base,sort_keys=True,separators=(",",":")).encode()
+          base["content_sha256"]=hashlib.sha256(canonical).hexdigest()
+          open(os.environ["OUT"],"w",encoding="utf-8").write(json.dumps(base,indent=2,sort_keys=True)+"\n")
+          print(json.dumps(base,sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p2-works-execution-owner-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/owner-evidence.json
+          if-no-files-found: error

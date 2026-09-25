@@ -26,7 +26,17 @@ work:
       pool: avc-core
 
     nodes:
+      p2-live-production-readback:
+        run: |
+          set -eu
+          endpoint=http://127.0.0.1:18191/healthz
+          body="$(curl -fsS --max-time 3 "$endpoint")"
+          test "$body" = '{"status":"ok"}'
+          printf '%s\n' '{"schema":"steward.p2.works-live-readback/1.0","endpoint":"http://127.0.0.1:18191/healthz","health_status":"ok","production_effect":false}'
+        timeout_s: 30
+
       vet:
+        needs: [p2-live-production-readback]
         run: go vet ./...
         cache: true
         timeout_s: 120
