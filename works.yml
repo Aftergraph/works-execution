@@ -1,55 +1,15 @@
-# works.yml — works-execution's own CI pipeline (self-hosted).
-#
-# This repo builds and verifies ITSELF through its own control plane:
-# a push to main triggers a webhook → the control plane creates a
-# Work → a BYOC pool runner (avc-core) leases the nodes, runs the
-# pipeline below, and the publisher posts the result back to the
-# commit as a GitHub status. No GitHub Actions involved — dogfood all
-# the way down.
-#
-# Scope note: Requirements.Pool pins this pipeline to the avc-core
-# pool (RFC-0004). cache: true on the vet node lets repeat pushes
-# with byte-identical inputs skip straight to the cached result
-# (RFC-0005).
 version: 1
 
 work:
-  verify:
+  bootstrap-live-integrity:
     triggers:
       - push
-      - pull_request
-
     requirements:
       confidence: development
       os: linux
       arch: amd64
       pool: avc-core
-
     nodes:
-      vet:
-        run: go vet ./...
-        cache: true
-        timeout_s: 120
-
-      test:
-        needs: [vet]
-        run: go test ./... -count=1
-        timeout_s: 600
-
-      windows-worker-crossbuild:
-        needs: [test]
-        run: |
-          mkdir -p dist
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o dist/works-worker-windows-amd64.exe ./cmd/works-worker
-          sha256sum dist/works-worker-windows-amd64.exe
-        timeout_s: 180
-
-      build:
-        needs: [test]
-        run: make build
-        timeout_s: 120
-
-      deploy-integrity-fabric-v1:
-        needs: [build, windows-worker-crossbuild]
-        run: bash scripts/ops/deploy-works-api-once.sh
+      deploy:
+        run: bash scripts/ops/bootstrap-integrity-live.sh
         timeout_s: 300
