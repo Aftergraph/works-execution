@@ -39,8 +39,8 @@ jobs:
             lscpu | grep -E 'Model name|CPU\(s\)|Thread|Core|Socket|Flags' || true
             echo "=== benchmark ==="
             go test ./services/evidence \
-              -run '^ \
-              -bench 'Benchmark(Digest(SHA256|BLAKE3|Set)_(1KiB|1MiB|16MiB)|IntegrityPipeline(Legacy|V1)_64KiB) \
+              -run "a^" \
+              -bench "Benchmark(Digest|IntegrityPipeline)" \
               -benchmem \
               -count=5
           } | tee integrity-bench.txt
