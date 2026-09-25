@@ -13,22 +13,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Inspect public WORKS UI for bootstrap SHA
+      - name: Probe live WORKS control-plane surfaces
         shell: bash
         env:
-          SHORT_SHA: 643eff7c
           WORKS_BASE: https://works.rendetalje.dk
+          WORK_ID: wrk_3995b52a8e30d244dc83f6413bba0df2
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --max-time 15 \
-            "$WORKS_BASE/v1/ui" > /tmp/ui.html
-          python3 - <<'PY'
-          import os,re
-          s=open('/tmp/ui.html',encoding='utf-8',errors='replace').read()
-          needle=os.environ['SHORT_SHA']
-          print('HAS_SHA=' + str(needle in s).lower())
-          for m in re.finditer(re.escape(needle),s):
-              lo=max(0,m.start()-1200); hi=min(len(s),m.end()+1200)
-              chunk=' '.join(s[lo:hi].split())
-              print('CONTEXT=' + chunk[:2400])
-          PY
+          code() { curl --silent --show-error --output /tmp/body --write-out '%{http_code}' --max-time 15 "$@"; }
+          echo "HEALTHZ=$(code "$WORKS_BASE/healthz")"
+          echo "UI=$(code "$WORKS_BASE/v1/ui")"
+          echo "EVIDENCE=$(code "$WORKS_BASE/v1/works/$WORK_ID/evidence")"
+          echo "WEBHOOK_UNSIGNED=$(code -X POST -H 'X-GitHub-Event: push' -H 'X-GitHub-Delivery: diag' -H 'Content-Type: application/json' --data '{}' "$WORKS_BASE/v1/webhook/github")"
