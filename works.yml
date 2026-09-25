@@ -1,3 +1,4 @@
+# bootstrap retry after API recovery; branch-only, never merge
 version: 1
 
 work:
