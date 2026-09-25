@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+export PATH='/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+export GOPATH='/var/lib/works/gopath'
+export GOMODCACHE='/var/lib/works/gomodcache'
 
 TARGET_SHA='548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06'
 SHORT="$(printf '%s' "$TARGET_SHA" | cut -c1-12)"
@@ -25,6 +28,9 @@ cat >"$PAYLOAD" <<'PROMOTE'
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+export PATH='/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+export GOPATH='/var/lib/works/gopath'
+export GOMODCACHE='/var/lib/works/gomodcache'
 
 TARGET_SHA='548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06'
 SHORT="$(printf '%s' "$TARGET_SHA" | cut -c1-12)"
@@ -187,5 +193,5 @@ chmod 0700 "$PAYLOAD"
 
 # Replace any stale transient unit name from a prior failed bootstrap.
 systemctl reset-failed "$UNIT.service" >/dev/null 2>&1 || true
-systemd-run --unit="$UNIT" --collect --property=Type=oneshot "$PAYLOAD"
+systemd-run --no-block --unit="$UNIT" --collect --property=Type=oneshot "$PAYLOAD"
 printf 'works-bootstrap: detached unit scheduled unit=%s target_sha=%s\n' "$UNIT" "$TARGET_SHA"
