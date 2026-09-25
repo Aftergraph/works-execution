@@ -13,27 +13,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Verify live Integrity Fabric surface
+      - name: Inspect public WORKS UI for bootstrap SHA
         shell: bash
         env:
-          WORK_ID: wrk_3995b52a8e30d244dc83f6413bba0df2
+          SHORT_SHA: 643eff7c
           WORKS_BASE: https://works.rendetalje.dk
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --max-time 15 \
-            "$WORKS_BASE/v1/works/$WORK_ID/evidence" > /tmp/evidence.json
+            "$WORKS_BASE/v1/ui" > /tmp/ui.html
           python3 - <<'PY'
-          import json
-          p=json.load(open('/tmp/evidence.json'))
-          print('BUNDLE_ID=' + str(p.get('bundle_id','')))
-          integ=p.get('integrity')
-          print('INTEGRITY_PRESENT=' + str(bool(integ)).lower())
-          if integ:
-              print('CANONICALIZATION=' + str(integ.get('canonicalization','')))
-              ds=integ.get('digests') or {}
-              primary=ds.get('primary') or {}
-              alts=ds.get('alternatives') or []
-              print('PRIMARY_ALGORITHM=' + str(primary.get('algorithm','')))
-              print('ALTERNATES=' + ','.join(str(x.get('algorithm','')) for x in alts))
-          print('SIGNATURE_ALGORITHMS=' + ','.join(str(x.get('algorithm','')) for x in (p.get('signatures') or [])))
+          import os,re
+          s=open('/tmp/ui.html',encoding='utf-8',errors='replace').read()
+          needle=os.environ['SHORT_SHA']
+          print('HAS_SHA=' + str(needle in s).lower())
+          for m in re.finditer(re.escape(needle),s):
+              lo=max(0,m.start()-1200); hi=min(len(s),m.end()+1200)
+              chunk=' '.join(s[lo:hi].split())
+              print('CONTEXT=' + chunk[:2400])
           PY
