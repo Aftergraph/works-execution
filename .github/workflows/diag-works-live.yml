@@ -3,6 +3,7 @@ name: Diagnose WORKS live failure
 on:
   pull_request:
     paths: ['.github/workflows/diag-works-live.yml']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,20 +12,60 @@ jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
-      - name: Find bootstrap Work in public UI
+      - name: Read bounded public WORKS failure evidence
         shell: bash
         env:
           WORKS_BASE: https://works.rendetalje.dk
-          SHORT_SHA: 33882c40
+          WORK_ID: wrk_70a680cc87180a2c776766bc72ff1ed9
         run: |
           set -euo pipefail
-          curl -fsS --max-time 15 "$WORKS_BASE/v1/ui" > /tmp/ui
+          curl -fsS --max-time 20 "$WORKS_BASE/v1/works/$WORK_ID" > /tmp/work.json
           python3 - <<'PY'
-          import os,re
-          s=open('/tmp/ui',encoding='utf-8',errors='replace').read()
-          n=os.environ['SHORT_SHA']
-          print('HAS_SHA='+str(n in s).lower())
-          for m in re.finditer(re.escape(n),s):
-              c=' '.join(s[max(0,m.start()-1500):min(len(s),m.end()+1500)].split())
-              print('CONTEXT='+c[:3000])
+          import json, os, re
+
+          work = json.load(open('/tmp/work.json', encoding='utf-8'))
+          secret_patterns = [
+              re.compile(r'gh[pousr]_[A-Za-z0-9]{20,}'),
+              re.compile(r'sk-[A-Za-z0-9_-]{20,}'),
+              re.compile(r'xox[bpsar]-[A-Za-z0-9-]{10,}'),
+              re.compile(r'AIza[A-Za-z0-9_-]{35}'),
+              re.compile(r'AKIA[A-Z0-9]{16}'),
+              re.compile(r'Bearer\s+[A-Za-z0-9._~+/=-]{20,}', re.I),
+          ]
+
+          def safe(v, limit=1800):
+              s = str(v)
+              for p in secret_patterns:
+                  s = p.sub('[REDACTED]', s)
+              return s[-limit:]
+
+          print('WORK_ID=' + safe(work.get('id', '')))
+          print('STATE=' + safe(work.get('state', '')))
+          src = work.get('source') or {}
+          print('SOURCE_SHA=' + safe(src.get('sha', '')))
+          print('SOURCE_REF=' + safe(src.get('ref', '')))
+
+          for attempt in work.get('attempts') or []:
+              print('ATTEMPT=' + json.dumps({
+                  'id': attempt.get('id'),
+                  'node_id': attempt.get('node_id'),
+                  'status': attempt.get('status'),
+                  'exit_code': attempt.get('exit_code'),
+                  'worker_id': attempt.get('worker_id'),
+              }, sort_keys=True))
+
+          for ev in work.get('evidence') or []:
+              details = ev.get('details') or {}
+              row = {
+                  'id': ev.get('id'),
+                  'node_id': ev.get('node_id'),
+                  'result': ev.get('result'),
+                  'signer': ev.get('signer'),
+                  'exit_code': details.get('exit_code'),
+                  'duration_ms': details.get('duration_ms'),
+                  'command': safe(details.get('command', ''), 500),
+                  'error': safe(details.get('error', ''), 1800),
+                  'lease_lost': details.get('lease_lost'),
+              }
+              print('EVIDENCE=' + json.dumps(row, sort_keys=True))
           PY
