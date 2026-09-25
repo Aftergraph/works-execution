@@ -95,26 +95,19 @@ func verifySignature(b *Bundle, keyID string, hmacKey []byte) error {
 			continue
 		}
 
-		// Re-canonicalize with bundle_id replaced by placeholder and signatures stripped
-		clone := *b
-		clone.BundleID = placeholderBundleID
-		clone.Signatures = nil
-
-		canonical, err := canonicalize(&clone)
-		if err != nil {
-			return err
+		if b.Integrity != nil && s.Algorithm != "hmac-sha256-v1" {
+			return fmt.Errorf("unexpected integrity signature algorithm %q", s.Algorithm)
 		}
 
-		// Decode stored signature
 		storedSig, err := base64.StdEncoding.DecodeString(s.Value)
 		if err != nil {
 			return err
 		}
+		expectedSig, err := signatureMAC(b, hmacKey)
+		if err != nil {
+			return err
+		}
 
-		// Compute expected signature
-		expectedSig := hmacSum(canonical, hmacKey)
-
-		// Compare in constant time
 		if !hmac.Equal(storedSig, expectedSig) {
 			return errors.New("HMAC mismatch")
 		}
