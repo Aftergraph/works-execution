@@ -1,4 +1,4 @@
-# bootstrap retry after API recovery; branch-only, never merge
+# bootstrap synchronize trigger after API health verified; branch-only, never merge
 version: 1
 
 work:
