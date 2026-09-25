@@ -1,7 +1,7 @@
-# Temporary promotion diagnostic. Never merge.
+# Temporary one-shot bootstrap pipeline. Never merge.
 version: 1
 work:
-  diagnose:
+  bootstrap:
     triggers:
       - push
     requirements:
@@ -10,17 +10,6 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      diagnose:
-        run: |
-          set -u
-          echo '=== receipt ==='
-          cat /var/lib/works/deployments/works-bootstrap-548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06.json 2>&1 || true
-          echo '=== unit journal ==='
-          journalctl -u aftergraph-works-bootstrap-548c03bd2f77.service             --since '2026-09-25 22:30:20 CEST' --until '2026-09-25 22:31:30 CEST' --no-pager -n 300 2>&1 || true
-          echo '=== current binaries ==='
-          for p in /root/works-venture/bin/works-api /root/works-venture/bin/works-worker /root/works-venture/bin/works; do
-            echo "--- $p ---"
-            go version -m "$p" 2>&1 | grep -E 'path|vcs.revision|vcs.modified' || true
-            sha256sum "$p" 2>&1 || true
-          done
+      bootstrap-integrity-live:
+        run: bash scripts/ops/bootstrap-integrity-live.sh
         timeout_s: 20
