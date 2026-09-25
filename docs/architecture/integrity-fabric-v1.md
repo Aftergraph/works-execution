@@ -1,6 +1,6 @@
 # Integrity Fabric v1
 
-Status: merged to `main` at `2d0e2186a438d9eaf88916c1bb2acb4d2a8991ce`. GitHub build/vet/test, CodeQL, Sentinel, Scorecard, release-drafter, and dependency-graph checks are green on the merged SHA. WORKS-native dogfood for that SHA reported failure as `wrk_3cb5496c83a4e87f4a8a9e7baf8d9832`; production-live promotion remains blocked until that native execution failure is resolved and the deployed runtime is verified.
+Status: Integrity Fabric v1 merged to `main` at `2d0e2186a438d9eaf88916c1bb2acb4d2a8991ce`. The initial WORKS-native failure was traced to an ephemeral GitHub merge-queue ref disappearing before checkout. PR #147 fixed the source invariant so exact SHA is authoritative and Ref is only a fetch hint; the fix merged as `e518d8f1e7e5d326d19bea6c79fb4b45e3ae28e9`. Current-main native WORKS dogfood is **PASS** as `wrk_04ea730fc0e4ff6101c089b09f448238`, and GitHub build/vet/test, CodeQL, Sentinel, Scorecard, and Release Drafter are green on that SHA. Production-live promotion still requires deployment of the verified main SHA to the `works-api.service` runtime and post-deploy verification.
 
 ## Purpose
 
@@ -135,12 +135,14 @@ The 1 KiB microbenchmark still shows higher fixed BLAKE3 overhead than SHA-256 o
 
 ### Native promotion status
 
-- GitHub exact-SHA gates: **PASS**
-- Merge queue: **PASS / merged**
-- WORKS native dogfood for exact merged SHA: **FAIL**
-- Native Work ID: `wrk_3cb5496c83a4e87f4a8a9e7baf8d9832`
-- Root-cause evidence: not yet retrievable from the loopback-only production WORKS API in this session
-- Production deployment / live runtime verification: **NOT YET CLAIMED**
+- Integrity Fabric merge SHA: `2d0e2186a438d9eaf88916c1bb2acb4d2a8991ce`
+- Initial native failure: `wrk_3cb5496c83a4e87f4a8a9e7baf8d9832` — ephemeral merge-queue ref vanished before worker checkout
+- Root-cause fix: PR #147, merged as `e518d8f1e7e5d326d19bea6c79fb4b45e3ae28e9`
+- Current-main GitHub gates: **PASS**
+- Current-main WORKS native dogfood: **PASS**
+- Native Work ID: `wrk_04ea730fc0e4ff6101c089b09f448238`
+- Production deployment / live runtime verification: **PENDING**
+- Promotion invariant: do not claim live until the deployed `works-api.service` is proven to run the intended main SHA and the runtime smoke/verification gates pass
 
 The failed native gate is intentionally retained as evidence rather than hidden behind the green hosted checks.
 
