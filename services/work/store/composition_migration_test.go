@@ -17,4 +17,13 @@ func TestComposedMigrationExecutionContextThenDispatchAcceptance(t *testing.T) {
 			t.Fatalf("required composed table %s missing: %v", table, err)
 		}
 	}
+	for _, col := range []string{"creation_intent_hash", "admission_defaults_json", "queue_requested"} {
+		var count int
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('works') WHERE name=?`, col).Scan(&count); err != nil {
+			t.Fatalf("inspect works.%s: %v", col, err)
+		}
+		if count != 1 {
+			t.Fatalf("required v14 column works.%s missing", col)
+		}
+	}
 }
