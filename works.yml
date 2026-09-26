@@ -27,19 +27,19 @@ work:
 
     nodes:
       vet:
-        run: source scripts/ops/ci-scratch-env.sh && go vet ./...
+        run: . scripts/ops/ci-scratch-env.sh && go vet ./...
         cache: true
         timeout_s: 120
 
       test:
         needs: [vet]
-        run: source scripts/ops/ci-scratch-env.sh && go test ./... -count=1
+        run: . scripts/ops/ci-scratch-env.sh && go test ./... -count=1
         timeout_s: 600
 
       windows-worker-crossbuild:
         needs: [test]
         run: |
-          source scripts/ops/ci-scratch-env.sh
+          . scripts/ops/ci-scratch-env.sh
           mkdir -p dist
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o dist/works-worker-windows-amd64.exe ./cmd/works-worker
           sha256sum dist/works-worker-windows-amd64.exe
@@ -47,10 +47,10 @@ work:
 
       build:
         needs: [test]
-        run: source scripts/ops/ci-scratch-env.sh && make build
+        run: . scripts/ops/ci-scratch-env.sh && make build
         timeout_s: 120
 
       deploy-integrity-fabric-v1:
         needs: [build, windows-worker-crossbuild]
-        run: source scripts/ops/ci-scratch-env.sh && bash scripts/ops/deploy-works-api-once.sh
+        run: . scripts/ops/ci-scratch-env.sh && bash scripts/ops/deploy-works-api-once.sh
         timeout_s: 300
