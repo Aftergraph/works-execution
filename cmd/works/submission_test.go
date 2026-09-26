@@ -82,6 +82,7 @@ func TestSubmitWorkWithReconcile_ResponseLossRecoversCanonicalWork(t *testing.T)
 		ts.URL+"/v1/works",
 		submissionPayload(t, "idem-cli-response-loss"),
 		"idem-cli-response-loss",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("submit with reconciliation: %v", err)
@@ -126,6 +127,7 @@ func TestSubmitWorkWithReconcile_NoKeyDoesNotBlindRetry(t *testing.T) {
 		ts.URL+"/v1/works",
 		submissionPayload(t, ""),
 		"",
+		nil,
 	)
 	if err == nil {
 		t.Fatal("expected ambiguous no-key submission to fail")
@@ -142,5 +144,101 @@ func TestSubmitWorkWithReconcile_NoKeyDoesNotBlindRetry(t *testing.T) {
 	}
 	if len(works) != 1 {
 		t.Fatalf("server accepted work count=%d want 1", len(works))
+	}
+}
+
+
+func TestSubmitWorkWithReconcile_AuthEnabled(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "auth-submission.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "0123456789abcdef0123456789abcdef"
+	srv := &api.Server{
+		Store:        st,
+		Auth:         api.NewHMACIssuer(),
+		AuthEnabled:  true,
+		EnrollSecret: secret,
+	}
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(func() {
+		ts.Close()
+		_ = st.Close()
+	})
+
+	auth, err := newCLIAuth(ts.URL, "", secret)
+	if err != nil {
+		t.Fatalf("enroll cli: %v", err)
+	}
+
+	result, err := submitWorkWithReconcile(
+		http.DefaultClient,
+		ts.URL+"/v1/works",
+		submissionPayload(t, "idem-auth-enabled"),
+		"idem-auth-enabled",
+		auth,
+	)
+	if err != nil {
+		t.Fatalf("authenticated submit: %v", err)
+	}
+	if result.StatusCode != http.StatusCreated {
+		t.Fatalf("authenticated submit status=%d body=%s", result.StatusCode, string(result.Body))
+	}
+}
+
+func TestSubmitWorkWithReconcile_APIRestartRenewsTokenAndKeepsIdentity(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "auth-restart.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "0123456789abcdef0123456789abcdef"
+	srv := &api.Server{
+		Store:        st,
+		Auth:         api.NewHMACIssuer(),
+		AuthEnabled:  true,
+		EnrollSecret: secret,
+	}
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(func() {
+		ts.Close()
+		_ = st.Close()
+	})
+
+	auth, err := newCLIAuth(ts.URL, "", secret)
+	if err != nil {
+		t.Fatalf("initial enroll: %v", err)
+	}
+	oldToken := auth.token
+
+	// API restart semantics: the dev-mode issuer key rotates. The old token
+	// is now invalid, but the enrollment challenge remains available.
+	srv.Auth = api.NewHMACIssuer()
+
+	result, err := submitWorkWithReconcile(
+		http.DefaultClient,
+		ts.URL+"/v1/works",
+		submissionPayload(t, "idem-auth-restart"),
+		"idem-auth-restart",
+		auth,
+	)
+	if err != nil {
+		t.Fatalf("submit across auth restart: %v", err)
+	}
+	if result.StatusCode != http.StatusCreated {
+		t.Fatalf("restart recovery status=%d body=%s", result.StatusCode, string(result.Body))
+	}
+	if result.Attempts != 2 {
+		t.Fatalf("restart recovery attempts=%d want 2", result.Attempts)
+	}
+	if auth.token == oldToken {
+		t.Fatal("expected token renewal after issuer rotation")
+	}
+
+	works, err := st.ListWorks(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(works) != 1 {
+		t.Fatalf("auth recovery created duplicate works: count=%d", len(works))
 	}
 }
