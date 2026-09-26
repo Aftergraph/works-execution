@@ -733,7 +733,20 @@ var workerPrivateEnv = map[string]struct{}{
 	"GH_TOKEN":            {},
 }
 
+func workerScratchRoot() string {
+	if v := strings.TrimSpace(os.Getenv("WORKS_SCRATCH_ROOT")); v != "" {
+		return v
+	}
+	// Production WORKS owns /var/lib/works. Developer/test hosts that do not
+	// have that state root fall back to their ordinary temp directory.
+	if info, err := os.Stat("/var/lib/works"); err == nil && info.IsDir() {
+		return sandbox.WorkerScratchRoot
+	}
+	return filepath.Join(os.TempDir(), "works-worker")
+}
+
 func sanitizedWorkerProcessEnv(base []string) []string {
+	scratch := workerScratchRoot()
 	out := make([]string, 0, len(base)+1)
 	tmpdirSeen := false
 	for _, entry := range base {
@@ -745,28 +758,28 @@ func sanitizedWorkerProcessEnv(base []string) []string {
 			}
 			if upper == "TMPDIR" {
 				tmpdirSeen = true
-				entry = "TMPDIR=" + sandbox.WorkerScratchRoot
+				entry = "TMPDIR=" + scratch
 			}
 		}
 		out = append(out, entry)
 	}
 	if !tmpdirSeen {
-		out = append(out, "TMPDIR="+sandbox.WorkerScratchRoot)
+		out = append(out, "TMPDIR="+scratch)
 	}
 	return out
 }
 
-func ensureWorkerScratch() error {
+func ensureWorkerScratch() (string, error) {
+	root := workerScratchRoot()
 	for _, dir := range []string{
-		sandbox.WorkerScratchRoot,
-		filepath.Join(sandbox.WorkerScratchRoot, "sandbox"),
-		"/var/lib/works/home",
+		root,
+		filepath.Join(root, "sandbox"),
 	} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return fmt.Errorf("worker scratch %s: %w", dir, err)
+			return "", fmt.Errorf("worker scratch %s: %w", dir, err)
 		}
 	}
-	return nil
+	return root, nil
 }
 
 // execResult captures the outcome of running one node command.
@@ -822,11 +835,12 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 		cmd.Dir = workDir
 	}
 
-	if err := ensureWorkerScratch(); err != nil {
+	scratchRoot, scratchErr := ensureWorkerScratch()
+	if scratchErr != nil {
 		return execResult{
 			Status:      "failed",
 			ExitCode:    -1,
-			CombinedLog: []byte("worker scratch prepare failed: " + err.Error()),
+			CombinedLog: []byte("worker scratch prepare failed: " + scratchErr.Error()),
 			Duration:    time.Since(start),
 		}
 	}
@@ -834,7 +848,7 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 	var prepared *sandbox.Prepared
 	if len(manifest) > 0 && manifest[0] != nil {
 		p, prepErr := sandbox.Prepare(cctx, command, env, *manifest[0], sandbox.Options{
-			Root:         filepath.Join(sandbox.WorkerScratchRoot, "sandbox"),
+			Root:         filepath.Join(scratchRoot, "sandbox"),
 			ProbeNetwork: true,
 		})
 		if prepErr != nil {
