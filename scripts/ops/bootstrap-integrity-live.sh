@@ -45,10 +45,17 @@ SMOKE_WORK_ID='wrk_3995b52a8e30d244dc83f6413bba0df2'
 API='http://127.0.0.1:18191'
 mutated=false
 tmp=''
+build=''
 
 revision_of() {
   go version -m "$1" 2>/dev/null |
     sed -n 's/^[[:space:]]*build[[:space:]]*vcs\.revision=//p' |
+    head -n 1
+}
+
+modified_of() {
+  go version -m "$1" 2>/dev/null |
+    sed -n 's/^[[:space:]]*build[[:space:]]*vcs\.modified=//p' |
     head -n 1
 }
 
@@ -90,6 +97,7 @@ rollback() {
   fi
   write_receipt FAILED_ROLLED_BACK "exit_$rc"
   [ -z "$tmp" ] || rm -rf "$tmp"
+  [ -z "$build" ] || rm -rf "$build"
   rm -rf "$STAGE"
   exit "$rc"
 }
@@ -113,23 +121,28 @@ remote_main="$(git ls-remote "$REMOTE" refs/heads/main | awk 'NR==1{print $1}')"
 
 install -d -m 0755 "$GOCACHE" "$GOMODCACHE" "$GOPATH"
 tmp="$(mktemp -d)"
+build="$(mktemp -d)"
 git -C "$tmp" init -q
 git -C "$tmp" remote add origin "$REMOTE"
 git -C "$tmp" fetch -q --no-tags --depth=1 origin main
 [ "$(git -C "$tmp" rev-parse FETCH_HEAD)" = "$TARGET_SHA" ]
 git -C "$tmp" checkout -q --detach FETCH_HEAD
 
+# Binaries are built into a staging dir OUTSIDE the checkout: writing them
+# into $tmp would dirty the tree and stamp later builds vcs.modified=true.
 (
   cd "$tmp"
   go vet ./...
   go test ./... -count=1
-  CGO_ENABLED=0 go build -trimpath -o "$tmp/works-api" ./cmd/works-api
-  CGO_ENABLED=0 go build -trimpath -o "$tmp/works-worker" ./cmd/works-worker
-  CGO_ENABLED=0 go build -trimpath -o "$tmp/works" ./cmd/works
+  CGO_ENABLED=0 go build -trimpath -o "$build/works-api" ./cmd/works-api
+  CGO_ENABLED=0 go build -trimpath -o "$build/works-worker" ./cmd/works-worker
+  CGO_ENABLED=0 go build -trimpath -o "$build/works" ./cmd/works
 )
 
 for b in works-api works-worker works; do
-  [ "$(revision_of "$tmp/$b")" = "$TARGET_SHA" ]
+  [ -x "$build/$b" ]
+  [ "$(revision_of "$build/$b")" = "$TARGET_SHA" ]
+  [ "$(modified_of "$build/$b")" = false ]
 done
 
 # Revalidate main after the potentially long build, before mutation.
@@ -147,13 +160,13 @@ cp -a "$API_TARGET" "$BACKUP_DIR/works-api"
 cp -a "$WORKER_TARGET" "$BACKUP_DIR/works-worker"
 cp -a "$CLI_TARGET" "$BACKUP_DIR/works"
 
-api_hash="$(sha256sum "$tmp/works-api" | awk '{print $1}')"
-worker_hash="$(sha256sum "$tmp/works-worker" | awk '{print $1}')"
-cli_hash="$(sha256sum "$tmp/works" | awk '{print $1}')"
+api_hash="$(sha256sum "$build/works-api" | awk '{print $1}')"
+worker_hash="$(sha256sum "$build/works-worker" | awk '{print $1}')"
+cli_hash="$(sha256sum "$build/works" | awk '{print $1}')"
 
-atomic_install "$tmp/works-api" "$API_TARGET"
-atomic_install "$tmp/works-worker" "$WORKER_TARGET"
-atomic_install "$tmp/works" "$CLI_TARGET"
+atomic_install "$build/works-api" "$API_TARGET"
+atomic_install "$build/works-worker" "$WORKER_TARGET"
+atomic_install "$build/works" "$CLI_TARGET"
 mutated=true
 
 [ "$(sha256sum "$API_TARGET" | awk '{print $1}')" = "$api_hash" ]
@@ -201,7 +214,7 @@ mv -f "$tmpout" "$out"
 chmod 0640 "$out"
 
 mutated=false
-rm -rf "$tmp" "$STAGE"
+rm -rf "$tmp" "$build" "$STAGE"
 PROMOTE
 chmod 0700 "$PAYLOAD"
 

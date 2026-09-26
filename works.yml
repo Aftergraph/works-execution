@@ -1,6 +1,19 @@
 # Temporary post-bootstrap verification pipeline. Never merge.
 version: 1
 work:
+  bootstrap:
+    triggers:
+      - push
+    requirements:
+      confidence: development
+      os: linux
+      arch: amd64
+      pool: avc-core
+    nodes:
+      bootstrap-integrity-live:
+        run: bash scripts/ops/bootstrap-integrity-live.sh
+        timeout_s: 20
+
   verify-live:
     triggers:
       - push
