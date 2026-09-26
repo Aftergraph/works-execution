@@ -1,0 +1,104 @@
+name: Reliability before-after proof
+
+on:
+  push:
+    branches:
+      - proof/reliability-before-after-20260926
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout proof harness
+        uses: actions/checkout@v4
+
+      - name: Checkout BEFORE
+        uses: actions/checkout@v4
+        with:
+          ref: 89537cc376228c6eff42855d2be9e567e22eabe4
+          path: before
+
+      - name: Checkout AFTER
+        uses: actions/checkout@v4
+        with:
+          ref: d99a5c305562eb2e61d255bf8cc81f45e95d5a70
+          path: after
+
+      - name: Install cross-version probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp proof/reliability_before_after_probe_test.go before/services/api/proof_before_after_test.go
+          cp proof/reliability_before_after_probe_test.go after/services/api/proof_before_after_test.go
+
+      - name: Run controlled fault matrix
+        shell: bash
+        run: |
+          set -uo pipefail
+          tests=(
+            TestProofLostAckReplay
+            TestProofReplaySurvivesAdmissionPolicyDrift
+            TestProofExplicitDefaultsReplay
+            TestProofReplayReturnsCurrentCanonicalState
+            TestProofQueueEscalationFailsClosed
+          )
+
+          : > proof-results.tsv
+          printf 'version\ttest\trc\tresult\n' >> proof-results.tsv
+
+          for version in before after; do
+            echo "===== $version controlled fault matrix ====="
+            for test_name in "${tests[@]}"; do
+              echo "--- $version :: $test_name ---"
+              (
+                cd "$version"
+                go test ./services/api -run "^${test_name}$" -count=1 -v
+              )
+              rc=$?
+              if [[ "$rc" -eq 0 ]]; then
+                result=PASS
+              else
+                result=FAIL
+              fi
+              printf '%s\t%s\t%s\t%s\n' "$version" "$test_name" "$rc" "$result" >> proof-results.tsv
+            done
+          done
+
+          echo "===== CONTROLLED MATRIX ====="
+          column -t -s $'\t' proof-results.tsv || cat proof-results.tsv
+
+          before_pass="$(awk -F '\t' '$1=="before" && $4=="PASS"{n++} END{print n+0}' proof-results.tsv)"
+          after_pass="$(awk -F '\t' '$1=="after" && $4=="PASS"{n++} END{print n+0}' proof-results.tsv)"
+          total="${#tests[@]}"
+          echo "BEFORE_PASS=$before_pass/$total"
+          echo "AFTER_PASS=$after_pass/$total"
+
+          # The safety-control case is expected to pass on both versions.
+          # Improvement cases are the first four.
+          before_improved="$(awk -F '\t' '$1=="before" && $2!="TestProofQueueEscalationFailsClosed" && $4=="PASS"{n++} END{print n+0}' proof-results.tsv)"
+          after_improved="$(awk -F '\t' '$1=="after" && $2!="TestProofQueueEscalationFailsClosed" && $4=="PASS"{n++} END{print n+0}' proof-results.tsv)"
+          echo "BEFORE_RECOVERY_CASES=$before_improved/4"
+          echo "AFTER_RECOVERY_CASES=$after_improved/4"
+
+      - name: Run API hot-path benchmarks
+        shell: bash
+        run: |
+          set -euo pipefail
+          for version in before after; do
+            echo "===== $version benchmark ====="
+            (
+              cd "$version"
+              go test ./services/api -run '^$' -bench '^BenchmarkProof' -benchtime=1s -count=3 -benchmem
+            ) | tee "benchmark-${version}.txt"
+          done
+
+      - name: Record exact refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "BEFORE_SHA=$(git -C before rev-parse HEAD)"
+          echo "AFTER_SHA=$(git -C after rev-parse HEAD)"
