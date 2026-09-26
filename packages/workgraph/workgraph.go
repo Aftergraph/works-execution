@@ -496,8 +496,9 @@ type Work struct {
 	// excluded from the wire contract; the API/store use them to prove that an
 	// idempotent replay matches the exact pre-admission creation intent and
 	// original queue decision.
-	CreationIntentHash string `json:"-"`
-	QueueRequested     *bool  `json:"-"`
+	CreationIntentHash   string `json:"-"`
+	AdmissionDefaultsJSON string `json:"-"`
+	QueueRequested       *bool  `json:"-"`
 
 	// k-mission-01 (ADR-0008): mission contract fields. Empty Mission ==
 	// legacy CI Work with frozen behavior.
