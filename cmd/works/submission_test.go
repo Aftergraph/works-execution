@@ -210,6 +210,16 @@ func TestSubmitWorkWithReconcile_APIRestartRenewsTokenAndKeepsIdentity(t *testin
 	}
 	oldToken := auth.token
 
+	// Model a replacement controller that persisted an explicit token and also
+	// has the enrollment challenge available as a renewal fallback.
+	auth, err = newCLIAuth(ts.URL, oldToken, secret)
+	if err != nil {
+		t.Fatalf("reconstruct explicit auth: %v", err)
+	}
+	if !auth.canRenew() {
+		t.Fatal("explicit token dropped enrollment renewal fallback")
+	}
+
 	// API restart semantics: the dev-mode issuer key rotates. The old token
 	// is now invalid, but the enrollment challenge remains available.
 	srv.Auth = api.NewHMACIssuer()
