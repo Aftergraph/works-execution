@@ -1,7 +1,7 @@
-# Temporary tmp-reclamation. Never merge.
+# Temporary one-shot bootstrap pipeline. Never merge.
 version: 1
 work:
-  diagnose:
+  bootstrap:
     triggers:
       - push
     requirements:
@@ -10,15 +10,6 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      diagnose:
-        run: |
-          set -u
-          echo '=== before ==='
-          df -h /tmp
-          echo '=== reclaiming stale go-build dirs (>2h old) ==='
-          find /tmp -maxdepth 1 -type d -name 'go-build*' -mmin +120 -print -exec rm -rf {} + 2>/dev/null | wc -l
-          echo '=== after ==='
-          df -h /tmp
-          echo '=== remaining go-build dirs ==='
-          find /tmp -maxdepth 1 -type d -name 'go-build*' | wc -l
-        timeout_s: 120
+      bootstrap-integrity-live:
+        run: bash scripts/ops/bootstrap-integrity-live.sh
+        timeout_s: 20

@@ -6,7 +6,7 @@ export GOPATH='/var/lib/works/gopath'
 export GOMODCACHE='/var/lib/works/gomodcache'
 export GOCACHE='/var/lib/works/gocache'
 
-TARGET_SHA='548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06'
+TARGET_SHA='89537cc376228c6eff42855d2be9e567e22eabe4'
 SHORT="$(printf '%s' "$TARGET_SHA" | cut -c1-12)"
 UNIT="aftergraph-works-bootstrap-$SHORT"
 STAGE="/run/$UNIT"
@@ -34,12 +34,13 @@ export GOPATH='/var/lib/works/gopath'
 export GOMODCACHE='/var/lib/works/gomodcache'
 export GOCACHE='/var/lib/works/gocache'
 
-TARGET_SHA='548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06'
+TARGET_SHA='89537cc376228c6eff42855d2be9e567e22eabe4'
 SHORT="$(printf '%s' "$TARGET_SHA" | cut -c1-12)"
 REMOTE='https://github.com/Aftergraph/works-execution.git'
 STAGE="/run/aftergraph-works-bootstrap-$SHORT"
 RECEIPT_DIR='/var/lib/works/deployments'
 BACKUP_DIR="$RECEIPT_DIR/backups/$TARGET_SHA"
+ENV_FILE='/etc/works/works.env'
 SMOKE_WORK_ID='wrk_3995b52a8e30d244dc83f6413bba0df2'
 API='http://127.0.0.1:18191'
 mutated=false
@@ -95,6 +96,16 @@ rollback() {
 trap rollback ERR
 
 sleep 3
+
+# Evidence producer key: provision once, never print. The works-api reads it
+# via EnvironmentFile and enables GET /v1/works/{id}/evidence. Without it the
+# Integrity Fabric smoke is 503 fail-closed by design.
+if [ -f "$ENV_FILE" ] && ! grep -q '^WORKS_EVIDENCE_HMAC_KEY=' "$ENV_FILE"; then
+  key="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  printf 'WORKS_EVIDENCE_HMAC_KEY=%s\n' "$key" >>"$ENV_FILE"
+  chmod 0640 "$ENV_FILE"
+  echo 'works-bootstrap: evidence hmac key provisioned'
+fi
 
 # Exact-main freshness gate immediately before any build/mutation.
 remote_main="$(git ls-remote "$REMOTE" refs/heads/main | awk 'NR==1{print $1}')"
