@@ -25,6 +25,13 @@ revision_of() {
     head -n 1
 }
 
+modified_of() {
+  local binary="$1"
+  go version -m "$binary" 2>/dev/null |
+    sed -n 's/^[[:space:]]*build[[:space:]]*vcs\.modified=//p' |
+    head -n 1
+}
+
 health_ok() {
   curl -fsS --max-time 2 "$BASE_URL/healthz" >/dev/null 2>&1
 }
@@ -93,6 +100,7 @@ trap cleanup EXIT
 CGO_ENABLED=0 go build -trimpath -o "$candidate" ./cmd/works-api
 candidate_revision="$(revision_of "$candidate")"
 [[ "$candidate_revision" == "$sha" ]] || fail "candidate_revision_mismatch:$candidate_revision"
+[[ "$(modified_of "$candidate")" == "false" ]] || fail "candidate_tree_modified"
 
 candidate_hash="$(sha256sum "$candidate" | awk '{print $1}')"
 [[ "$candidate_hash" =~ ^[0-9a-f]{64}$ ]] || fail "candidate_hash_invalid"
