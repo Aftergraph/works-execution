@@ -76,11 +76,11 @@ func TestPostWorkResilientRecoversLostAcknowledgement(t *testing.T) {
 	defer server.Close()
 
 	transport := &ciDropFirstResponseTransport{base: http.DefaultTransport}
-	oldTransport := http.DefaultTransport
-	http.DefaultTransport = transport
-	defer func() { http.DefaultTransport = oldTransport }()
-
-	auth := &apiAuth{api: server.URL, token: "token"}
+	auth := &apiAuth{
+		api:    server.URL,
+		token:  "token",
+		client: &http.Client{Transport: transport, Timeout: 2 * time.Second},
+	}
 	var out struct {
 		ID string `json:"id"`
 	}
