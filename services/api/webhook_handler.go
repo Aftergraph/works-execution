@@ -26,6 +26,7 @@ import (
 	"github.com/JonasAbde/works-execution/packages/pipeline"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/webhook"
+	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
 // WebhookConfig configures the webhook handler. Secret is the
@@ -153,7 +154,7 @@ func (s *Server) githubWebhookHandler(w http.ResponseWriter, r *http.Request) {
 	// the repo owns its pipeline (DAG, pool pinning, cache). When
 	// the repo has no works.yml (or no token is configured), fall
 	// back to the built-in single-node verify behavior.
-	workID := workgraph.NewID("wrk")
+	workID := "wrk_" + shaID("github-delivery:" + deliveryID)
 	g, err := s.workFromPipeline(r.Context(), delivery)
 	if err != nil {
 		if errors.Is(err, errPipelineSkip) {
@@ -187,8 +188,25 @@ func (s *Server) githubWebhookHandler(w http.ResponseWriter, r *http.Request) {
 	g.Source.Actor = r.Header.Get("X-GitHub-User")
 	g.CorrelationID = workgraph.NewID("cor")
 
-	// Persist the work.
+	deliveryKey := sha256.Sum256([]byte("github-delivery:" + deliveryID))
+	g.IdempotencyKey = "github-delivery-" + hex.EncodeToString(deliveryKey[:])
+	fingerprint := sha256.Sum256(append(append([]byte(event), 0), body...))
+	g.CreationIntentHash = hex.EncodeToString(fingerprint[:])
+	g.AdmissionDefaultsJSON = encodeAdmissionDefaults(currentAdmissionDefaults())
+	queueRequested := true
+	g.QueueRequested = &queueRequested
+
+	_, preexistingErr := s.Store.GetWork(r.Context(), workID)
+	wasPreexisting := preexistingErr == nil
+
 	if err := s.Store.CreateWork(r.Context(), g); err != nil {
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error":   "delivery_conflict",
+				"message": "delivery_id is already bound to different signed content",
+			})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error":   "create_work",
 			"message": err.Error(),
@@ -196,13 +214,22 @@ func (s *Server) githubWebhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the webhook delivery (idempotency record).
-	// Best-effort: a failure here would only break dedup for this
-	// one delivery; the Work itself is durable.
-	_ = s.Store.RecordWebhookDelivery(r.Context(), deliveryID, event, workID, string(body))
+	if err := s.Store.RecordWebhookDelivery(r.Context(), deliveryID, event, workID, string(body)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":   "record_delivery",
+			"message": err.Error(),
+		})
+		return
+	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"status":      "created",
+	statusCode := http.StatusCreated
+	status := "created"
+	if wasPreexisting {
+		statusCode = http.StatusOK
+		status = "recovered"
+	}
+	writeJSON(w, statusCode, map[string]any{
+		"status":      status,
 		"work_id":     workID,
 		"repository":  delivery.RepoFullName,
 		"sha":         delivery.SHA,
