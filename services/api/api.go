@@ -423,12 +423,12 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if existing != nil {
-			if !sameWorkCreationIdentity(existing, &requestIntent) {
+			if !replayMatchesDurableIntent(existing, &requestIntent, body.Queue) {
 				writeError(w, http.StatusConflict, "idempotency_conflict",
 					"idempotency_key already bound to different work creation intent")
 				return
 			}
-			existing, err = s.reconcileReplayQueue(r.Context(), existing, body.Queue)
+			existing, err = s.reconcileReplayQueue(r.Context(), existing)
 			if err != nil {
 				s.logf("idempotent replay queue reconciliation failed: %v", err)
 				writeError(w, http.StatusInternalServerError, "queue_reconcile_failed", err.Error())
@@ -454,12 +454,17 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "admission_rejected", manifest.FormatError(err))
 		return
 	}
+	if requestIntent.IdempotencyKey != "" {
+		wIn.CreationIntentHash = rawCreationIntentHash(&requestIntent)
+		queueRequested := body.Queue
+		wIn.QueueRequested = &queueRequested
+	}
 
 	if err := s.Store.CreateWork(r.Context(), &wIn); err != nil {
 		if errors.Is(err, store.ErrIdempotencyConflict) {
 			existing, lookupErr := s.lookupIdempotentWork(r.Context(), requestIntent.IdempotencyKey)
-			if lookupErr == nil && existing != nil && sameWorkCreationIdentity(existing, &requestIntent) {
-				existing, queueErr := s.reconcileReplayQueue(r.Context(), existing, body.Queue)
+			if lookupErr == nil && existing != nil && replayMatchesDurableIntent(existing, &requestIntent, body.Queue) {
+				existing, queueErr := s.reconcileReplayQueue(r.Context(), existing)
 				if queueErr != nil {
 					s.logf("concurrent idempotent queue reconciliation failed: %v", queueErr)
 					writeError(w, http.StatusInternalServerError, "queue_reconcile_failed", queueErr.Error())
@@ -489,13 +494,13 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "idempotency_lookup_failed", "failed to read canonical accepted work")
 			return
 		}
-		if !sameWorkCreationIdentity(canonical, &requestIntent) {
+		if !replayMatchesDurableIntent(canonical, &requestIntent, body.Queue) {
 			writeError(w, http.StatusConflict, "idempotency_conflict",
 				"idempotency_key already bound to different work creation intent")
 			return
 		}
 		if body.Queue {
-			canonical, lookupErr = s.reconcileReplayQueue(r.Context(), canonical, true)
+			canonical, lookupErr = s.reconcileReplayQueue(r.Context(), canonical)
 			if lookupErr != nil {
 				s.logf("auto-queue reconciliation failed: %v", lookupErr)
 				writeError(w, http.StatusInternalServerError, "queue_reconcile_failed", lookupErr.Error())
