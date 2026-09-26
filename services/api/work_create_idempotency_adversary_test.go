@@ -209,3 +209,56 @@ func TestCreateWork_ConcurrentSameIDChangedIntentCannotReturnUnstoredPayload(t *
 		t.Fatalf("same-ID race persisted %d works want 1", len(works))
 	}
 }
+
+
+func TestCreateWork_NestedAdmissionDefaultsAreSameIntent(t *testing.T) {
+	_, ts, _ := newTestServer(t)
+	key := "idem-nested-defaults"
+
+	bodyFor := func(id string, explicitDefaults bool) []byte {
+		node := map[string]any{
+			"id": "run",
+			"run": "echo nested-defaults",
+			"retries": map[string]any{"max_attempts": 3},
+			"cache_spec": map[string]any{"enabled": true},
+		}
+		if explicitDefaults {
+			node["retries"] = map[string]any{
+				"max_attempts": 3,
+				"backoff": "exponential",
+			}
+			node["cache_spec"] = map[string]any{
+				"enabled": true,
+				"scope": "organization",
+			}
+		}
+		body := map[string]any{
+			"id": id,
+			"idempotency_key": key,
+			"queue": true,
+			"source": map[string]any{"type": "controller", "repository": "Aftergraph/reliability"},
+			"objective": map[string]any{"type": "verify_change"},
+			"graph": map[string]any{"nodes": map[string]any{"run": node}},
+			"requirements": map[string]any{"os": "linux"},
+			"policy": map[string]any{},
+		}
+		raw, _ := json.Marshal(body)
+		return raw
+	}
+
+	firstResp, firstRaw := postWorkRaw(t, ts.URL, bodyFor("wrk_nested_a", false))
+	if firstResp.StatusCode != http.StatusCreated {
+		t.Fatalf("first submit: status=%d body=%s", firstResp.StatusCode, string(firstRaw))
+	}
+	first := decodeCreatedWork(t, firstRaw)
+
+	replayResp, replayRaw := postWorkRaw(t, ts.URL, bodyFor("wrk_nested_b", true))
+	if replayResp.StatusCode != http.StatusOK {
+		t.Fatalf("nested-default replay conflicted: status=%d body=%s",
+			replayResp.StatusCode, string(replayRaw))
+	}
+	replayed := decodeCreatedWork(t, replayRaw)
+	if replayed.ID != first.ID {
+		t.Fatalf("nested-default replay changed canonical id: first=%s replay=%s", first.ID, replayed.ID)
+	}
+}
