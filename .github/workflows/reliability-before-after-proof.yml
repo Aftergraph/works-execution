@@ -54,11 +54,14 @@ jobs:
             echo "===== $version controlled fault matrix ====="
             for test_name in "${tests[@]}"; do
               echo "--- $version :: $test_name ---"
-              (
+              if (
                 cd "$version"
                 go test ./services/api -run "^${test_name}$" -count=1 -v
-              )
-              rc=$?
+              ); then
+                rc=0
+              else
+                rc=$?
+              fi
               if [[ "$rc" -eq 0 ]]; then
                 result=PASS
               else
