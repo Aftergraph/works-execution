@@ -25,7 +25,7 @@ type submitResult struct {
 // Without an idempotency key an ambiguous POST is never retried, because a
 // retry could create a second Work. With a stable key, bounded retries are
 // safe: the API reconciles the key back to the canonical accepted Work.
-func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byte, idempotencyKey string) (submitResult, error) {
+func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byte, idempotencyKey string, auth *cliAuth) (submitResult, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -33,11 +33,27 @@ func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byt
 	maxAttempts := 1
 	if idempotencyKey != "" {
 		maxAttempts = maxIdempotentSubmitAttempts
+	} else if auth != nil && auth.canRenew() {
+		// A definitive 401 is safe to retry after re-enrollment even without
+		// an idempotency key because the auth middleware has not invoked the
+		// mutating handler.
+		maxAttempts = 2
 	}
 
 	var lastErr error
+	renewedAuth := false
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		resp, err := client.Post(endpoint, "application/json", bytes.NewReader(payload))
+		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return submitResult{}, fmt.Errorf("build submit request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if auth != nil {
+			if h := auth.authHeader(); h != "" {
+				req.Header.Set("Authorization", h)
+			}
+		}
+		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
 			if attempt < maxAttempts {
@@ -67,6 +83,18 @@ func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byt
 			Body:       raw,
 			Replay:     resp.Header.Get("X-Works-Idempotent-Replay") == "true",
 			Attempts:   attempt,
+		}
+
+		// WORKS returns 401 before invoking the mutating handler. If this CLI
+		// was enrolled with a shared challenge, refresh exactly once and retry.
+		// This specifically recovers the expected API-restart case where the
+		// process-local HMAC issuer rotated and invalidated the old JWT.
+		if resp.StatusCode == http.StatusUnauthorized && auth != nil && auth.canRenew() && !renewedAuth && attempt < maxAttempts {
+			if err := auth.renew(); err != nil {
+				return result, fmt.Errorf("renew auth after 401: %w", err)
+			}
+			renewedAuth = true
+			continue
 		}
 
 		// A stable idempotency key makes transient server/gateway failures safe
