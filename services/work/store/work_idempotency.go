@@ -20,14 +20,27 @@ func (s *SQLiteStore) GetWorkByIdempotencyKey(ctx context.Context, key string) (
 	}
 
 	var id string
+	var intentHash sql.NullString
+	var queueRequested sql.NullInt64
 	err := s.readQueryRow(ctx,
-		`SELECT id FROM works WHERE idempotency_key = ?`, key,
-	).Scan(&id)
+		`SELECT id, creation_intent_hash, queue_requested FROM works WHERE idempotency_key = ?`, key,
+	).Scan(&id, &intentHash, &queueRequested)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return s.GetWork(ctx, id)
+	w, err := s.GetWork(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if intentHash.Valid {
+		w.CreationIntentHash = intentHash.String
+	}
+	if queueRequested.Valid {
+		v := queueRequested.Int64 != 0
+		w.QueueRequested = &v
+	}
+	return w, nil
 }
