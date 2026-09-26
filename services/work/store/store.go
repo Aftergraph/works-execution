@@ -45,7 +45,7 @@ import (
 // v12 (platform convergence V2.1): immutable work_execution_contexts bindings.
 // v13 (RFC-0008): dispatch_acceptances — durable Runtime -> WORKS acceptance
 // state, including exactly-once effect identity and verification state.
-const SchemaVersion = 13
+const SchemaVersion = 14
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -248,7 +248,9 @@ CREATE TABLE IF NOT EXISTS works (
     requirements_json TEXT NOT NULL,
     policy_json     TEXT NOT NULL,
     idempotency_key TEXT UNIQUE,
-    correlation_id  TEXT
+    correlation_id  TEXT,
+    creation_intent_hash TEXT,
+    queue_requested INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS work_attempts (
@@ -490,8 +492,47 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateDispatchAcceptance(); err != nil {
 		return fmt.Errorf("migrate dispatch acceptance: %w", err)
 	}
+	// Migration v13 -> v14: persist the pre-admission creation-intent hash
+	// and original queue decision. Existing rows remain NULL and therefore
+	// use fail-closed legacy replay semantics.
+	if err := s.migrateCreationIntentMetadata(); err != nil {
+		return fmt.Errorf("migrate creation intent metadata: %w", err)
+	}
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateCreationIntentMetadata() error {
+	cols := map[string]bool{}
+	rows, err := s.db.Query(`PRAGMA table_info(works)`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notNull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		cols[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if !cols["creation_intent_hash"] {
+		if _, err := s.db.Exec(`ALTER TABLE works ADD COLUMN creation_intent_hash TEXT`); err != nil {
+			return err
+		}
+	}
+	if !cols["queue_requested"] {
+		if _, err := s.db.Exec(`ALTER TABLE works ADD COLUMN queue_requested INTEGER`); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -653,18 +694,28 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 	}
 	defer tx.Rollback()
 
-	// Idempotency check: if a key is set and a work with the same key exists,
-	// return ErrIdempotencyConflict.
+	// Idempotency check. When v14 creation metadata is present, same-ID is
+	// idempotent only when the exact pre-admission intent hash and original
+	// queue decision also match.
 	if w.IdempotencyKey != "" {
 		var existingID string
+		var existingHash sql.NullString
+		var existingQueue sql.NullInt64
 		err := tx.QueryRowContext(ctx,
-			`SELECT id FROM works WHERE idempotency_key = ?`, w.IdempotencyKey,
-		).Scan(&existingID)
+			`SELECT id, creation_intent_hash, queue_requested FROM works WHERE idempotency_key = ?`, w.IdempotencyKey,
+		).Scan(&existingID, &existingHash, &existingQueue)
 		if err == nil {
-			if existingID == w.ID {
-				return tx.Commit() // same payload, idempotent success
+			if existingID != w.ID {
+				return ErrIdempotencyConflict
 			}
-			return ErrIdempotencyConflict
+			if w.CreationIntentHash != "" {
+				if !existingHash.Valid || existingHash.String != w.CreationIntentHash ||
+					w.QueueRequested == nil || !existingQueue.Valid ||
+					(existingQueue.Int64 != 0) != *w.QueueRequested {
+					return ErrIdempotencyConflict
+				}
+			}
+			return tx.Commit()
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -672,8 +723,8 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 	}
 
 	_, err = tx.ExecContext(ctx, `
-        INSERT INTO works (id, created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, mission_json, idempotency_key, correlation_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO works (id, created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, mission_json, idempotency_key, correlation_id, creation_intent_hash, queue_requested)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
 		w.ID,
 		w.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -687,6 +738,8 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 		missionJSON(w),
 		nullable(w.IdempotencyKey),
 		nullable(w.CorrelationID),
+		nullable(w.CreationIntentHash),
+		nullableBool(w.QueueRequested),
 	)
 	if err != nil {
 		return fmt.Errorf("insert work: %w", err)
@@ -1444,6 +1497,16 @@ func nullable(s string) any {
 		return nil
 	}
 	return s
+}
+
+func nullableBool(v *bool) any {
+	if v == nil {
+		return nil
+	}
+	if *v {
+		return 1
+	}
+	return 0
 }
 
 func nullableTime(t time.Time) any {
