@@ -1,4 +1,4 @@
-# Temporary promotion diagnostic. Never merge.
+# Temporary deploy-window diagnostic. Never merge.
 version: 1
 work:
   diagnose:
@@ -13,22 +13,42 @@ work:
       diagnose:
         run: |
           set -u
-          echo '=== receipt ==='
-          cat /var/lib/works/deployments/works-bootstrap-548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06.json 2>&1 || true
-          echo '=== unit journal since 22:36 CEST ==='
-          journalctl -u aftergraph-works-bootstrap-548c03bd2f77.service \
-            --since '2026-09-25 22:36:00 CEST' --no-pager -n 400 2>&1 | tail -n 300
-          echo '=== current binaries ==='
-          for p in /root/works-venture/bin/works-api /root/works-venture/bin/works-worker /root/works-venture/bin/works; do
-            echo "--- $p ---"
-            go version -m "$p" 2>&1 | grep -E 'path|vcs.revision|vcs.modified' || true
-            sha256sum "$p" 2>&1 || true
+          echo '=== works created 2026-09-25T20:35Z-20:55Z ==='
+          python3 - <<'PY'
+          import sqlite3, json
+          con=sqlite3.connect('file:/var/lib/works/works.db?mode=ro',uri=True)
+          con.row_factory=sqlite3.Row
+          rows=con.execute(
+              "select id,state,created_at,updated_at,source_json from works "
+              "where created_at between '2026-09-25T20:35:00' and '2026-09-25T20:55:00' "
+              "order by created_at").fetchall()
+          for row in rows:
+              d=dict(row)
+              s=json.loads(d.get('source_json') or '{}')
+              print('WORK='+json.dumps({'id':d['id'],'state':d['state'],'created_at':d['created_at'],'updated_at':d['updated_at'],'branch':s.get('branch'),'ref':s.get('ref'),'sha':s.get('sha')},sort_keys=True))
+          for wid in [r['id'] for r in rows]:
+              for a in con.execute("select node_id,status,exit_code,worker_id,started_at,finished_at,error from work_attempts where work_id=? order by rowid",(wid,)):
+                  d=dict(a)
+                  if d.get('error'): d['error']=str(d['error'])[-1500:]
+                  print('ATTEMPT='+json.dumps(d,sort_keys=True,default=str))
+          con.close()
+          PY
+          echo '=== ALL receipts in /var/lib/works/deployments ==='
+          ls -la /var/lib/works/deployments/ 2>&1 || true
+          for f in /var/lib/works/deployments/*.json; do
+            [ -f "$f" ] || continue
+            echo "--- $f ---"
+            cat "$f"
           done
-          echo '=== service start times + who restarted at 22:47 ==='
-          for s in works-api works-worker works-worker-2 works-worker-3; do
-            echo "$s=$(systemctl show "$s.service" -p ExecMainStartTimestamp --value 2>/dev/null)"
-          done
-          journalctl -u works-api.service --since '2026-09-25 22:40:00 CEST' --until '2026-09-25 22:50:00 CEST' --no-pager -n 60 2>&1 || true
-          echo '=== backups dir ==='
+          echo '=== backups ==='
           find /var/lib/works/deployments/backups -maxdepth 2 -printf '%M %U:%G %p %s bytes\n' 2>/dev/null || true
-        timeout_s: 30
+          echo '=== works-api journal 22:40-22:52 CEST full ==='
+          journalctl -u works-api.service --since '2026-09-25 22:40:00 CEST' --until '2026-09-25 22:52:00 CEST' --no-pager 2>&1 | grep -vE 'runner registered|reaper' | tail -n 80
+          echo '=== works-worker journal 22:40-22:52 CEST ==='
+          journalctl -u works-worker.service --since '2026-09-25 22:40:00 CEST' --until '2026-09-25 22:52:00 CEST' --no-pager -n 40 2>&1 | tail -n 25
+          echo '=== unit files ==='
+          systemctl cat works-api.service 2>&1 | sed -E 's/(TOKEN|SECRET|KEY)=[^ ]+/\1=[REDACTED]/g'
+          echo '=== worker binary ==='
+          go version -m /root/works-venture/bin/works-worker 2>&1 | grep -E 'path|vcs' || true
+          sha256sum /root/works-venture/bin/works-worker
+        timeout_s: 40
