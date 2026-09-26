@@ -46,6 +46,13 @@ type creationIntent struct {
 	Mission      *workgraph.MissionContract
 }
 
+func cloneWorkCreationRequest(w workgraph.Work) workgraph.Work {
+	raw, _ := json.Marshal(w)
+	var out workgraph.Work
+	_ = json.Unmarshal(raw, &out)
+	return out
+}
+
 type admissionDefaultsSnapshot struct {
 	TimeoutSeconds     int      `json:"timeout_seconds"`
 	RetryMaxAttempts   int      `json:"retry_max_attempts"`
