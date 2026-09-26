@@ -170,6 +170,35 @@ Track at least:
 - `resume_success_rate`
 - `duplicate_attempt_rate`
 - `duplicate_effect_rate`
+
+### Production telemetry v1
+
+`works-api` now mounts both:
+
+- `GET /metrics` — fast Prometheus counters/histogram for replay requests,
+  recovered replays, conflicts, failures, queue repairs and replay duration.
+- `GET /v1/reliability?hours=24` — bearer-protected, restart-stable report
+  derived from durable `work_audit_events`.
+
+Prometheus derivations:
+
+```promql
+# successful canonical reconciliation among observed replay outcomes
+rate(works_reliability_replay_recovered_total[1h])
+/
+rate(works_reliability_replay_requests_total[1h])
+
+# conflicts among observed replay outcomes
+rate(works_reliability_replay_conflicts_total[1h])
+/
+rate(works_reliability_replay_requests_total[1h])
+```
+
+The durable endpoint is the source for longitudinal experiments across API
+restarts. Do not label the generic replay-success ratio as
+`controller_loss_survival_rate` unless the controller explicitly identifies
+the replay as controller-loss recovery; generic idempotent replays can also be
+intentional retries.
 - `unrecovered_failure_rate`
 - `mean_time_to_reconcile`
 

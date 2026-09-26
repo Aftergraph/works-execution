@@ -64,6 +64,10 @@ type Server struct {
 	// pull-class metrics (queue depth, process runtime). Ignored when
 	// Metrics is nil.
 	MetricsCollector *observability.Collector
+	// Reliability joins Prometheus counters with durable replay audit events.
+	// Nil keeps the historical behavior and is suitable for unit tests that
+	// do not exercise the production telemetry surface.
+	Reliability *ReliabilityTelemetry
 	// Policy is the OPA Rego policy engine evaluated BEFORE every state-
 	// mutating action (slice 4 / k-impl-011). When nil, the engine falls
 	// back to a permissive default that denies nothing (legacy behavior).
@@ -230,6 +234,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /v1/runners/{id}/abi/negotiate", s.requireBearer(http.HandlerFunc(s.negotiateRunnerABI))) // negotiate caps (k-061 bearer read, fail-closed)
 	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler)))                    // GET = CloudEvents audit stream
 	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                                   // GET = DORA metrics
+	mux.Handle("/v1/reliability", s.requireBearer(http.HandlerFunc(s.reliabilityHandler)))                        // GET = durable replay reliability report
 	mux.HandleFunc("/healthz", s.healthz)
 	// M1 (k-impl-018): GitHub webhook receiver. Unauthenticated by
 	// design — HMAC signature is the security boundary. Operators
@@ -397,6 +402,7 @@ func (s *Server) worksHandler(w http.ResponseWriter, r *http.Request) {
 // transitioned CREATED -> QUEUED so workers can pick it up. Otherwise it
 // stays in CREATED until an explicit /queue call.
 func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
+	requestStarted := time.Now()
 	type createBody struct {
 		workgraph.Work
 		Queue bool `json:"queue,omitempty"`
@@ -427,16 +433,21 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 		}
 		if existing != nil {
 			if !replayMatchesDurableIntent(existing, &requestIntent, body.Queue) {
+				s.recordReliabilityReplay(r.Context(), existing, "conflict", "intent_or_queue_mismatch", false, requestStarted)
 				writeError(w, http.StatusConflict, "idempotency_conflict",
 					"idempotency_key already bound to different work creation intent")
 				return
 			}
+			beforeState := existing.State
 			existing, err = s.reconcileReplayQueue(r.Context(), existing)
 			if err != nil {
+				s.recordReliabilityReplay(r.Context(), existing, "failure", "queue_reconcile_failed", false, requestStarted)
 				s.logf("idempotent replay queue reconciliation failed: %v", err)
 				writeError(w, http.StatusInternalServerError, "queue_reconcile_failed", err.Error())
 				return
 			}
+			queueRepaired := beforeState == workgraph.StateCreated && existing.State == workgraph.StateQueued
+			s.recordReliabilityReplay(r.Context(), existing, "recovered", "canonical_replay", queueRepaired, requestStarted)
 			writeIdempotentReplay(w, existing)
 			return
 		}
@@ -468,15 +479,20 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrIdempotencyConflict) {
 			existing, lookupErr := s.lookupIdempotentWork(r.Context(), requestIntent.IdempotencyKey)
 			if lookupErr == nil && existing != nil && replayMatchesAcceptedHash(existing, requestIntentHash, body.Queue) {
+				beforeState := existing.State
 				existing, queueErr := s.reconcileReplayQueue(r.Context(), existing)
 				if queueErr != nil {
+					s.recordReliabilityReplay(r.Context(), existing, "failure", "concurrent_queue_reconcile_failed", false, requestStarted)
 					s.logf("concurrent idempotent queue reconciliation failed: %v", queueErr)
 					writeError(w, http.StatusInternalServerError, "queue_reconcile_failed", queueErr.Error())
 					return
 				}
+				queueRepaired := beforeState == workgraph.StateCreated && existing.State == workgraph.StateQueued
+				s.recordReliabilityReplay(r.Context(), existing, "recovered", "concurrent_create_replay", queueRepaired, requestStarted)
 				writeIdempotentReplay(w, existing)
 				return
 			}
+			s.recordReliabilityReplay(r.Context(), existing, "conflict", "concurrent_intent_mismatch", false, requestStarted)
 			writeError(w, http.StatusConflict, "idempotency_conflict", err.Error())
 			return
 		}
@@ -499,6 +515,7 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !replayMatchesAcceptedHash(canonical, requestIntentHash, body.Queue) {
+			s.recordReliabilityReplay(r.Context(), canonical, "conflict", "post_create_canonical_mismatch", false, requestStarted)
 			writeError(w, http.StatusConflict, "idempotency_conflict",
 				"idempotency_key already bound to different work creation intent")
 			return

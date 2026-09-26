@@ -18,7 +18,9 @@ import (
 	"github.com/JonasAbde/works-execution/internal/dispatch"
 	"github.com/JonasAbde/works-execution/packages/cache"
 	"github.com/JonasAbde/works-execution/services/api"
+	"github.com/JonasAbde/works-execution/services/audit"
 	"github.com/JonasAbde/works-execution/services/evidence"
+	"github.com/JonasAbde/works-execution/services/observability"
 	"github.com/JonasAbde/works-execution/services/publisher"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
@@ -48,6 +50,12 @@ func main() {
 	}
 	defer st.Close()
 
+	metricsRegistry := observability.NewRegistry()
+	packMetrics := observability.NewPackMetrics(metricsRegistry)
+	metricsCollector := observability.NewCollector(st, packMetrics, logger)
+	reliabilityMetrics := observability.NewReliabilityMetrics(metricsRegistry)
+	reliabilityAudit := audit.NewSQLiteEmitter(st.DB(), logger)
+
 	// RFC-0005: content-addressed cache shares the works database.
 	// The cache package owns its table; failures to open it disable
 	// caching but must not take down the control plane.
@@ -73,13 +81,20 @@ func main() {
 	}
 
 	srv := &api.Server{
-		Store:        st,
-		Logger:       logger,
-		ArtifactsDir: envOr("WORKS_ARTIFACTS", ""),
-		EnrollSecret: *enrollSecret,
-		Policy:       policyEngine,
-		AuthEnabled:  true,
+		Store:            st,
+		Logger:           logger,
+		ArtifactsDir:     envOr("WORKS_ARTIFACTS", ""),
+		EnrollSecret:     *enrollSecret,
+		Policy:           policyEngine,
+		AuthEnabled:      true,
+		Metrics:          metricsRegistry,
+		MetricsCollector: metricsCollector,
+		Reliability: &api.ReliabilityTelemetry{
+			Metrics: reliabilityMetrics,
+			Audit:   reliabilityAudit,
+		},
 	}
+	logger.Printf("observability enabled (/metrics, /v1/reliability)")
 	if *webhookSecret != "" {
 		srv.WebhookConfig = &api.WebhookConfig{
 			Secret:           *webhookSecret,
