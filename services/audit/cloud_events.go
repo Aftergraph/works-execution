@@ -99,6 +99,8 @@ type ReliabilityReplayData struct {
 	WorkID          string  `json:"work_id,omitempty"`
 	Outcome         string  `json:"outcome"` // recovered | conflict | failure
 	Reason          string  `json:"reason,omitempty"`
+	RecoveryCause   string  `json:"recovery_cause,omitempty"`
+	CauseSource     string  `json:"cause_source,omitempty"` // authenticated_client | inferred_cli
 	State           string  `json:"state,omitempty"`
 	QueueRepaired   bool    `json:"queue_repaired,omitempty"`
 	DurableMetadata bool    `json:"durable_metadata,omitempty"`
