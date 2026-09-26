@@ -1,7 +1,7 @@
-# Temporary post-bootstrap verification pipeline. Never merge.
+# Temporary promotion diagnostic. Never merge.
 version: 1
 work:
-  verify-live:
+  diagnose:
     triggers:
       - push
     requirements:
@@ -10,39 +10,25 @@ work:
       arch: amd64
       pool: avc-core
     nodes:
-      verify-live-integrity:
+      diagnose:
         run: |
-          set -euo pipefail
-          TARGET_SHA=548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06
-          receipt=/var/lib/works/deployments/works-bootstrap-$TARGET_SHA.json
+          set -u
           echo '=== receipt ==='
-          test -f "$receipt"
-          cat "$receipt"
-          grep -Fq '"state":"VERIFIED"' "$receipt"
-          grep -Fq '"target_sha":"548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06"' "$receipt"
-          echo '=== exact binary revisions ==='
+          cat /var/lib/works/deployments/works-bootstrap-548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06.json 2>&1 || true
+          echo '=== unit journal since 22:36 CEST ==='
+          journalctl -u aftergraph-works-bootstrap-548c03bd2f77.service \
+            --since '2026-09-25 22:36:00 CEST' --no-pager -n 400 2>&1 | tail -n 300
+          echo '=== current binaries ==='
           for p in /root/works-venture/bin/works-api /root/works-venture/bin/works-worker /root/works-venture/bin/works; do
             echo "--- $p ---"
-            go version -m "$p" | tee /tmp/meta
-            grep -Fq 'vcs.revision=548c03bd2f77dd55c60c58bbd617f6f1a3fd7a06' /tmp/meta
-            grep -Fq 'vcs.modified=false' /tmp/meta
+            go version -m "$p" 2>&1 | grep -E 'path|vcs.revision|vcs.modified' || true
+            sha256sum "$p" 2>&1 || true
           done
-          echo '=== running process digests ==='
-          api_pid=$(systemctl show works-api.service -p MainPID --value)
-          worker_pid=$(systemctl show works-worker.service -p MainPID --value)
-          sha256sum /proc/$api_pid/exe /root/works-venture/bin/works-api
-          sha256sum /proc/$worker_pid/exe /root/works-venture/bin/works-worker
-          test "$(sha256sum /proc/$api_pid/exe | awk '{print $1}')" = "$(sha256sum /root/works-venture/bin/works-api | awk '{print $1}')"
-          test "$(sha256sum /proc/$worker_pid/exe | awk '{print $1}')" = "$(sha256sum /root/works-venture/bin/works-worker | awk '{print $1}')"
-          echo '=== health + runners ==='
-          curl -fsS http://127.0.0.1:18191/healthz
-          echo
-          WORKS_API=http://127.0.0.1:18191 /root/works-venture/bin/works runners
-          echo '=== Integrity Fabric smoke ==='
-          curl -fsS http://127.0.0.1:18191/v1/works/wrk_3995b52a8e30d244dc83f6413bba0df2/evidence > /tmp/evidence.json
-          grep -Fq '"canonicalization":"aftergraph-json-canonical/1"' /tmp/evidence.json
-          grep -Fq '"algorithm":"sha256"' /tmp/evidence.json
-          grep -Fq '"algorithm":"blake3"' /tmp/evidence.json
-          grep -Fq '"algorithm":"hmac-sha256-v1"' /tmp/evidence.json
-          echo 'LIVE_VERIFY=PASS'
-        timeout_s: 40
+          echo '=== service start times + who restarted at 22:47 ==='
+          for s in works-api works-worker works-worker-2 works-worker-3; do
+            echo "$s=$(systemctl show "$s.service" -p ExecMainStartTimestamp --value 2>/dev/null)"
+          done
+          journalctl -u works-api.service --since '2026-09-25 22:40:00 CEST' --until '2026-09-25 22:50:00 CEST' --no-pager -n 60 2>&1 || true
+          echo '=== backups dir ==='
+          find /var/lib/works/deployments/backups -maxdepth 2 -printf '%M %U:%G %p %s bytes\n' 2>/dev/null || true
+        timeout_s: 30
