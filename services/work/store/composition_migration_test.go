@@ -8,8 +8,8 @@ func TestComposedMigrationExecutionContextThenDispatchAcceptance(t *testing.T) {
 	if err := st.db.QueryRow(`SELECT version FROM schema_version ORDER BY version DESC LIMIT 1`).Scan(&got); err != nil {
 		t.Fatalf("schema_version read: %v", err)
 	}
-	if got != 13 || SchemaVersion != 13 {
-		t.Fatalf("composed schema must end at v13, got ledger=%d const=%d", got, SchemaVersion)
+	if got != 14 || SchemaVersion != 14 {
+		t.Fatalf("composed schema must end at v14, got ledger=%d const=%d", got, SchemaVersion)
 	}
 	for _, table := range []string{"work_execution_contexts", "dispatch_acceptances"} {
 		var name string
