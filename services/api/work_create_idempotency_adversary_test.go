@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"errors"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -17,12 +18,67 @@ import (
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
-func TestCreateWork_ReplayQueuesStrandedCreatedWork(t *testing.T) {
-	_, ts, _ := newTestServer(t)
+type failQueueOnceStore struct {
+	store.Store
+	fail bool
+}
+
+func (s *failQueueOnceStore) UpdateState(ctx context.Context, id string, to workgraph.State) (*workgraph.Work, error) {
+	if s.fail && to == workgraph.StateQueued {
+		s.fail = false
+		return nil, errors.New("simulated crash seam before queue transition")
+	}
+	return s.Store.UpdateState(ctx, id, to)
+}
+
+func TestCreateWork_ReplayRepairsProvenOriginalQueueIntent(t *testing.T) {
+	sqlite, err := store.Open(filepath.Join(t.TempDir(), "queue-repair.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlite.Close()
+
+	wrapped := &failQueueOnceStore{Store: sqlite, fail: true}
+	srv := &api.Server{Store: wrapped}
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
 	key := "idem-stranded-created"
+	body := idempotentCreateBody("wrk_stranded_a", key, "echo stranded", true)
+
+	// First submission persists Work + queue_requested=true, then the injected
+	// transition failure leaves canonical state CREATED.
+	firstResp, firstRaw := postWorkRaw(t, ts.URL, body)
+	if firstResp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("first submit: status=%d body=%s want 500", firstResp.StatusCode, string(firstRaw))
+	}
+	accepted, err := sqlite.GetWorkByIdempotencyKey(context.Background(), key)
+	if err != nil {
+		t.Fatalf("lookup accepted work: %v", err)
+	}
+	if accepted.State != workgraph.StateCreated || accepted.QueueRequested == nil || !*accepted.QueueRequested {
+		t.Fatalf("partial accept state=%s queue_requested=%v", accepted.State, accepted.QueueRequested)
+	}
+
+	replayResp, replayRaw := postWorkRaw(t, ts.URL, body)
+	if replayResp.StatusCode != http.StatusOK {
+		t.Fatalf("replay: status=%d body=%s", replayResp.StatusCode, string(replayRaw))
+	}
+	replayed := decodeCreatedWork(t, replayRaw)
+	if replayed.ID != accepted.ID {
+		t.Fatalf("canonical work changed: accepted=%s replay=%s", accepted.ID, replayed.ID)
+	}
+	if replayed.State != workgraph.StateQueued {
+		t.Fatalf("proven queue replay left work stranded: state=%s want QUEUED", replayed.State)
+	}
+}
+
+func TestCreateWork_ReplayCannotChangeOriginalQueueDecision(t *testing.T) {
+	_, ts, st := newTestServer(t)
+	key := "idem-queue-intent-mismatch"
 
 	firstResp, firstRaw := postWorkRaw(t, ts.URL,
-		idempotentCreateBody("wrk_stranded_a", key, "echo stranded", false))
+		idempotentCreateBody("wrk_queue_false", key, "echo queue-intent", false))
 	if firstResp.StatusCode != http.StatusCreated {
 		t.Fatalf("first submit: status=%d body=%s", firstResp.StatusCode, string(firstRaw))
 	}
@@ -32,16 +88,17 @@ func TestCreateWork_ReplayQueuesStrandedCreatedWork(t *testing.T) {
 	}
 
 	replayResp, replayRaw := postWorkRaw(t, ts.URL,
-		idempotentCreateBody("wrk_stranded_b", key, "echo stranded", true))
-	if replayResp.StatusCode != http.StatusOK {
-		t.Fatalf("replay: status=%d body=%s", replayResp.StatusCode, string(replayRaw))
+		idempotentCreateBody("wrk_queue_true", key, "echo queue-intent", true))
+	if replayResp.StatusCode != http.StatusConflict {
+		t.Fatalf("queue intent mutation: status=%d body=%s want 409", replayResp.StatusCode, string(replayRaw))
 	}
-	replayed := decodeCreatedWork(t, replayRaw)
-	if replayed.ID != first.ID {
-		t.Fatalf("canonical work changed: first=%s replay=%s", first.ID, replayed.ID)
+
+	canonical, err := st.GetWork(context.Background(), first.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if replayed.State != workgraph.StateQueued {
-		t.Fatalf("replay left work stranded: state=%s want QUEUED", replayed.State)
+	if canonical.State != workgraph.StateCreated {
+		t.Fatalf("mismatched replay launched work: state=%s want CREATED", canonical.State)
 	}
 }
 
