@@ -734,17 +734,39 @@ var workerPrivateEnv = map[string]struct{}{
 }
 
 func sanitizedWorkerProcessEnv(base []string) []string {
-	out := make([]string, 0, len(base))
+	out := make([]string, 0, len(base)+1)
+	tmpdirSeen := false
 	for _, entry := range base {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok {
-			if _, private := workerPrivateEnv[strings.ToUpper(key)]; private {
+			upper := strings.ToUpper(key)
+			if _, private := workerPrivateEnv[upper]; private {
 				continue
+			}
+			if upper == "TMPDIR" {
+				tmpdirSeen = true
+				entry = "TMPDIR=" + sandbox.WorkerScratchRoot
 			}
 		}
 		out = append(out, entry)
 	}
+	if !tmpdirSeen {
+		out = append(out, "TMPDIR="+sandbox.WorkerScratchRoot)
+	}
 	return out
+}
+
+func ensureWorkerScratch() error {
+	for _, dir := range []string{
+		sandbox.WorkerScratchRoot,
+		filepath.Join(sandbox.WorkerScratchRoot, "sandbox"),
+		"/var/lib/works/home",
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("worker scratch %s: %w", dir, err)
+		}
+	}
+	return nil
 }
 
 // execResult captures the outcome of running one node command.
@@ -800,9 +822,21 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 		cmd.Dir = workDir
 	}
 
+	if err := ensureWorkerScratch(); err != nil {
+		return execResult{
+			Status:      "failed",
+			ExitCode:    -1,
+			CombinedLog: []byte("worker scratch prepare failed: " + err.Error()),
+			Duration:    time.Since(start),
+		}
+	}
+
 	var prepared *sandbox.Prepared
 	if len(manifest) > 0 && manifest[0] != nil {
-		p, prepErr := sandbox.Prepare(cctx, command, env, *manifest[0])
+		p, prepErr := sandbox.Prepare(cctx, command, env, *manifest[0], sandbox.Options{
+			Root:         filepath.Join(sandbox.WorkerScratchRoot, "sandbox"),
+			ProbeNetwork: true,
+		})
 		if prepErr != nil {
 			return execResult{
 				Status:      "failed",
