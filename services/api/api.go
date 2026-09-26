@@ -406,41 +406,32 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	w_in := body.Work
-	if w_in.ID == "" {
-		w_in.ID = workgraph.NewID("wrk")
-	}
-	if w_in.State == "" {
-		w_in.State = workgraph.StateCreated
-	}
-	if err := w_in.Validate(); err != nil {
-		writeError(w, http.StatusBadRequest, "validation_failed", err.Error())
-		return
-	}
-	// Per-node capability admission. Rejects works whose nodes declare
-	// side effects or permissions outside the platform allow-list, and
-	// fills safe defaults for missing capability fields.
-	if err := manifest.ValidateAndEnrich(&w_in); err != nil {
-		writeError(w, http.StatusBadRequest, "admission_rejected", manifest.FormatError(err))
-		return
-	}
 
-	// Reconcile-before-create: a replacement controller may have lost the
-	// original 201 response after the Work was already durably accepted. A
-	// repeated idempotency key must recover that canonical Work instead of
-	// creating a second execution or forcing the caller to reconstruct state
-	// from session memory.
-	if w_in.IdempotencyKey != "" {
-		existing, err := s.lookupIdempotentWork(r.Context(), w_in.IdempotencyKey)
+	// Preserve the caller's immutable creation intent before server-generated
+	// identity/state and admission enrichment are applied. Reconciliation uses
+	// this projection, not mutable current admission policy.
+	requestIntent := body.Work
+
+	// Reconcile before structural validation/admission. An already-accepted
+	// Work is canonical state and must remain recoverable across a later
+	// deployment that changes admission rules or defaults.
+	if requestIntent.IdempotencyKey != "" {
+		existing, err := s.lookupIdempotentWork(r.Context(), requestIntent.IdempotencyKey)
 		if err != nil {
 			s.logf("idempotency lookup failed: %v", err)
 			writeError(w, http.StatusInternalServerError, "idempotency_lookup_failed", "failed to reconcile idempotency key")
 			return
 		}
 		if existing != nil {
-			if !sameWorkCreationIdentity(existing, &w_in) {
+			if !sameWorkCreationIdentity(existing, &requestIntent) {
 				writeError(w, http.StatusConflict, "idempotency_conflict",
 					"idempotency_key already bound to different work creation intent")
+				return
+			}
+			existing, err = s.reconcileReplayQueue(r.Context(), existing, body.Queue)
+			if err != nil {
+				s.logf("idempotent replay queue reconciliation failed: %v", err)
+				writeError(w, http.StatusInternalServerError, "queue_reconcile_failed", err.Error())
 				return
 			}
 			writeIdempotentReplay(w, existing)
@@ -448,14 +439,32 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.Store.CreateWork(r.Context(), &w_in); err != nil {
+	wIn := body.Work
+	if wIn.ID == "" {
+		wIn.ID = workgraph.NewID("wrk")
+	}
+	if wIn.State == "" {
+		wIn.State = workgraph.StateCreated
+	}
+	if err := wIn.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_failed", err.Error())
+		return
+	}
+	if err := manifest.ValidateAndEnrich(&wIn); err != nil {
+		writeError(w, http.StatusBadRequest, "admission_rejected", manifest.FormatError(err))
+		return
+	}
+
+	if err := s.Store.CreateWork(r.Context(), &wIn); err != nil {
 		if errors.Is(err, store.ErrIdempotencyConflict) {
-			// Close the concurrent-submit race: another controller may have won
-			// the unique idempotency key after our preflight lookup. Re-read the
-			// canonical Work and attach when the immutable creation intent is
-			// identical; otherwise fail closed.
-			existing, lookupErr := s.lookupIdempotentWork(r.Context(), w_in.IdempotencyKey)
-			if lookupErr == nil && existing != nil && sameWorkCreationIdentity(existing, &w_in) {
+			existing, lookupErr := s.lookupIdempotentWork(r.Context(), requestIntent.IdempotencyKey)
+			if lookupErr == nil && existing != nil && sameWorkCreationIdentity(existing, &requestIntent) {
+				existing, queueErr := s.reconcileReplayQueue(r.Context(), existing, body.Queue)
+				if queueErr != nil {
+					s.logf("concurrent idempotent queue reconciliation failed: %v", queueErr)
+					writeError(w, http.StatusInternalServerError, "queue_reconcile_failed", queueErr.Error())
+					return
+				}
 				writeIdempotentReplay(w, existing)
 				return
 			}
@@ -466,14 +475,48 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "create_failed", err.Error())
 		return
 	}
+
+	// A same-ID concurrent create can be reported as success by the legacy
+	// store idempotency path. Re-read canonical state after every idempotent
+	// create and compare against the original pre-admission intent so a
+	// conflicting loser can never return an unstored payload.
+	if requestIntent.IdempotencyKey != "" {
+		canonical, lookupErr := s.lookupIdempotentWork(r.Context(), requestIntent.IdempotencyKey)
+		if lookupErr != nil || canonical == nil {
+			if lookupErr != nil {
+				s.logf("post-create idempotency lookup failed: %v", lookupErr)
+			}
+			writeError(w, http.StatusInternalServerError, "idempotency_lookup_failed", "failed to read canonical accepted work")
+			return
+		}
+		if !sameWorkCreationIdentity(canonical, &requestIntent) {
+			writeError(w, http.StatusConflict, "idempotency_conflict",
+				"idempotency_key already bound to different work creation intent")
+			return
+		}
+		if body.Queue {
+			canonical, lookupErr = s.reconcileReplayQueue(r.Context(), canonical, true)
+			if lookupErr != nil {
+				s.logf("auto-queue reconciliation failed: %v", lookupErr)
+				writeError(w, http.StatusInternalServerError, "queue_reconcile_failed", lookupErr.Error())
+				return
+			}
+		}
+		// The canonical record may be the row this request inserted or a
+		// concurrent same-ID winner. Either way, return only persisted truth.
+		writeJSON(w, http.StatusCreated, canonical)
+		return
+	}
+
 	if body.Queue {
-		if _, err := s.Store.UpdateState(r.Context(), w_in.ID, workgraph.StateQueued); err != nil {
+		queued, err := s.Store.UpdateState(r.Context(), wIn.ID, workgraph.StateQueued)
+		if err != nil {
 			s.logf("auto-queue failed: %v", err)
 		} else {
-			w_in.State = workgraph.StateQueued
+			wIn = *queued
 		}
 	}
-	writeJSON(w, http.StatusCreated, &w_in)
+	writeJSON(w, http.StatusCreated, &wIn)
 }
 
 // listWorks handles GET /v1/works?limit=N.
