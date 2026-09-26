@@ -402,6 +402,7 @@ func (s *Server) worksHandler(w http.ResponseWriter, r *http.Request) {
 // transitioned CREATED -> QUEUED so workers can pick it up. Otherwise it
 // stays in CREATED until an explicit /queue call.
 func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
+	requestStarted := time.Now()
 	type createBody struct {
 		workgraph.Work
 		Queue bool `json:"queue,omitempty"`
@@ -432,16 +433,21 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 		}
 		if existing != nil {
 			if !replayMatchesDurableIntent(existing, &requestIntent, body.Queue) {
+				s.recordReliabilityReplay(r.Context(), existing, "conflict", "intent_or_queue_mismatch", false, requestStarted)
 				writeError(w, http.StatusConflict, "idempotency_conflict",
 					"idempotency_key already bound to different work creation intent")
 				return
 			}
+			beforeState := existing.State
 			existing, err = s.reconcileReplayQueue(r.Context(), existing)
 			if err != nil {
+				s.recordReliabilityReplay(r.Context(), existing, "failure", "queue_reconcile_failed", false, requestStarted)
 				s.logf("idempotent replay queue reconciliation failed: %v", err)
 				writeError(w, http.StatusInternalServerError, "queue_reconcile_failed", err.Error())
 				return
 			}
+			queueRepaired := beforeState == workgraph.StateCreated && existing.State == workgraph.StateQueued
+			s.recordReliabilityReplay(r.Context(), existing, "recovered", "canonical_replay", queueRepaired, requestStarted)
 			writeIdempotentReplay(w, existing)
 			return
 		}
@@ -473,15 +479,20 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrIdempotencyConflict) {
 			existing, lookupErr := s.lookupIdempotentWork(r.Context(), requestIntent.IdempotencyKey)
 			if lookupErr == nil && existing != nil && replayMatchesAcceptedHash(existing, requestIntentHash, body.Queue) {
+				beforeState := existing.State
 				existing, queueErr := s.reconcileReplayQueue(r.Context(), existing)
 				if queueErr != nil {
+					s.recordReliabilityReplay(r.Context(), existing, "failure", "concurrent_queue_reconcile_failed", false, requestStarted)
 					s.logf("concurrent idempotent queue reconciliation failed: %v", queueErr)
 					writeError(w, http.StatusInternalServerError, "queue_reconcile_failed", queueErr.Error())
 					return
 				}
+				queueRepaired := beforeState == workgraph.StateCreated && existing.State == workgraph.StateQueued
+				s.recordReliabilityReplay(r.Context(), existing, "recovered", "concurrent_create_replay", queueRepaired, requestStarted)
 				writeIdempotentReplay(w, existing)
 				return
 			}
+			s.recordReliabilityReplay(r.Context(), existing, "conflict", "concurrent_intent_mismatch", false, requestStarted)
 			writeError(w, http.StatusConflict, "idempotency_conflict", err.Error())
 			return
 		}
@@ -504,6 +515,7 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !replayMatchesAcceptedHash(canonical, requestIntentHash, body.Queue) {
+			s.recordReliabilityReplay(r.Context(), canonical, "conflict", "post_create_canonical_mismatch", false, requestStarted)
 			writeError(w, http.StatusConflict, "idempotency_conflict",
 				"idempotency_key already bound to different work creation intent")
 			return
