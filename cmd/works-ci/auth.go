@@ -25,6 +25,18 @@ type apiAuth struct {
 	api          string
 	token        string
 	enrollSecret string
+	client       *http.Client
+}
+
+func (a *apiAuth) httpClient(timeout time.Duration) *http.Client {
+	if a != nil && a.client != nil {
+		clone := *a.client
+		if clone.Timeout <= 0 {
+			clone.Timeout = timeout
+		}
+		return &clone
+	}
+	return &http.Client{Timeout: timeout}
 }
 
 func newAuthFor(api, enrollSecret string) (*apiAuth, error) {
@@ -115,7 +127,7 @@ func (a *apiAuth) postWorkResilient(path string, body any, idempotencyKey string
 			req.Header.Set(protocol.RecoveryCauseHeader, recoveryCause)
 		}
 
-		resp, err := (&http.Client{Timeout: ciSubmitTimeout}).Do(req)
+		resp, err := a.httpClient(ciSubmitTimeout).Do(req)
 		if err != nil {
 			lastErr = err
 			if recoveryCause == "" {
@@ -199,8 +211,7 @@ func (a *apiAuth) postJSON(path string, body any, out any) (*http.Response, erro
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.token)
-	c := &http.Client{Timeout: 15 * time.Second}
-	resp, err := c.Do(req)
+	resp, err := a.httpClient(15 * time.Second).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -223,8 +234,7 @@ func (a *apiAuth) getJSON(path string, out any) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+a.token)
-	c := &http.Client{Timeout: 15 * time.Second}
-	resp, err := c.Do(req)
+	resp, err := a.httpClient(15 * time.Second).Do(req)
 	if err != nil {
 		return nil, err
 	}
