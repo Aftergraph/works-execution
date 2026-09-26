@@ -71,6 +71,29 @@ Direct execution in an ephemeral Work container is acceptable for bounded
 inspection/bootstrap work. It is not the durable substrate for a long-running
 mission whose progress must survive a UI/session termination.
 
+
+## Submission ambiguity: lost acknowledgement
+
+The controller must mint and persist a stable idempotency key **before** the
+first submission. `POST /v1/works` now uses that key as a reconciliation
+handle:
+
+```text
+POST accepted by WORKS
+  -> response/connection lost
+  -> replacement controller retries same key + same immutable intent
+  -> 200 + X-Works-Idempotent-Replay:true
+  -> canonical existing work_id
+```
+
+A changed immutable Work intent under the same key returns `409
+idempotency_conflict`. The replay path never re-applies the convenience
+`queue:true` transition; it returns the Work's **current** canonical state.
+
+This closes the ambiguous-ack gap after server acceptance. It cannot recover a
+mission definition that existed only in volatile controller memory and never
+reached WORKS, so durable mission intent still has to exist before execution.
+
 ## Recovery rule
 
 After any controller/UI interruption:
