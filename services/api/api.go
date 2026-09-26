@@ -64,6 +64,10 @@ type Server struct {
 	// pull-class metrics (queue depth, process runtime). Ignored when
 	// Metrics is nil.
 	MetricsCollector *observability.Collector
+	// Reliability joins Prometheus counters with durable replay audit events.
+	// Nil keeps the historical behavior and is suitable for unit tests that
+	// do not exercise the production telemetry surface.
+	Reliability *ReliabilityTelemetry
 	// Policy is the OPA Rego policy engine evaluated BEFORE every state-
 	// mutating action (slice 4 / k-impl-011). When nil, the engine falls
 	// back to a permissive default that denies nothing (legacy behavior).
@@ -230,6 +234,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /v1/runners/{id}/abi/negotiate", s.requireBearer(http.HandlerFunc(s.negotiateRunnerABI))) // negotiate caps (k-061 bearer read, fail-closed)
 	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler)))                    // GET = CloudEvents audit stream
 	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                                   // GET = DORA metrics
+	mux.Handle("/v1/reliability", s.requireBearer(http.HandlerFunc(s.reliabilityHandler)))                        // GET = durable replay reliability report
 	mux.HandleFunc("/healthz", s.healthz)
 	// M1 (k-impl-018): GitHub webhook receiver. Unauthenticated by
 	// design — HMAC signature is the security boundary. Operators
