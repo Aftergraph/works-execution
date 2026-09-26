@@ -410,7 +410,10 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 	// Preserve the caller's immutable creation intent before server-generated
 	// identity/state and admission enrichment are applied. Reconciliation uses
 	// this projection, not mutable current admission policy.
-	requestIntent := body.Work
+	requestIntent := cloneWorkCreationRequest(body.Work)
+	acceptanceDefaults := currentAdmissionDefaults()
+	requestIntentHash := creationIntentHashWithDefaults(&requestIntent, acceptanceDefaults)
+	requestDefaultsJSON := encodeAdmissionDefaults(acceptanceDefaults)
 
 	// Reconcile before structural validation/admission. An already-accepted
 	// Work is canonical state and must remain recoverable across a later
@@ -455,7 +458,8 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if requestIntent.IdempotencyKey != "" {
-		wIn.CreationIntentHash = rawCreationIntentHash(&requestIntent)
+		wIn.CreationIntentHash = requestIntentHash
+		wIn.AdmissionDefaultsJSON = requestDefaultsJSON
 		queueRequested := body.Queue
 		wIn.QueueRequested = &queueRequested
 	}
@@ -463,7 +467,7 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 	if err := s.Store.CreateWork(r.Context(), &wIn); err != nil {
 		if errors.Is(err, store.ErrIdempotencyConflict) {
 			existing, lookupErr := s.lookupIdempotentWork(r.Context(), requestIntent.IdempotencyKey)
-			if lookupErr == nil && existing != nil && replayMatchesDurableIntent(existing, &requestIntent, body.Queue) {
+			if lookupErr == nil && existing != nil && replayMatchesAcceptedHash(existing, requestIntentHash, body.Queue) {
 				existing, queueErr := s.reconcileReplayQueue(r.Context(), existing)
 				if queueErr != nil {
 					s.logf("concurrent idempotent queue reconciliation failed: %v", queueErr)
@@ -494,7 +498,7 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "idempotency_lookup_failed", "failed to read canonical accepted work")
 			return
 		}
-		if !replayMatchesDurableIntent(canonical, &requestIntent, body.Queue) {
+		if !replayMatchesAcceptedHash(canonical, requestIntentHash, body.Queue) {
 			writeError(w, http.StatusConflict, "idempotency_conflict",
 				"idempotency_key already bound to different work creation intent")
 			return
