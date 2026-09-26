@@ -430,3 +430,88 @@ func TestSubmitWorkWithReconcile_AuthRenewalHasSeparateRetrySlot(t *testing.T) {
 		t.Fatalf("combined recovery created %d works want 1", len(works))
 	}
 }
+
+
+type captureRecoveryCauseTransport struct {
+	base   http.RoundTripper
+	calls  atomic.Int32
+	causes []string
+}
+
+func (t *captureRecoveryCauseTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.causes = append(t.causes, req.Header.Get(api.RecoveryCauseHeader))
+	n := t.calls.Add(1)
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	if n == 1 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		return nil, errors.New("simulated lost acknowledgement")
+	}
+	return resp, nil
+}
+
+func TestSubmitWorkWithReconcile_AutomaticallyAttributesAmbiguousTransport(t *testing.T) {
+	ts, _ := submissionTestServer(t)
+	transport := &captureRecoveryCauseTransport{base: http.DefaultTransport}
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+
+	result, err := submitWorkWithReconcile(
+		client,
+		ts.URL+"/v1/works",
+		submissionPayload(t, "idem-auto-cause"),
+		"idem-auto-cause",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !result.Replay || result.StatusCode != http.StatusOK {
+		t.Fatalf("result=%+v want canonical replay", result)
+	}
+	if len(transport.causes) != 2 {
+		t.Fatalf("captured causes=%v want 2 requests", transport.causes)
+	}
+	if transport.causes[0] != "" {
+		t.Fatalf("first request unexpectedly attributed cause=%q", transport.causes[0])
+	}
+	if transport.causes[1] != "ambiguous_transport" {
+		t.Fatalf("second cause=%q want ambiguous_transport", transport.causes[1])
+	}
+}
+
+func TestSubmitWorkWithReconcile_ExplicitControllerReconnectCause(t *testing.T) {
+	ts, _ := submissionTestServer(t)
+	var causes []string
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		causes = append(causes, req.Header.Get(api.RecoveryCauseHeader))
+		return http.DefaultTransport.RoundTrip(req)
+	})
+	client := &http.Client{Transport: base, Timeout: 2 * time.Second}
+
+	result, err := submitWorkWithReconcileCause(
+		client,
+		ts.URL+"/v1/works",
+		submissionPayload(t, "idem-controller-cause"),
+		"idem-controller-cause",
+		nil,
+		"controller_reconnect",
+	)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if result.StatusCode != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", result.StatusCode, string(result.Body))
+	}
+	if len(causes) != 1 || causes[0] != "controller_reconnect" {
+		t.Fatalf("causes=%v want controller_reconnect", causes)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}

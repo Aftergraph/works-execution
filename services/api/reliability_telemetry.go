@@ -7,12 +7,35 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/audit"
 	"github.com/JonasAbde/works-execution/services/observability"
 )
+
+const RecoveryCauseHeader = "X-Works-Recovery-Cause"
+
+var allowedRecoveryCauses = map[string]struct{}{
+	"ambiguous_transport":     {},
+	"ambiguous_response_read": {},
+	"transient_status":        {},
+	"auth_renewal":            {},
+	"controller_reconnect":    {},
+}
+
+func normalizeRecoveryCause(v string) string {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if _, ok := allowedRecoveryCauses[v]; ok {
+		return v
+	}
+	return ""
+}
+
+func ambiguousAckCause(v string) bool {
+	return v == "ambiguous_transport" || v == "ambiguous_response_read"
+}
 
 // ReliabilityTelemetry joins ephemeral Prometheus counters with durable
 // CloudEvents audit records. Prometheus is the fast operational surface;
@@ -25,7 +48,7 @@ type ReliabilityTelemetry struct {
 func (s *Server) recordReliabilityReplay(
 	ctx context.Context,
 	w *workgraph.Work,
-	outcome, reason string,
+	outcome, reason, recoveryCause string,
 	queueRepaired bool,
 	started time.Time,
 ) {
@@ -33,6 +56,7 @@ func (s *Server) recordReliabilityReplay(
 		return
 	}
 
+	recoveryCause = normalizeRecoveryCause(recoveryCause)
 	duration := time.Since(started)
 	if m := s.Reliability.Metrics; m != nil {
 		m.ReplayRequests.Inc()
@@ -46,6 +70,18 @@ func (s *Server) recordReliabilityReplay(
 		}
 		if queueRepaired {
 			m.QueueRepairs.Inc()
+		}
+		if ambiguousAckCause(recoveryCause) {
+			m.AmbiguousAckRequests.Inc()
+			if outcome == "recovered" {
+				m.AmbiguousAckRecovered.Inc()
+			}
+		}
+		if recoveryCause == "controller_reconnect" {
+			m.ControllerReconnectRequests.Inc()
+			if outcome == "recovered" {
+				m.ControllerReconnectRecovered.Inc()
+			}
 		}
 		m.ReplayDuration.ObserveDuration(duration)
 	}
@@ -71,6 +107,8 @@ func (s *Server) recordReliabilityReplay(
 		WorkID:          workID,
 		Outcome:         outcome,
 		Reason:          reason,
+		RecoveryCause:   recoveryCause,
+		CauseSource:     "authenticated_client",
 		State:           state,
 		QueueRepaired:   queueRepaired,
 		DurableMetadata: durableMetadata,
@@ -82,23 +120,26 @@ func (s *Server) recordReliabilityReplay(
 }
 
 type reliabilityReport struct {
-	Since             time.Time `json:"since"`
-	Until             time.Time `json:"until"`
-	Samples           int       `json:"samples"`
-	Truncated         bool      `json:"truncated"`
-	ReplayRecovered   int       `json:"replay_recovered"`
-	ReplayConflicts   int       `json:"replay_conflicts"`
-	ReplayFailures    int       `json:"replay_failures"`
-	QueueRepairs      int       `json:"queue_repairs"`
-	ReplaySuccessRate float64   `json:"replay_success_rate"`
-	ReplayFailureRate float64   `json:"replay_failure_rate"`
-	P50DurationMS     float64   `json:"p50_duration_ms"`
-	P95DurationMS     float64   `json:"p95_duration_ms"`
+	Since                           time.Time `json:"since"`
+	Until                           time.Time `json:"until"`
+	Samples                         int       `json:"samples"`
+	Truncated                       bool      `json:"truncated"`
+	ReplayRecovered                 int       `json:"replay_recovered"`
+	ReplayConflicts                 int       `json:"replay_conflicts"`
+	ReplayFailures                  int       `json:"replay_failures"`
+	QueueRepairs                    int       `json:"queue_repairs"`
+	ReplaySuccessRate               float64   `json:"replay_success_rate"`
+	ReplayFailureRate               float64   `json:"replay_failure_rate"`
+	AmbiguousAckSamples             int       `json:"ambiguous_ack_samples"`
+	AmbiguousAckRecovered           int       `json:"ambiguous_ack_recovered"`
+	AmbiguousAckSurvivalRate        float64   `json:"ambiguous_ack_survival_rate"`
+	ControllerReconnectSamples      int       `json:"controller_reconnect_samples"`
+	ControllerReconnectRecovered    int       `json:"controller_reconnect_recovered"`
+	ControllerReconnectSurvivalRate float64   `json:"controller_reconnect_survival_rate"`
+	P50DurationMS                   float64   `json:"p50_duration_ms"`
+	P95DurationMS                   float64   `json:"p95_duration_ms"`
 }
 
-// reliabilityHandler serves a durable, restart-stable reliability report.
-// GET /v1/reliability?hours=24
-// The report is derived from durable audit events, not in-memory counters.
 func (s *Server) reliabilityHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", r.Method)
@@ -128,11 +169,7 @@ func (s *Server) reliabilityHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	report := reliabilityReport{
-		Since:     since,
-		Until:     until,
-		Truncated: len(events) == 1000,
-	}
+	report := reliabilityReport{Since: since, Until: until, Truncated: len(events) == 1000}
 	durations := make([]float64, 0, len(events))
 	for _, ev := range events {
 		var data audit.ReliabilityReplayData
@@ -151,6 +188,18 @@ func (s *Server) reliabilityHandler(w http.ResponseWriter, r *http.Request) {
 		if data.QueueRepaired {
 			report.QueueRepairs++
 		}
+		if ambiguousAckCause(data.RecoveryCause) {
+			report.AmbiguousAckSamples++
+			if data.Outcome == "recovered" {
+				report.AmbiguousAckRecovered++
+			}
+		}
+		if data.RecoveryCause == "controller_reconnect" {
+			report.ControllerReconnectSamples++
+			if data.Outcome == "recovered" {
+				report.ControllerReconnectRecovered++
+			}
+		}
 		if data.DurationMS >= 0 {
 			durations = append(durations, data.DurationMS)
 		}
@@ -159,6 +208,12 @@ func (s *Server) reliabilityHandler(w http.ResponseWriter, r *http.Request) {
 	if report.Samples > 0 {
 		report.ReplaySuccessRate = float64(report.ReplayRecovered) / float64(report.Samples)
 		report.ReplayFailureRate = float64(report.ReplayConflicts+report.ReplayFailures) / float64(report.Samples)
+	}
+	if report.AmbiguousAckSamples > 0 {
+		report.AmbiguousAckSurvivalRate = float64(report.AmbiguousAckRecovered) / float64(report.AmbiguousAckSamples)
+	}
+	if report.ControllerReconnectSamples > 0 {
+		report.ControllerReconnectSurvivalRate = float64(report.ControllerReconnectRecovered) / float64(report.ControllerReconnectSamples)
 	}
 	if len(durations) > 0 {
 		sort.Float64s(durations)
@@ -180,11 +235,7 @@ func percentileNearestRank(sortedValues []float64, p float64) float64 {
 		return sortedValues[len(sortedValues)-1]
 	}
 	idx := int(math.Ceil(p*float64(len(sortedValues)))) - 1
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(sortedValues) {
-		idx = len(sortedValues) - 1
-	}
+	if idx < 0 { idx = 0 }
+	if idx >= len(sortedValues) { idx = len(sortedValues)-1 }
 	return sortedValues[idx]
 }

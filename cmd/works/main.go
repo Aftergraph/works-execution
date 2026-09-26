@@ -26,7 +26,7 @@ const usage = `works — developer CLI for works-execution
 
 Usage:
   works init [--out works.yaml]
-  works run --config works.yaml [--api http://127.0.0.1:8080] [--idempotency-key KEY] [--token JWT] [--enroll-secret S]
+  works run --config works.yaml [--api http://127.0.0.1:8080] [--idempotency-key KEY] [--recovery-cause controller_reconnect] [--token JWT] [--enroll-secret S]
   works status <work_id> [--api http://127.0.0.1:8080] [--follow]
   works runners [--pool NAME] [--alive] [--api URL]   # BYOC: list scheduler-visible runners
   works missions [--limit N] [--json] [--api URL]     # k-037: NOW-ordered mission projection (needs-human first)
@@ -123,6 +123,7 @@ func runCmd(args []string) {
 	cfgPath := fs.String("config", "works.yaml", "config file")
 	api := fs.String("api", envOr("WORKS_API", "http://127.0.0.1:8080"), "control plane URL")
 	idem := fs.String("idempotency-key", "", "idempotency key (recommended for resilient submission)")
+	recoveryCause := fs.String("recovery-cause", "", "optional replay attribution: controller_reconnect")
 	token := fs.String("token", "", "bearer token (or WORKS_TOKEN env)")
 	enroll := fs.String("enroll-secret", "", "enrollment secret (or WORKS_ENROLL_SECRET env)")
 	_ = fs.Parse(args)
@@ -146,7 +147,7 @@ func runCmd(args []string) {
 	}
 
 	body, _ := json.Marshal(w)
-	result, err := submitWorkWithReconcile(http.DefaultClient, *api+"/v1/works", wireCreate(body), w.IdempotencyKey, auth)
+	result, err := submitWorkWithReconcileCause(http.DefaultClient, *api+"/v1/works", wireCreate(body), w.IdempotencyKey, auth, *recoveryCause)
 	if err != nil {
 		fail("POST /v1/works: %v", err)
 	}

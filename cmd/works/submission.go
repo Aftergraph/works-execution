@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/JonasAbde/works-execution/services/api"
 )
 
 const (
@@ -29,6 +31,10 @@ type submitResult struct {
 // retry could create a second Work. With a stable key, bounded retries are
 // safe: the API reconciles the key back to the canonical accepted Work.
 func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byte, idempotencyKey string, auth *cliAuth) (submitResult, error) {
+	return submitWorkWithReconcileCause(client, endpoint, payload, idempotencyKey, auth, "")
+}
+
+func submitWorkWithReconcileCause(client *http.Client, endpoint string, payload []byte, idempotencyKey string, auth *cliAuth, initialRecoveryCause string) (submitResult, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -56,6 +62,7 @@ func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byt
 	var lastErr error
 	renewedAuth := false
 	submissionAttempts := 0
+	recoveryCause := initialRecoveryCause
 	for attempt := 1; attempt <= maxHTTPAttempts; attempt++ {
 		submissionAttempts++
 		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
@@ -63,6 +70,9 @@ func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byt
 			return submitResult{}, fmt.Errorf("build submit request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if recoveryCause != "" {
+			req.Header.Set(api.RecoveryCauseHeader, recoveryCause)
+		}
 		if auth != nil {
 			if h := auth.authHeader(); h != "" {
 				req.Header.Set("Authorization", h)
@@ -71,6 +81,9 @@ func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byt
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
+			if recoveryCause == "" {
+				recoveryCause = "ambiguous_transport"
+			}
 			if idempotencyKey != "" && submissionAttempts < maxSubmissionAttempts {
 				time.Sleep(submitRetryDelay(attempt))
 				continue
@@ -85,6 +98,9 @@ func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byt
 		_ = resp.Body.Close()
 		if readErr != nil {
 			lastErr = readErr
+			if recoveryCause == "" {
+				recoveryCause = "ambiguous_response_read"
+			}
 			if idempotencyKey != "" && submissionAttempts < maxSubmissionAttempts {
 				time.Sleep(submitRetryDelay(attempt))
 				continue
@@ -108,6 +124,9 @@ func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byt
 		// This specifically recovers the expected API-restart case where the
 		// process-local HMAC issuer rotated and invalidated the old JWT.
 		if resp.StatusCode == http.StatusUnauthorized && auth != nil && auth.canRenew() && !renewedAuth {
+			if recoveryCause == "" {
+				recoveryCause = "auth_renewal"
+			}
 			if err := auth.renew(); err != nil {
 				return result, fmt.Errorf("renew auth after 401: %w", err)
 			}
@@ -122,6 +141,9 @@ func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byt
 		// to retry. The retry either creates the Work (if the first request did
 		// not commit) or reconciles the already accepted canonical Work.
 		if idempotencyKey != "" && retryableSubmitStatus(resp.StatusCode) && submissionAttempts < maxSubmissionAttempts {
+			if recoveryCause == "" {
+				recoveryCause = "transient_status"
+			}
 			lastErr = fmt.Errorf("transient submit status %s", resp.Status)
 			time.Sleep(submitRetryDelay(attempt))
 			continue
