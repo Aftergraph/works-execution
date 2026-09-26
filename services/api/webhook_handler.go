@@ -188,6 +188,14 @@ func (s *Server) githubWebhookHandler(w http.ResponseWriter, r *http.Request) {
 	g.Source.Actor = r.Header.Get("X-GitHub-User")
 	g.CorrelationID = workgraph.NewID("cor")
 
+	deliveryKey := sha256.Sum256([]byte("github-delivery:" + deliveryID))
+	g.IdempotencyKey = "github-delivery-" + hex.EncodeToString(deliveryKey[:])
+	fingerprint := sha256.Sum256(append(append([]byte(event), 0), body...))
+	g.CreationIntentHash = hex.EncodeToString(fingerprint[:])
+	g.AdmissionDefaultsJSON = encodeAdmissionDefaults(currentAdmissionDefaults())
+	queueRequested := true
+	g.QueueRequested = &queueRequested
+
 	// Persist the work.
 	if err := s.Store.CreateWork(r.Context(), g); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
