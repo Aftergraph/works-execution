@@ -42,6 +42,17 @@ make e2e
 ./bin/works status <work_id>        # poll until SUCCEEDED
 ```
 
+## Durable mission handoff
+
+Long-running agent work should not depend on the submitting terminal, ChatGPT turn, or Hermes session staying alive. Compile a purpose-bound mission YAML into the existing WORKS durable state and detach immediately:
+
+```bash
+./bin/works mission run --config mission.yaml --api "$WORKS_API"
+./bin/works status <work_id> --follow
+```
+
+For consequential stages, declare a read-only `reconcile` command. Exit `0` means the desired external state already exists and WORKS skips the mutation; exit `1` means it is proven absent and the mutation may execute; any other exit fails closed. Reusing a `mission_id` with changed content is rejected. Executor success remains distinct from independent verification. See `docs/runbooks/durable-mission-handoff.md` and `docs/runbooks/durable-mission-live-acceptance.md`.
+
 ## System visuals
 
 Real architecture diagrams (repo-specific, source in `.github/assets/architecture/`):
@@ -53,7 +64,7 @@ Real architecture diagrams (repo-specific, source in `.github/assets/architectur
 
 <p align="center">
   <img src=".github/assets/architecture/architecture.svg" alt="WORKS system architecture — control plane, worker, state" width="90%">
-  <br><em>Architecture</em>
+  <br><em>System architecture</em>
 </p>
 
 <p align="center">
