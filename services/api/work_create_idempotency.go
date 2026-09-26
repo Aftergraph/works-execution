@@ -1,10 +1,10 @@
 package api
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -46,11 +46,49 @@ type creationIntent struct {
 	Mission      *workgraph.MissionContract
 }
 
-// canonicalCreationIntent produces a stable semantic encoding of creation
-// intent. It neutralizes admission defaults that were persisted by historical
-// WORKS versions so an accepted Work can be recovered before current admission
-// policy is re-run.
-func canonicalCreationIntent(w *workgraph.Work) []byte {
+type admissionDefaultsSnapshot struct {
+	TimeoutSeconds     int      `json:"timeout_seconds"`
+	RetryMaxAttempts   int      `json:"retry_max_attempts"`
+	Backoff            string   `json:"backoff"`
+	CacheScope         string   `json:"cache_scope"`
+	DefaultPermissions []string `json:"default_permissions"`
+}
+
+func currentAdmissionDefaults() admissionDefaultsSnapshot {
+	return admissionDefaultsSnapshot{
+		TimeoutSeconds:     manifest.DefaultTimeoutSeconds,
+		RetryMaxAttempts:   manifest.DefaultRetryMaxAttempts,
+		Backoff:            manifest.DefaultBackoff,
+		CacheScope:         manifest.DefaultCacheScope,
+		DefaultPermissions: []string{"read"},
+	}
+}
+
+func encodeAdmissionDefaults(d admissionDefaultsSnapshot) string {
+	raw, _ := json.Marshal(d)
+	return string(raw)
+}
+
+func decodeAdmissionDefaults(raw string) (admissionDefaultsSnapshot, bool) {
+	if raw == "" {
+		return admissionDefaultsSnapshot{}, false
+	}
+	var d admissionDefaultsSnapshot
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		return admissionDefaultsSnapshot{}, false
+	}
+	if d.TimeoutSeconds <= 0 || d.RetryMaxAttempts <= 0 ||
+		d.Backoff == "" || d.CacheScope == "" || len(d.DefaultPermissions) == 0 {
+		return admissionDefaultsSnapshot{}, false
+	}
+	return d, true
+}
+
+// canonicalCreationIntentWithDefaults produces a stable semantic encoding of
+// the caller's creation intent using the exact admission defaults that were in
+// force when the Work was accepted. Persisting that snapshot avoids rebuilding
+// historical intent from mutable future constants.
+func canonicalCreationIntentWithDefaults(w *workgraph.Work, defaults admissionDefaultsSnapshot) []byte {
 	if w == nil {
 		return nil
 	}
@@ -66,48 +104,43 @@ func canonicalCreationIntent(w *workgraph.Work) []byte {
 	var in creationIntent
 	_ = json.Unmarshal(raw, &in)
 
+	defaultPermissions := append([]string(nil), defaults.DefaultPermissions...)
+	sort.Strings(defaultPermissions)
+
 	for id, n := range in.Graph.Nodes {
 		sort.Strings(n.Needs)
 		sort.Strings(n.Permissions)
 		sort.Strings(n.SideEffects)
 		sort.Strings(n.Evidence.Types)
-		if n.Retries != nil {
-			// Admission fills the nested backoff default even when the caller
-			// supplied max_attempts explicitly. Normalize that default before
-			// comparing persisted accepted intent with a raw replay.
-			if n.Retries.Backoff == "" {
-				n.Retries.Backoff = manifest.DefaultBackoff
-			}
-			sort.Strings(n.Retries.RetryOn)
-		}
-		if n.CacheSpec != nil {
-			// Admission likewise materializes the default cache scope on a
-			// caller-supplied cache_spec. Apply it here so pre-admission replay
-			// compares semantically, not by representation accident.
-			if n.CacheSpec.Scope == "" {
-				n.CacheSpec.Scope = manifest.DefaultCacheScope
-			}
-			sort.Strings(n.CacheSpec.KeyInputs)
-		}
 
-		// Slice-4 historical admission defaults are semantic omission.
-		if n.TimeoutS == manifest.DefaultTimeoutSeconds {
+		if n.TimeoutS == defaults.TimeoutSeconds {
 			n.TimeoutS = 0
 		}
-		if len(n.Permissions) == 1 && n.Permissions[0] == "read" {
+		if equalStrings(n.Permissions, defaultPermissions) {
 			n.Permissions = nil
 		}
-		if n.Retries != nil &&
-			n.Retries.MaxAttempts == manifest.DefaultRetryMaxAttempts &&
-			n.Retries.Backoff == manifest.DefaultBackoff &&
-			len(n.Retries.RetryOn) == 0 {
-			n.Retries = nil
+
+		if n.Retries != nil {
+			if n.Retries.Backoff == "" {
+				n.Retries.Backoff = defaults.Backoff
+			}
+			sort.Strings(n.Retries.RetryOn)
+			if n.Retries.MaxAttempts == defaults.RetryMaxAttempts &&
+				n.Retries.Backoff == defaults.Backoff &&
+				len(n.Retries.RetryOn) == 0 {
+				n.Retries = nil
+			}
 		}
-		if n.CacheSpec != nil &&
-			!n.CacheSpec.Enabled &&
-			n.CacheSpec.Scope == manifest.DefaultCacheScope &&
-			len(n.CacheSpec.KeyInputs) == 0 {
-			n.CacheSpec = nil
+		if n.CacheSpec != nil {
+			if n.CacheSpec.Scope == "" {
+				n.CacheSpec.Scope = defaults.CacheScope
+			}
+			sort.Strings(n.CacheSpec.KeyInputs)
+			if !n.CacheSpec.Enabled &&
+				n.CacheSpec.Scope == defaults.CacheScope &&
+				len(n.CacheSpec.KeyInputs) == 0 {
+				n.CacheSpec = nil
+			}
 		}
 
 		if len(n.Needs) == 0 {
@@ -145,51 +178,31 @@ func canonicalCreationIntent(w *workgraph.Work) []byte {
 	return out
 }
 
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalCreationIntent(w *workgraph.Work) []byte {
+	return canonicalCreationIntentWithDefaults(w, currentAdmissionDefaults())
+}
+
 func sameWorkCreationIdentity(a, b *workgraph.Work) bool {
 	return bytes.Equal(canonicalCreationIntent(a), canonicalCreationIntent(b))
 }
 
-func rawCreationIntentHash(w *workgraph.Work) string {
-	if w == nil {
+func creationIntentHashWithDefaults(w *workgraph.Work, defaults admissionDefaultsSnapshot) string {
+	encoded := canonicalCreationIntentWithDefaults(w, defaults)
+	if encoded == nil {
 		return ""
 	}
-	// Normalize representation-only differences without applying admission
-	// defaults. The hash captures exactly the semantic caller intent that was
-	// accepted, independent of later policy/default changes.
-	raw, _ := json.Marshal(creationIntent{
-		Source:       w.Source,
-		Objective:    w.Objective,
-		Graph:        w.Graph,
-		Requirements: w.Requirements,
-		Policy:       w.Policy,
-		Mission:      w.Mission,
-	})
-	var in creationIntent
-	_ = json.Unmarshal(raw, &in)
-	for id, n := range in.Graph.Nodes {
-		sort.Strings(n.Needs)
-		sort.Strings(n.Permissions)
-		sort.Strings(n.SideEffects)
-		sort.Strings(n.Evidence.Types)
-		if n.Retries != nil {
-			sort.Strings(n.Retries.RetryOn)
-		}
-		if n.CacheSpec != nil {
-			sort.Strings(n.CacheSpec.KeyInputs)
-		}
-		if len(n.Needs) == 0 { n.Needs = nil }
-		if len(n.Permissions) == 0 { n.Permissions = nil }
-		if len(n.SideEffects) == 0 { n.SideEffects = nil }
-		if len(n.Evidence.Types) == 0 { n.Evidence.Types = nil }
-		if len(n.Env) == 0 { n.Env = nil }
-		in.Graph.Nodes[id] = n
-	}
-	if len(in.Policy.SecretsScope) == 0 {
-		in.Policy.SecretsScope = nil
-	} else {
-		sort.Strings(in.Policy.SecretsScope)
-	}
-	encoded, _ := json.Marshal(in)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
 }
@@ -198,14 +211,36 @@ func replayMatchesDurableIntent(existing, request *workgraph.Work, queue bool) b
 	if existing == nil || request == nil {
 		return false
 	}
-	if existing.CreationIntentHash != "" && existing.QueueRequested != nil {
-		return existing.CreationIntentHash == rawCreationIntentHash(request) &&
+
+	hasDurableMetadata := existing.CreationIntentHash != "" ||
+		existing.AdmissionDefaultsJSON != "" ||
+		existing.QueueRequested != nil
+	if hasDurableMetadata {
+		if existing.CreationIntentHash == "" ||
+			existing.AdmissionDefaultsJSON == "" ||
+			existing.QueueRequested == nil {
+			return false
+		}
+		defaults, ok := decodeAdmissionDefaults(existing.AdmissionDefaultsJSON)
+		if !ok {
+			return false
+		}
+		return existing.CreationIntentHash == creationIntentHashWithDefaults(request, defaults) &&
 			*existing.QueueRequested == queue
 	}
-	// Legacy v13 rows have no persisted pre-admission intent metadata. They
-	// may be read/reconciled conservatively, but queue repair is never inferred
-	// for them because the original queue decision is unknowable.
+
+	// Legacy rows predate durable creation metadata. Their original omission
+	// choices cannot be reconstructed safely; compare conservatively under the
+	// current representation and never infer queue repair for them.
 	return sameWorkCreationIdentity(existing, request)
+}
+
+func replayMatchesAcceptedHash(existing *workgraph.Work, requestHash string, queue bool) bool {
+	if existing == nil || existing.CreationIntentHash == "" ||
+		existing.AdmissionDefaultsJSON == "" || existing.QueueRequested == nil {
+		return false
+	}
+	return existing.CreationIntentHash == requestHash && *existing.QueueRequested == queue
 }
 
 
