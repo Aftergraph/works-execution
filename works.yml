@@ -1,4 +1,4 @@
-# Temporary disk diagnostic. Never merge.
+# Temporary tmp-reclamation. Never merge.
 version: 1
 work:
   diagnose:
@@ -13,15 +13,12 @@ work:
       diagnose:
         run: |
           set -u
-          echo '=== df ==='
-          df -h / /tmp /var/lib/works 2>&1 || true
-          echo '=== /tmp usage ==='
-          du -sh /tmp 2>/dev/null || true
-          ls -la /tmp | head -40
-          echo '=== go-build dirs ==='
-          du -sh /tmp/go-build* 2>/dev/null | sort -h | tail -n 15 || true
-          echo '=== stale go-build dirs (older than 2h) ==='
-          find /tmp -maxdepth 1 -type d -name 'go-build*' -mmin +120 -printf '%T@ %p\n' 2>/dev/null | sort -n | head -n 10 || true
-          echo '=== works state dirs ==='
-          du -sh /var/lib/works/* 2>/dev/null | sort -h | tail -n 12 || true
-        timeout_s: 60
+          echo '=== before ==='
+          df -h /tmp
+          echo '=== reclaiming stale go-build dirs (>2h old) ==='
+          find /tmp -maxdepth 1 -type d -name 'go-build*' -mmin +120 -print -exec rm -rf {} + 2>/dev/null | wc -l
+          echo '=== after ==='
+          df -h /tmp
+          echo '=== remaining go-build dirs ==='
+          find /tmp -maxdepth 1 -type d -name 'go-build*' | wc -l
+        timeout_s: 120
