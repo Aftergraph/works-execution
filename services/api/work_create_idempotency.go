@@ -70,9 +70,21 @@ func canonicalCreationIntent(w *workgraph.Work) []byte {
 		sort.Strings(n.SideEffects)
 		sort.Strings(n.Evidence.Types)
 		if n.Retries != nil {
+			// Admission fills the nested backoff default even when the caller
+			// supplied max_attempts explicitly. Normalize that default before
+			// comparing persisted accepted intent with a raw replay.
+			if n.Retries.Backoff == "" {
+				n.Retries.Backoff = manifest.DefaultBackoff
+			}
 			sort.Strings(n.Retries.RetryOn)
 		}
 		if n.CacheSpec != nil {
+			// Admission likewise materializes the default cache scope on a
+			// caller-supplied cache_spec. Apply it here so pre-admission replay
+			// compares semantically, not by representation accident.
+			if n.CacheSpec.Scope == "" {
+				n.CacheSpec.Scope = manifest.DefaultCacheScope
+			}
 			sort.Strings(n.CacheSpec.KeyInputs)
 		}
 
