@@ -424,8 +424,41 @@ func (s *Server) createWork(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "admission_rejected", manifest.FormatError(err))
 		return
 	}
+
+	// Reconcile-before-create: a replacement controller may have lost the
+	// original 201 response after the Work was already durably accepted. A
+	// repeated idempotency key must recover that canonical Work instead of
+	// creating a second execution or forcing the caller to reconstruct state
+	// from session memory.
+	if w_in.IdempotencyKey != "" {
+		existing, err := s.lookupIdempotentWork(r.Context(), w_in.IdempotencyKey)
+		if err != nil {
+			s.logf("idempotency lookup failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "idempotency_lookup_failed", "failed to reconcile idempotency key")
+			return
+		}
+		if existing != nil {
+			if !sameWorkCreationIdentity(existing, &w_in) {
+				writeError(w, http.StatusConflict, "idempotency_conflict",
+					"idempotency_key already bound to different work creation intent")
+				return
+			}
+			writeIdempotentReplay(w, existing)
+			return
+		}
+	}
+
 	if err := s.Store.CreateWork(r.Context(), &w_in); err != nil {
 		if errors.Is(err, store.ErrIdempotencyConflict) {
+			// Close the concurrent-submit race: another controller may have won
+			// the unique idempotency key after our preflight lookup. Re-read the
+			// canonical Work and attach when the immutable creation intent is
+			// identical; otherwise fail closed.
+			existing, lookupErr := s.lookupIdempotentWork(r.Context(), w_in.IdempotencyKey)
+			if lookupErr == nil && existing != nil && sameWorkCreationIdentity(existing, &w_in) {
+				writeIdempotentReplay(w, existing)
+				return
+			}
 			writeError(w, http.StatusConflict, "idempotency_conflict", err.Error())
 			return
 		}
