@@ -75,6 +75,10 @@ const (
 	TypeWorkCreated       = "com.works-execution.work.created"
 	TypeWorkStateChanged  = "com.works-execution.work.state_changed"
 	TypeWorkAttemptEnded  = "com.works-execution.work.attempt_ended"
+
+	// Reliability/control-plane recovery events. These are durable audit
+	// records used to compute longitudinal recovery SLOs across API restarts.
+	TypeReliabilityReplayOutcome = "com.works-execution.reliability.replay_outcome"
 )
 
 // StateTransitionData is the `data` payload for state-change events.
@@ -86,6 +90,19 @@ type StateTransitionData struct {
 	CorrelationID string    `json:"correlation_id,omitempty"`
 	Actor         string    `json:"actor,omitempty"`     // "api" | "worker" | "scheduler" | ...
 	Reason        string    `json:"reason,omitempty"`
+}
+
+
+// ReliabilityReplayData is the durable payload for an idempotent replay
+// outcome. It deliberately excludes the idempotency key itself.
+type ReliabilityReplayData struct {
+	WorkID          string  `json:"work_id,omitempty"`
+	Outcome         string  `json:"outcome"` // recovered | conflict | failure
+	Reason          string  `json:"reason,omitempty"`
+	State           string  `json:"state,omitempty"`
+	QueueRepaired   bool    `json:"queue_repaired,omitempty"`
+	DurableMetadata bool    `json:"durable_metadata,omitempty"`
+	DurationMS      float64 `json:"duration_ms"`
 }
 
 // Emitter is the audit interface used by the store. A nil Emitter is a
