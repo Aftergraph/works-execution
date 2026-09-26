@@ -27,39 +27,30 @@ work:
 
     nodes:
       vet:
-        env:
-          TMPDIR: /var/lib/works/tmp
-        run: mkdir -p "$TMPDIR" && go vet ./...
+        run: source scripts/ops/ci-scratch-env.sh && go vet ./...
         cache: true
         timeout_s: 120
 
       test:
         needs: [vet]
-        env:
-          TMPDIR: /var/lib/works/tmp
-        run: mkdir -p "$TMPDIR" && go test ./... -count=1
+        run: source scripts/ops/ci-scratch-env.sh && go test ./... -count=1
         timeout_s: 600
 
       windows-worker-crossbuild:
         needs: [test]
-        env:
-          TMPDIR: /var/lib/works/tmp
         run: |
-          mkdir -p "$TMPDIR" dist
+          source scripts/ops/ci-scratch-env.sh
+          mkdir -p dist
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o dist/works-worker-windows-amd64.exe ./cmd/works-worker
           sha256sum dist/works-worker-windows-amd64.exe
         timeout_s: 180
 
       build:
         needs: [test]
-        env:
-          TMPDIR: /var/lib/works/tmp
-        run: mkdir -p "$TMPDIR" && make build
+        run: source scripts/ops/ci-scratch-env.sh && make build
         timeout_s: 120
 
       deploy-integrity-fabric-v1:
         needs: [build, windows-worker-crossbuild]
-        env:
-          TMPDIR: /var/lib/works/tmp
-        run: mkdir -p "$TMPDIR" && bash scripts/ops/deploy-works-api-once.sh
+        run: source scripts/ops/ci-scratch-env.sh && bash scripts/ops/deploy-works-api-once.sh
         timeout_s: 300
