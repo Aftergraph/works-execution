@@ -95,12 +95,13 @@ func workerIDFromToken(jwtRaw string) string {
 }
 
 // enrollCLI POSTs /v1/workers/enroll with a CLI-scoped worker id and
-// returns the raw JWT. worker_id must match ^[A-Za-z0-9_.-]{1,128}$.
+// returns the raw JWT. The enrollment/registry boundary requires
+// ^wrkr_[a-z0-9_-]{1,64}$ (k-066), so CLI identities use wrkr_cli_<hex>.
 func enrollCLI(api, secret string) (string, error) {
 	suffix := make([]byte, 6)
 	_, _ = rand.Read(suffix)
 	body := map[string]any{
-		"worker_id":   "cli_" + hex.EncodeToString(suffix),
+		"worker_id":   "wrkr_cli_" + hex.EncodeToString(suffix),
 		"challenge":   secret,
 		"scope":       "worker",
 		"ttl_seconds": 3600,
