@@ -26,7 +26,7 @@ const usage = `works — developer CLI for works-execution
 
 Usage:
   works init [--out works.yaml]
-  works run --config works.yaml [--api http://127.0.0.1:8080] [--idempotency-key KEY]
+  works run --config works.yaml [--api http://127.0.0.1:8080] [--idempotency-key KEY] [--token JWT] [--enroll-secret S]
   works status <work_id> [--api http://127.0.0.1:8080] [--follow]
   works runners [--pool NAME] [--alive] [--api URL]   # BYOC: list scheduler-visible runners
   works missions [--limit N] [--json] [--api URL]     # k-037: NOW-ordered mission projection (needs-human first)
@@ -122,7 +122,9 @@ func runCmd(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	cfgPath := fs.String("config", "works.yaml", "config file")
 	api := fs.String("api", envOr("WORKS_API", "http://127.0.0.1:8080"), "control plane URL")
-	idem := fs.String("idempotency-key", "", "idempotency key (optional)")
+	idem := fs.String("idempotency-key", "", "idempotency key (recommended for resilient submission)")
+	token := fs.String("token", "", "bearer token (or WORKS_TOKEN env)")
+	enroll := fs.String("enroll-secret", "", "enrollment secret (or WORKS_ENROLL_SECRET env)")
 	_ = fs.Parse(args)
 
 	raw, err := os.ReadFile(*cfgPath)
@@ -138,8 +140,13 @@ func runCmd(args []string) {
 	}
 	w.CorrelationID = workgraph.NewID("cor")
 
+	auth, err := newCLIAuth(*api, *token, *enroll)
+	if err != nil {
+		fail("auth: %v", err)
+	}
+
 	body, _ := json.Marshal(w)
-	result, err := submitWorkWithReconcile(http.DefaultClient, *api+"/v1/works", wireCreate(body), w.IdempotencyKey)
+	result, err := submitWorkWithReconcile(http.DefaultClient, *api+"/v1/works", wireCreate(body), w.IdempotencyKey, auth)
 	if err != nil {
 		fail("POST /v1/works: %v", err)
 	}
