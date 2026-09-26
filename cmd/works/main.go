@@ -8,11 +8,9 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -141,20 +139,22 @@ func runCmd(args []string) {
 	w.CorrelationID = workgraph.NewID("cor")
 
 	body, _ := json.Marshal(w)
-	resp, err := http.Post(*api+"/v1/works", "application/json", bytes.NewReader(wireCreate(body)))
+	result, err := submitWorkWithReconcile(http.DefaultClient, *api+"/v1/works", wireCreate(body), w.IdempotencyKey)
 	if err != nil {
 		fail("POST /v1/works: %v", err)
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusCreated {
-		fail("create: %s: %s", resp.Status, string(respBody))
+	if result.StatusCode != http.StatusCreated && result.StatusCode != http.StatusOK {
+		fail("create: %s: %s", result.Status, string(result.Body))
 	}
 	var created workgraph.Work
-	if err := json.Unmarshal(respBody, &created); err != nil {
+	if err := json.Unmarshal(result.Body, &created); err != nil {
 		fail("decode response: %v", err)
 	}
-	fmt.Printf("submitted work %s (state=%s)\n", created.ID, created.State)
+	if result.Replay {
+		fmt.Printf("reconciled work %s (state=%s, attempts=%d)\n", created.ID, created.State, result.Attempts)
+	} else {
+		fmt.Printf("submitted work %s (state=%s)\n", created.ID, created.State)
+	}
 	fmt.Printf("track with: works status %s --follow\n", created.ID)
 }
 
