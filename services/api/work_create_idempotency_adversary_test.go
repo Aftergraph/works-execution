@@ -31,6 +31,16 @@ func (s *failQueueOnceStore) UpdateState(ctx context.Context, id string, to work
 	return s.Store.UpdateState(ctx, id, to)
 }
 
+func (s *failQueueOnceStore) GetWorkByIdempotencyKey(ctx context.Context, key string) (*workgraph.Work, error) {
+	getter, ok := s.Store.(interface {
+		GetWorkByIdempotencyKey(context.Context, string) (*workgraph.Work, error)
+	})
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	return getter.GetWorkByIdempotencyKey(ctx, key)
+}
+
 func TestCreateWork_ReplayRepairsProvenOriginalQueueIntent(t *testing.T) {
 	sqlite, err := store.Open(filepath.Join(t.TempDir(), "queue-repair.db"))
 	if err != nil {
