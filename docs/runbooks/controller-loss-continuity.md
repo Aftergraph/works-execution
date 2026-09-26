@@ -87,8 +87,11 @@ POST accepted by WORKS
 ```
 
 A changed immutable Work intent under the same key returns `409
-idempotency_conflict`. The replay path never re-applies the convenience
-`queue:true` transition; it returns the Work's **current** canonical state.
+idempotency_conflict`. Replay returns the Work's **current** canonical state.
+The one repair action allowed during replay is closing a proven partial-submit
+seam: when the original request carried `queue:true` and the durable Work is
+still exactly `CREATED`, WORKS completes `CREATED -> QUEUED`. Any later state
+is left untouched; replay never moves state backwards.
 
 This closes the ambiguous-ack gap after server acceptance. It cannot recover a
 mission definition that existed only in volatile controller memory and never
