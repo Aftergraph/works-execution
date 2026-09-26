@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,8 +33,9 @@ import (
 type cliAuth struct {
 	api   string
 	token string
-	// Renewal support: when both are set, postJSON/getJSON transparently
-	// re-enroll on 401 (same renewal loop as the worker Client).
+	// Renewal support: when enrollSecret is set, callers may re-enroll once
+	// after a definitive 401. A 401 is safe to retry because WORKS auth
+	// middleware rejects the request before invoking the mutating handler.
 	workerID     string
 	enrollSecret string
 }
@@ -130,6 +132,27 @@ func (a *cliAuth) authHeader() string {
 		return ""
 	}
 	return "Bearer " + a.token
+}
+
+func (a *cliAuth) canRenew() bool {
+	return a != nil && a.api != "" && a.enrollSecret != ""
+}
+
+// renew obtains a fresh short-lived token after a definitive authentication
+// failure. The signing key is process-local, so an API restart intentionally
+// invalidates old tokens; this turns that restart from a manual CLI failure
+// into a bounded re-authentication step.
+func (a *cliAuth) renew() error {
+	if !a.canRenew() {
+		return errors.New("auth renewal unavailable: enrollment secret not configured")
+	}
+	tok, err := enrollCLI(a.api, a.enrollSecret)
+	if err != nil {
+		return err
+	}
+	a.token = tok
+	a.workerID = workerIDFromToken(tok)
+	return nil
 }
 
 // hint401 is the fix-it message printed when the control plane
