@@ -44,20 +44,28 @@ type cliAuth struct {
 func newCLIAuth(api, tokenFlag, enrollSecret string) (*cliAuth, error) {
 	a := &cliAuth{api: api}
 
+	// Resolve the enrollment challenge even when an explicit token wins the
+	// initial credential selection. Keeping it as a renewal fallback means a
+	// process-local issuer rotation can recover a stale WORKS_TOKEN instead of
+	// forcing a manual restart of the controller.
+	if enrollSecret == "" {
+		enrollSecret = os.Getenv("WORKS_ENROLL_SECRET")
+	}
+	a.enrollSecret = enrollSecret
+
 	// 1. Explicit token.
 	if tokenFlag != "" {
 		a.token = tokenFlag
+		a.workerID = workerIDFromToken(tokenFlag)
 		return a, nil
 	}
 	if t := os.Getenv("WORKS_TOKEN"); t != "" {
 		a.token = t
+		a.workerID = workerIDFromToken(t)
 		return a, nil
 	}
 
 	// 2. Enroll with the shared secret.
-	if enrollSecret == "" {
-		enrollSecret = os.Getenv("WORKS_ENROLL_SECRET")
-	}
 	if enrollSecret == "" {
 		// 3. No credentials — allowed; callers handle 401s with a hint.
 		return a, nil
@@ -69,7 +77,6 @@ func newCLIAuth(api, tokenFlag, enrollSecret string) (*cliAuth, error) {
 	}
 	a.token = tok
 	a.workerID = workerIDFromToken(tok)
-	a.enrollSecret = enrollSecret
 	return a, nil
 }
 
