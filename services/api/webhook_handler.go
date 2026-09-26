@@ -196,8 +196,17 @@ func (s *Server) githubWebhookHandler(w http.ResponseWriter, r *http.Request) {
 	queueRequested := true
 	g.QueueRequested = &queueRequested
 
-	// Persist the work.
+	_, preexistingErr := s.Store.GetWork(r.Context(), workID)
+	wasPreexisting := preexistingErr == nil
+
 	if err := s.Store.CreateWork(r.Context(), g); err != nil {
+		if errors.Is(err, store.ErrIdempotencyConflict) {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error":   "delivery_conflict",
+				"message": "delivery_id is already bound to different signed content",
+			})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error":   "create_work",
 			"message": err.Error(),
@@ -205,13 +214,22 @@ func (s *Server) githubWebhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the webhook delivery (idempotency record).
-	// Best-effort: a failure here would only break dedup for this
-	// one delivery; the Work itself is durable.
-	_ = s.Store.RecordWebhookDelivery(r.Context(), deliveryID, event, workID, string(body))
+	if err := s.Store.RecordWebhookDelivery(r.Context(), deliveryID, event, workID, string(body)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":   "record_delivery",
+			"message": err.Error(),
+		})
+		return
+	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"status":      "created",
+	statusCode := http.StatusCreated
+	status := "created"
+	if wasPreexisting {
+		statusCode = http.StatusOK
+		status = "recovered"
+	}
+	writeJSON(w, statusCode, map[string]any{
+		"status":      status,
 		"work_id":     workID,
 		"repository":  delivery.RepoFullName,
 		"sha":         delivery.SHA,
