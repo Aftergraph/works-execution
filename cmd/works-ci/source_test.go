@@ -4,6 +4,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/JonasAbde/works-execution/packages/workgraph"
 )
 
 func gitRun(t *testing.T, dir string, args ...string) string {
@@ -65,5 +67,33 @@ func TestDeriveGitSourceFailsClosedWithoutOrigin(t *testing.T) {
 	gitRun(t, dir, "commit", "--allow-empty", "-m", "fixture")
 	if _, err := deriveGitSource(dir); err == nil {
 		t.Fatal("expected missing origin to fail closed")
+	}
+}
+
+
+func TestStableCIIdempotencyKeyIsDeterministicAndInputBound(t *testing.T) {
+	src := workgraph.Source{
+		Repository: "Aftergraph/works-execution",
+		SHA:        "1111111111111111111111111111111111111111",
+	}
+	config := []byte("version: 1\nwork:\n  verify: {}\n")
+
+	a := stableCIIdempotencyKey(src, config)
+	b := stableCIIdempotencyKey(src, append([]byte(nil), config...))
+	if a != b {
+		t.Fatalf("same inputs produced different keys: %q != %q", a, b)
+	}
+	if len(a) != len("works-ci-")+64 {
+		t.Fatalf("unexpected key shape: %q", a)
+	}
+
+	changedConfig := stableCIIdempotencyKey(src, []byte("version: 1\nwork:\n  verify:\n    nodes: {}\n"))
+	if changedConfig == a {
+		t.Fatal("config change did not change idempotency key")
+	}
+	src.SHA = "2222222222222222222222222222222222222222"
+	changedSHA := stableCIIdempotencyKey(src, config)
+	if changedSHA == a {
+		t.Fatal("source SHA change did not change idempotency key")
 	}
 }

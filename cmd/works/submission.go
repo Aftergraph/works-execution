@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/JonasAbde/works-execution/services/api"
+	"github.com/JonasAbde/works-execution/packages/protocol"
 )
 
 const (
@@ -71,7 +71,7 @@ func submitWorkWithReconcileCause(client *http.Client, endpoint string, payload 
 		}
 		req.Header.Set("Content-Type", "application/json")
 		if recoveryCause != "" {
-			req.Header.Set(api.RecoveryCauseHeader, recoveryCause)
+			req.Header.Set(protocol.RecoveryCauseHeader, recoveryCause)
 		}
 		if auth != nil {
 			if h := auth.authHeader(); h != "" {
@@ -82,7 +82,7 @@ func submitWorkWithReconcileCause(client *http.Client, endpoint string, payload 
 		if err != nil {
 			lastErr = err
 			if recoveryCause == "" {
-				recoveryCause = "ambiguous_transport"
+				recoveryCause = protocol.RecoveryCauseAmbiguousTransport
 			}
 			if idempotencyKey != "" && submissionAttempts < maxSubmissionAttempts {
 				time.Sleep(submitRetryDelay(attempt))
@@ -99,7 +99,7 @@ func submitWorkWithReconcileCause(client *http.Client, endpoint string, payload 
 		if readErr != nil {
 			lastErr = readErr
 			if recoveryCause == "" {
-				recoveryCause = "ambiguous_response_read"
+				recoveryCause = protocol.RecoveryCauseAmbiguousResponseRead
 			}
 			if idempotencyKey != "" && submissionAttempts < maxSubmissionAttempts {
 				time.Sleep(submitRetryDelay(attempt))
@@ -125,7 +125,7 @@ func submitWorkWithReconcileCause(client *http.Client, endpoint string, payload 
 		// process-local HMAC issuer rotated and invalidated the old JWT.
 		if resp.StatusCode == http.StatusUnauthorized && auth != nil && auth.canRenew() && !renewedAuth {
 			if recoveryCause == "" {
-				recoveryCause = "auth_renewal"
+				recoveryCause = protocol.RecoveryCauseAuthRenewal
 			}
 			if err := auth.renew(); err != nil {
 				return result, fmt.Errorf("renew auth after 401: %w", err)
@@ -142,7 +142,7 @@ func submitWorkWithReconcileCause(client *http.Client, endpoint string, payload 
 		// not commit) or reconciles the already accepted canonical Work.
 		if idempotencyKey != "" && retryableSubmitStatus(resp.StatusCode) && submissionAttempts < maxSubmissionAttempts {
 			if recoveryCause == "" {
-				recoveryCause = "transient_status"
+				recoveryCause = protocol.RecoveryCauseTransientStatus
 			}
 			lastErr = fmt.Errorf("transient submit status %s", resp.Status)
 			time.Sleep(submitRetryDelay(attempt))

@@ -17,6 +17,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net/url"
@@ -92,6 +94,7 @@ func runPipeline(args []string) {
 	}
 	w.Source = source
 	w.CorrelationID = workgraph.NewID("cor")
+	w.IdempotencyKey = stableCIIdempotencyKey(source, raw)
 
 	// Submit via the same auth path as the works CLI.
 	auth, err := newAuthFor(*api, *enroll)
@@ -102,20 +105,37 @@ func runPipeline(args []string) {
 		ID    string `json:"id"`
 		State string `json:"state"`
 	}
-	if _, err := auth.postJSON("/v1/works", map[string]any{
-		"queue":          true,
-		"source":         w.Source,
-		"objective":      w.Objective,
-		"requirements":   w.Requirements,
-		"policy":         w.Policy,
-		"graph":          w.Graph,
-		"correlation_id": w.CorrelationID,
-	}, &created); err != nil {
+	result, err := auth.postWorkResilient("/v1/works", map[string]any{
+		"queue":           true,
+		"source":          w.Source,
+		"objective":       w.Objective,
+		"requirements":    w.Requirements,
+		"policy":          w.Policy,
+		"graph":           w.Graph,
+		"correlation_id":  w.CorrelationID,
+		"idempotency_key": w.IdempotencyKey,
+	}, w.IdempotencyKey, &created)
+	if err != nil {
 		fail("submit: %v", err)
 	}
-	fmt.Printf("works-ci: submitted %s (pool=%q sha=%.8s)\n", created.ID, w.Requirements.Pool, w.Source.SHA)
+	if result.Replay {
+		fmt.Printf("works-ci: reconciled %s (attempts=%d pool=%q sha=%.8s)\n",
+			created.ID, result.Attempts, w.Requirements.Pool, w.Source.SHA)
+	} else {
+		fmt.Printf("works-ci: submitted %s (pool=%q sha=%.8s)\n", created.ID, w.Requirements.Pool, w.Source.SHA)
+	}
 
 	waitTerminal(auth, created.ID, *timeoutS)
+}
+
+func stableCIIdempotencyKey(source workgraph.Source, config []byte) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(source.Repository))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(source.SHA))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write(config)
+	return "works-ci-" + hex.EncodeToString(h.Sum(nil))
 }
 
 func deriveGitSource(dir string) (workgraph.Source, error) {
