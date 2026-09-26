@@ -28,3 +28,12 @@ This file is the local execution contract for coding agents, bots, reviewers, an
 - Works cannot be marked SUCCEEDED without authoritative state machine transition AND evidence on disk.
 - Workers are disposable; control plane owns state.
 - V1 must work without AI.
+
+
+## Long-horizon continuity
+
+- Controller/UI sessions are disposable; accepted WORKS state is canonical.
+- For long-running or consequential work, durably submit the Work before the first material execution step.
+- Persist and reuse the canonical `work_id`; do not reconstruct execution state from chat/session memory.
+- After reconnect or retry, read the current Work first and reconcile before any mutation.
+- A controller disconnect is not a mission failure and must not trigger blind resubmission or duplicate effects.
