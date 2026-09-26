@@ -45,6 +45,8 @@ import (
 // v12 (platform convergence V2.1): immutable work_execution_contexts bindings.
 // v13 (RFC-0008): dispatch_acceptances — durable Runtime -> WORKS acceptance
 // state, including exactly-once effect identity and verification state.
+// v14: durable idempotent-submission metadata — pre-admission intent hash,
+// admission-default snapshot and original queue decision.
 const SchemaVersion = 14
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
