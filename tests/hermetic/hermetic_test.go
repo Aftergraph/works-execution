@@ -20,7 +20,7 @@ import (
 
 // TestPrepare_ScrubsEnvironment verifies the Hermetic default: when the
 // manifest has no `environment` allow-list, the subprocess receives
-// only the sandbox-injected PATH/HOME/LANG, regardless of what the
+// only the sandbox-injected PATH/HOME/LANG/TMPDIR, regardless of what the
 // caller tried to pass through.
 func TestPrepare_ScrubsEnvironment(t *testing.T) {
 	t.Parallel()
@@ -42,7 +42,7 @@ func TestPrepare_ScrubsEnvironment(t *testing.T) {
 	env := envMap(prep.Env)
 	for k := range env {
 		switch k {
-		case "PATH", "HOME", "LANG":
+		case "PATH", "HOME", "LANG", "TMPDIR":
 			// allowed
 		default:
 			t.Errorf("unexpected env var leaked: %s=%s", k, env[k])
@@ -97,6 +97,30 @@ func TestPrepare_AllowListIntersection(t *testing.T) {
 
 // TestPrepare_CreatesIsolatedWorkspace verifies the workdir exists,
 // is empty, and is a fresh per-attempt directory.
+func TestPrepare_DerivesTMPDIRFromSelectedRoot(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "custom-worker-scratch")
+	prep, err := sandbox.Prepare(context.Background(), "true", map[string]string{
+		"TMPDIR": "/tmp/caller-must-not-win",
+	}, sandbox.Manifest{
+		ActionID:   "tmpdir-root",
+		Filesystem: sandbox.FSIsolated,
+	}, sandbox.Options{ProbeNetwork: false, Root: root})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	t.Cleanup(prep.Cleanup)
+
+	env := envMap(prep.Env)
+	want := filepath.Join(root, "tmp")
+	if env["TMPDIR"] != want {
+		t.Fatalf("TMPDIR=%q want %q", env["TMPDIR"], want)
+	}
+	if info, err := os.Stat(want); err != nil || !info.IsDir() {
+		t.Fatalf("derived TMPDIR not provisioned: info=%v err=%v", info, err)
+	}
+}
+
 func TestPrepare_CreatesIsolatedWorkspace(t *testing.T) {
 	t.Parallel()
 	prep, err := sandbox.Prepare(context.Background(), "true", nil, sandbox.Manifest{
@@ -226,9 +250,8 @@ func TestPrepare_AllowListRequiresEntries(t *testing.T) {
 }
 
 // TestDefaultDenyEnv_Helper verifies the helper builds an env with only
-// the sandbox defaults + supplied allow-list, and includes PATH/HOME/LANG
-// plus the Go toolchain env (GOMODCACHE/GOPATH/GOCACHE) that keeps
-// `go vet`/`go test` functional under HOME=/tmp (RFC: self-hosted CI).
+// the sandbox defaults + supplied allow-list, including a persistent
+// TMPDIR/HOME plus the Go toolchain env (GOMODCACHE/GOPATH/GOCACHE).
 func TestDefaultDenyEnv_Helper(t *testing.T) {
 	t.Parallel()
 	env := envMap(sandbox.DefaultDenyEnv(map[string]string{
@@ -236,13 +259,22 @@ func TestDefaultDenyEnv_Helper(t *testing.T) {
 	}))
 	for k := range env {
 		switch k {
-		case "PATH", "HOME", "LANG", "FOO", "GOMODCACHE", "GOPATH", "GOCACHE":
+		case "PATH", "HOME", "LANG", "TMPDIR", "FOO", "GOMODCACHE", "GOPATH", "GOCACHE":
 		default:
 			t.Errorf("unexpected key %s=%s", k, env[k])
 		}
 	}
 	if env["FOO"] != "bar" {
 		t.Errorf("FOO=%q", env["FOO"])
+	}
+	if env["TMPDIR"] != sandbox.WorkerScratchRoot {
+		t.Errorf("TMPDIR=%q want %q", env["TMPDIR"], sandbox.WorkerScratchRoot)
+	}
+	if strings.HasPrefix(env["TMPDIR"], "/tmp/") || env["TMPDIR"] == "/tmp" {
+		t.Errorf("TMPDIR=%q must not depend on shared /tmp", env["TMPDIR"])
+	}
+	if !strings.HasPrefix(env["HOME"], "/var/lib/works/") {
+		t.Errorf("HOME=%q must live under /var/lib/works/", env["HOME"])
 	}
 	// Go env must point into the worker-owned state directory so module
 	// downloads and build caches persist across nodes.

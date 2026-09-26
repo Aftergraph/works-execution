@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,8 +33,9 @@ import (
 type cliAuth struct {
 	api   string
 	token string
-	// Renewal support: when both are set, postJSON/getJSON transparently
-	// re-enroll on 401 (same renewal loop as the worker Client).
+	// Renewal support: when enrollSecret is set, callers may re-enroll once
+	// after a definitive 401. A 401 is safe to retry because WORKS auth
+	// middleware rejects the request before invoking the mutating handler.
 	workerID     string
 	enrollSecret string
 }
@@ -42,20 +44,28 @@ type cliAuth struct {
 func newCLIAuth(api, tokenFlag, enrollSecret string) (*cliAuth, error) {
 	a := &cliAuth{api: api}
 
+	// Resolve the enrollment challenge even when an explicit token wins the
+	// initial credential selection. Keeping it as a renewal fallback means a
+	// process-local issuer rotation can recover a stale WORKS_TOKEN instead of
+	// forcing a manual restart of the controller.
+	if enrollSecret == "" {
+		enrollSecret = os.Getenv("WORKS_ENROLL_SECRET")
+	}
+	a.enrollSecret = enrollSecret
+
 	// 1. Explicit token.
 	if tokenFlag != "" {
 		a.token = tokenFlag
+		a.workerID = workerIDFromToken(tokenFlag)
 		return a, nil
 	}
 	if t := os.Getenv("WORKS_TOKEN"); t != "" {
 		a.token = t
+		a.workerID = workerIDFromToken(t)
 		return a, nil
 	}
 
 	// 2. Enroll with the shared secret.
-	if enrollSecret == "" {
-		enrollSecret = os.Getenv("WORKS_ENROLL_SECRET")
-	}
 	if enrollSecret == "" {
 		// 3. No credentials — allowed; callers handle 401s with a hint.
 		return a, nil
@@ -67,7 +77,6 @@ func newCLIAuth(api, tokenFlag, enrollSecret string) (*cliAuth, error) {
 	}
 	a.token = tok
 	a.workerID = workerIDFromToken(tok)
-	a.enrollSecret = enrollSecret
 	return a, nil
 }
 
@@ -93,12 +102,13 @@ func workerIDFromToken(jwtRaw string) string {
 }
 
 // enrollCLI POSTs /v1/workers/enroll with a CLI-scoped worker id and
-// returns the raw JWT. worker_id must match ^[A-Za-z0-9_.-]{1,128}$.
+// returns the raw JWT. The enrollment/registry boundary requires
+// ^wrkr_[a-z0-9_-]{1,64}$ (k-066), so CLI identities use wrkr_cli_<hex>.
 func enrollCLI(api, secret string) (string, error) {
 	suffix := make([]byte, 6)
 	_, _ = rand.Read(suffix)
 	body := map[string]any{
-		"worker_id":   "cli_" + hex.EncodeToString(suffix),
+		"worker_id":   "wrkr_cli_" + hex.EncodeToString(suffix),
 		"challenge":   secret,
 		"scope":       "worker",
 		"ttl_seconds": 3600,
@@ -130,6 +140,27 @@ func (a *cliAuth) authHeader() string {
 		return ""
 	}
 	return "Bearer " + a.token
+}
+
+func (a *cliAuth) canRenew() bool {
+	return a != nil && a.api != "" && a.enrollSecret != ""
+}
+
+// renew obtains a fresh short-lived token after a definitive authentication
+// failure. The signing key is process-local, so an API restart intentionally
+// invalidates old tokens; this turns that restart from a manual CLI failure
+// into a bounded re-authentication step.
+func (a *cliAuth) renew() error {
+	if !a.canRenew() {
+		return errors.New("auth renewal unavailable: enrollment secret not configured")
+	}
+	tok, err := enrollCLI(a.api, a.enrollSecret)
+	if err != nil {
+		return err
+	}
+	a.token = tok
+	a.workerID = workerIDFromToken(tok)
+	return nil
 }
 
 // hint401 is the fix-it message printed when the control plane

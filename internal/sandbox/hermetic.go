@@ -128,9 +128,19 @@ type Options struct {
 	ProbeNetwork bool
 }
 
+const (
+	// WorkerScratchRoot is the durable host filesystem used for transient
+	// execution scratch. Production VDS mounts /tmp as a bounded tmpfs; using
+	// it for Go/cgo compiler intermediates can exhaust the entire shared tmpfs
+	// even when the root filesystem has ample capacity.
+	WorkerScratchRoot = "/var/lib/works/tmp"
+)
+
 var defaultOpts = Options{
-	Root:          filepath.Join(os.TempDir(), "works-sandbox"),
-	ProbeNetwork:  true,
+	// Keep the package-level default portable for unit/library callers.
+	// Production worker.go passes an explicit Root under WorkerScratchRoot.
+	Root:         filepath.Join(os.TempDir(), "works-sandbox"),
+	ProbeNetwork: true,
 }
 
 // Prepare enforces the Hermetic Execution Standard (#111) defaults and
@@ -157,7 +167,11 @@ func Prepare(ctx context.Context, cmd string, env map[string]string, m Manifest,
 		return nil, err
 	}
 
-	scrubbed := scrubEnv(env, m.Environment)
+	tmpdir := filepath.Join(o.Root, "tmp")
+	if err := os.MkdirAll(tmpdir, 0o700); err != nil {
+		return nil, fmt.Errorf("%w: create scratch tmpdir: %v", ErrNoWorkspace, err)
+	}
+	scrubbed := scrubEnv(env, m.Environment, tmpdir)
 
 	prepared := &Prepared{
 		Env:            scrubbed,
@@ -180,17 +194,17 @@ func Prepare(ctx context.Context, cmd string, env map[string]string, m Manifest,
 // subprocesses — it widens what a node can call, not what the
 // network/filesystem policy allows.
 //
-// Go build cache: HOME=/tmp breaks `go vet`/`go test` ("module cache
-// not found: neither GOMODCACHE nor GOPATH is set") because Go
-// derives its cache from $HOME. We pin GOMODCACHE+GOPATH+GOCACHE to
-// worker-owned directories under /var/lib/works so module downloads
-// and build caches persist across nodes (and feed RFC-0005 cache
-// locality instead of re-downloading on every run).
+// Go build/cache scratch must not depend on the host's shared /tmp tmpfs.
+// The production VDS has a bounded tmpfs at /tmp; once full, Go/cgo fail with
+// ENOSPC even while the root filesystem still has tens of GiB available.
+// HOME, TMPDIR, GOMODCACHE, GOPATH and GOCACHE therefore live under the
+// worker-owned /var/lib/works tree.
 func DefaultDenyEnv(allow map[string]string) []string {
 	base := map[string]string{
 		"PATH":       "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME":       "/tmp",
+		"HOME":       "/var/lib/works/home",
 		"LANG":       "C.UTF-8",
+		"TMPDIR":     WorkerScratchRoot,
 		"GOMODCACHE": "/var/lib/works/gomodcache",
 		"GOPATH":     "/var/lib/works/gopath",
 		"GOCACHE":    "/var/lib/works/gocache",
@@ -366,10 +380,10 @@ func tryMountTmpfs(dir string) (ok bool, err error) {
 // `supplied` is the per-node env (the second argument to Prepare, e.g.
 // ReadyItem.Env); it is intersected with the allow-list, so a caller
 // cannot smuggle vars past the manifest.
-func scrubEnv(supplied, allow map[string]string) []string {
+func scrubEnv(supplied, allow map[string]string, tmpdir string) []string {
 	merged := map[string]string{
 		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME": "/tmp",
+		"HOME": "/var/lib/works/home",
 		"LANG": "C.UTF-8",
 	}
 	for k, v := range allow {
@@ -380,11 +394,15 @@ func scrubEnv(supplied, allow map[string]string) []string {
 			merged[k] = v
 		}
 	}
+	// TMPDIR is a sandbox-owned invariant, not a caller-controlled capability.
+	// Pin it to the resolved Options.Root so portable/custom worker scratch
+	// roots never fall back to the host's shared /tmp tmpfs.
+	merged["TMPDIR"] = tmpdir
 	return mapToEnv(merged)
 }
 
 func isSandboxDefault(k string) bool {
-	return k == "PATH" || k == "HOME" || k == "LANG"
+	return k == "PATH" || k == "HOME" || k == "LANG" || k == "TMPDIR"
 }
 
 func mapToEnv(m map[string]string) []string {

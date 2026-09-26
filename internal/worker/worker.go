@@ -733,18 +733,53 @@ var workerPrivateEnv = map[string]struct{}{
 	"GH_TOKEN":            {},
 }
 
+func workerScratchRoot() string {
+	if v := strings.TrimSpace(os.Getenv("WORKS_SCRATCH_ROOT")); v != "" {
+		return v
+	}
+	// Production WORKS owns /var/lib/works. Developer/test hosts that do not
+	// have that state root fall back to their ordinary temp directory.
+	if info, err := os.Stat("/var/lib/works"); err == nil && info.IsDir() {
+		return sandbox.WorkerScratchRoot
+	}
+	return filepath.Join(os.TempDir(), "works-worker")
+}
+
 func sanitizedWorkerProcessEnv(base []string) []string {
-	out := make([]string, 0, len(base))
+	scratch := workerScratchRoot()
+	out := make([]string, 0, len(base)+1)
+	tmpdirSeen := false
 	for _, entry := range base {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok {
-			if _, private := workerPrivateEnv[strings.ToUpper(key)]; private {
+			upper := strings.ToUpper(key)
+			if _, private := workerPrivateEnv[upper]; private {
 				continue
+			}
+			if upper == "TMPDIR" {
+				tmpdirSeen = true
+				entry = "TMPDIR=" + scratch
 			}
 		}
 		out = append(out, entry)
 	}
+	if !tmpdirSeen {
+		out = append(out, "TMPDIR="+scratch)
+	}
 	return out
+}
+
+func ensureWorkerScratch() (string, error) {
+	root := workerScratchRoot()
+	for _, dir := range []string{
+		root,
+		filepath.Join(root, "sandbox"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return "", fmt.Errorf("worker scratch %s: %w", dir, err)
+		}
+	}
+	return root, nil
 }
 
 // execResult captures the outcome of running one node command.
@@ -800,9 +835,22 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 		cmd.Dir = workDir
 	}
 
+	scratchRoot, scratchErr := ensureWorkerScratch()
+	if scratchErr != nil {
+		return execResult{
+			Status:      "failed",
+			ExitCode:    -1,
+			CombinedLog: []byte("worker scratch prepare failed: " + scratchErr.Error()),
+			Duration:    time.Since(start),
+		}
+	}
+
 	var prepared *sandbox.Prepared
 	if len(manifest) > 0 && manifest[0] != nil {
-		p, prepErr := sandbox.Prepare(cctx, command, env, *manifest[0])
+		p, prepErr := sandbox.Prepare(cctx, command, env, *manifest[0], sandbox.Options{
+			Root:         filepath.Join(scratchRoot, "sandbox"),
+			ProbeNetwork: true,
+		})
 		if prepErr != nil {
 			return execResult{
 				Status:      "failed",

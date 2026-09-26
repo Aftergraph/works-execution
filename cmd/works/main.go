@@ -8,11 +8,9 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,7 +26,7 @@ const usage = `works — developer CLI for works-execution
 
 Usage:
   works init [--out works.yaml]
-  works run --config works.yaml [--api http://127.0.0.1:8080] [--idempotency-key KEY]
+  works run --config works.yaml [--api http://127.0.0.1:8080] [--idempotency-key KEY] [--token JWT] [--enroll-secret S]
   works status <work_id> [--api http://127.0.0.1:8080] [--follow]
   works runners [--pool NAME] [--alive] [--api URL]   # BYOC: list scheduler-visible runners
   works missions [--limit N] [--json] [--api URL]     # k-037: NOW-ordered mission projection (needs-human first)
@@ -124,7 +122,9 @@ func runCmd(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	cfgPath := fs.String("config", "works.yaml", "config file")
 	api := fs.String("api", envOr("WORKS_API", "http://127.0.0.1:8080"), "control plane URL")
-	idem := fs.String("idempotency-key", "", "idempotency key (optional)")
+	idem := fs.String("idempotency-key", "", "idempotency key (recommended for resilient submission)")
+	token := fs.String("token", "", "bearer token (or WORKS_TOKEN env)")
+	enroll := fs.String("enroll-secret", "", "enrollment secret (or WORKS_ENROLL_SECRET env)")
 	_ = fs.Parse(args)
 
 	raw, err := os.ReadFile(*cfgPath)
@@ -140,21 +140,28 @@ func runCmd(args []string) {
 	}
 	w.CorrelationID = workgraph.NewID("cor")
 
+	auth, err := newCLIAuth(*api, *token, *enroll)
+	if err != nil {
+		fail("auth: %v", err)
+	}
+
 	body, _ := json.Marshal(w)
-	resp, err := http.Post(*api+"/v1/works", "application/json", bytes.NewReader(wireCreate(body)))
+	result, err := submitWorkWithReconcile(http.DefaultClient, *api+"/v1/works", wireCreate(body), w.IdempotencyKey, auth)
 	if err != nil {
 		fail("POST /v1/works: %v", err)
 	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusCreated {
-		fail("create: %s: %s", resp.Status, string(respBody))
+	if result.StatusCode != http.StatusCreated && result.StatusCode != http.StatusOK {
+		fail("create: %s: %s", result.Status, string(result.Body))
 	}
 	var created workgraph.Work
-	if err := json.Unmarshal(respBody, &created); err != nil {
+	if err := json.Unmarshal(result.Body, &created); err != nil {
 		fail("decode response: %v", err)
 	}
-	fmt.Printf("submitted work %s (state=%s)\n", created.ID, created.State)
+	if result.Replay {
+		fmt.Printf("reconciled work %s (state=%s, attempts=%d)\n", created.ID, created.State, result.Attempts)
+	} else {
+		fmt.Printf("submitted work %s (state=%s)\n", created.ID, created.State)
+	}
 	fmt.Printf("track with: works status %s --follow\n", created.ID)
 }
 
