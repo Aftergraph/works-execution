@@ -250,6 +250,7 @@ CREATE TABLE IF NOT EXISTS works (
     idempotency_key TEXT UNIQUE,
     correlation_id  TEXT,
     creation_intent_hash TEXT,
+    admission_defaults_json TEXT,
     queue_requested INTEGER
 );
 
@@ -529,6 +530,11 @@ func (s *SQLiteStore) migrateCreationIntentMetadata() error {
 			return err
 		}
 	}
+	if !cols["admission_defaults_json"] {
+		if _, err := s.db.Exec(`ALTER TABLE works ADD COLUMN admission_defaults_json TEXT`); err != nil {
+			return err
+		}
+	}
 	if !cols["queue_requested"] {
 		if _, err := s.db.Exec(`ALTER TABLE works ADD COLUMN queue_requested INTEGER`); err != nil {
 			return err
@@ -700,16 +706,18 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 	if w.IdempotencyKey != "" {
 		var existingID string
 		var existingHash sql.NullString
+		var existingDefaults sql.NullString
 		var existingQueue sql.NullInt64
 		err := tx.QueryRowContext(ctx,
-			`SELECT id, creation_intent_hash, queue_requested FROM works WHERE idempotency_key = ?`, w.IdempotencyKey,
-		).Scan(&existingID, &existingHash, &existingQueue)
+			`SELECT id, creation_intent_hash, admission_defaults_json, queue_requested FROM works WHERE idempotency_key = ?`, w.IdempotencyKey,
+		).Scan(&existingID, &existingHash, &existingDefaults, &existingQueue)
 		if err == nil {
 			if existingID != w.ID {
 				return ErrIdempotencyConflict
 			}
 			if w.CreationIntentHash != "" {
 				if !existingHash.Valid || existingHash.String != w.CreationIntentHash ||
+					!existingDefaults.Valid || existingDefaults.String == "" ||
 					w.QueueRequested == nil || !existingQueue.Valid ||
 					(existingQueue.Int64 != 0) != *w.QueueRequested {
 					return ErrIdempotencyConflict
@@ -723,8 +731,8 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 	}
 
 	_, err = tx.ExecContext(ctx, `
-        INSERT INTO works (id, created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, mission_json, idempotency_key, correlation_id, creation_intent_hash, queue_requested)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO works (id, created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, mission_json, idempotency_key, correlation_id, creation_intent_hash, admission_defaults_json, queue_requested)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
 		w.ID,
 		w.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -739,6 +747,7 @@ func (s *SQLiteStore) CreateWork(ctx context.Context, w *workgraph.Work) error {
 		nullable(w.IdempotencyKey),
 		nullable(w.CorrelationID),
 		nullable(w.CreationIntentHash),
+		nullable(w.AdmissionDefaultsJSON),
 		nullableBool(w.QueueRequested),
 	)
 	if err != nil {
@@ -778,16 +787,17 @@ func (s *SQLiteStore) GetWork(ctx context.Context, id string) (*workgraph.Work, 
 	w := &workgraph.Work{ID: id}
 	var stateStr string
 	var sourceJ, objJ, graphJ, reqJ, polJ, missionJ string
-	var idemKey, corrID sql.NullString
+	var idemKey, corrID, intentHash, admissionDefaults sql.NullString
+	var queueRequested sql.NullInt64
 	var createdStr, updatedStr string
 
 	err := s.readQueryRow(ctx, `
-        SELECT created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, COALESCE(mission_json,''), idempotency_key, correlation_id
+        SELECT created_at, updated_at, state, source_json, objective_json, graph_json, requirements_json, policy_json, COALESCE(mission_json,''), idempotency_key, correlation_id, creation_intent_hash, admission_defaults_json, queue_requested
         FROM works WHERE id = ?
     `, id).Scan(
 		&createdStr, &updatedStr, &stateStr,
 		&sourceJ, &objJ, &graphJ, &reqJ, &polJ, &missionJ,
-		&idemKey, &corrID,
+		&idemKey, &corrID, &intentHash, &admissionDefaults, &queueRequested,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -826,6 +836,16 @@ func (s *SQLiteStore) GetWork(ctx context.Context, id string) (*workgraph.Work, 
 	}
 	if corrID.Valid {
 		w.CorrelationID = corrID.String
+	}
+	if intentHash.Valid {
+		w.CreationIntentHash = intentHash.String
+	}
+	if admissionDefaults.Valid {
+		w.AdmissionDefaultsJSON = admissionDefaults.String
+	}
+	if queueRequested.Valid {
+		v := queueRequested.Int64 != 0
+		w.QueueRequested = &v
 	}
 
 	// Hydrate attempts
