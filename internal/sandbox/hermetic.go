@@ -167,7 +167,11 @@ func Prepare(ctx context.Context, cmd string, env map[string]string, m Manifest,
 		return nil, err
 	}
 
-	scrubbed := scrubEnv(env, m.Environment)
+	tmpdir := filepath.Join(o.Root, "tmp")
+	if err := os.MkdirAll(tmpdir, 0o700); err != nil {
+		return nil, fmt.Errorf("%w: create scratch tmpdir: %v", ErrNoWorkspace, err)
+	}
+	scrubbed := scrubEnv(env, m.Environment, tmpdir)
 
 	prepared := &Prepared{
 		Env:            scrubbed,
@@ -376,12 +380,11 @@ func tryMountTmpfs(dir string) (ok bool, err error) {
 // `supplied` is the per-node env (the second argument to Prepare, e.g.
 // ReadyItem.Env); it is intersected with the allow-list, so a caller
 // cannot smuggle vars past the manifest.
-func scrubEnv(supplied, allow map[string]string) []string {
+func scrubEnv(supplied, allow map[string]string, tmpdir string) []string {
 	merged := map[string]string{
-		"PATH":   "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME":   "/var/lib/works/home",
-		"LANG":   "C.UTF-8",
-		"TMPDIR": WorkerScratchRoot,
+		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"HOME": "/var/lib/works/home",
+		"LANG": "C.UTF-8",
 	}
 	for k, v := range allow {
 		merged[k] = v
@@ -391,6 +394,10 @@ func scrubEnv(supplied, allow map[string]string) []string {
 			merged[k] = v
 		}
 	}
+	// TMPDIR is a sandbox-owned invariant, not a caller-controlled capability.
+	// Pin it to the resolved Options.Root so portable/custom worker scratch
+	// roots never fall back to the host's shared /tmp tmpfs.
+	merged["TMPDIR"] = tmpdir
 	return mapToEnv(merged)
 }
 
