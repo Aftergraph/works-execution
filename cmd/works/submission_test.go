@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -348,5 +349,84 @@ func TestSubmitWorkWithReconcile_HalfOpenAcceptedResponseTimesOutAndReconciles(t
 	}
 	if len(works) != 1 {
 		t.Fatalf("half-open recovery created duplicate works: count=%d", len(works))
+	}
+}
+
+
+type transientThenRealTransport struct {
+	base  http.RoundTripper
+	calls atomic.Int32
+}
+
+func (t *transientThenRealTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	n := t.calls.Add(1)
+	if n <= 2 {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Status:     "503 Service Unavailable",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("transient")),
+			Request:    req,
+		}, nil
+	}
+	return t.base.RoundTrip(req)
+}
+
+func TestSubmitWorkWithReconcile_AuthRenewalHasSeparateRetrySlot(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "auth-retry-slot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "0123456789abcdef0123456789abcdef"
+	srv := &api.Server{
+		Store:        st,
+		Auth:         api.NewHMACIssuer(),
+		AuthEnabled:  true,
+		EnrollSecret: secret,
+	}
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(func() {
+		ts.Close()
+		_ = st.Close()
+	})
+
+	auth, err := newCLIAuth(ts.URL, "", secret)
+	if err != nil {
+		t.Fatalf("initial enroll: %v", err)
+	}
+	staleToken := auth.token
+
+	// Rotate issuer after enrollment. The first two HTTP attempts are synthetic
+	// 503s; the third reaches WORKS with the stale token and gets a definitive
+	// pre-mutation 401. Renewal must still have its own fourth HTTP slot.
+	srv.Auth = api.NewHMACIssuer()
+	transport := &transientThenRealTransport{base: http.DefaultTransport}
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+
+	result, err := submitWorkWithReconcile(
+		client,
+		ts.URL+"/v1/works",
+		submissionPayload(t, "idem-auth-separate-slot"),
+		"idem-auth-separate-slot",
+		auth,
+	)
+	if err != nil {
+		t.Fatalf("combined transient+401 recovery: %v", err)
+	}
+	if result.StatusCode != http.StatusCreated {
+		t.Fatalf("final status=%d body=%s", result.StatusCode, string(result.Body))
+	}
+	if got := transport.calls.Load(); got != 4 {
+		t.Fatalf("HTTP attempts=%d want 4 (2 transient + 401 + renewed)", got)
+	}
+	if auth.token == staleToken {
+		t.Fatal("stale token was not renewed")
+	}
+	works, err := st.ListWorks(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(works) != 1 {
+		t.Fatalf("combined recovery created %d works want 1", len(works))
 	}
 }
