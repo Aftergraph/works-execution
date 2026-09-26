@@ -103,3 +103,33 @@ func TestCreateWork_IdempotencyKeyChangedIntentFailsClosed(t *testing.T) {
 		t.Fatalf("missing conflict code: %s", string(conflictRaw))
 	}
 }
+
+
+func TestCreateWork_IdempotentReplayReturnsCurrentCanonicalState(t *testing.T) {
+	_, ts, st := newTestServer(t)
+	key := "idem-replay-current-state"
+
+	firstResp, firstRaw := postWorkRaw(t, ts.URL,
+		idempotentCreateBody("wrk_state_a", key, "echo state", true))
+	if firstResp.StatusCode != http.StatusCreated {
+		t.Fatalf("first submit: status=%d body=%s", firstResp.StatusCode, string(firstRaw))
+	}
+	first := decodeCreatedWork(t, firstRaw)
+
+	if _, err := st.UpdateState(context.Background(), first.ID, workgraph.StateRunning); err != nil {
+		t.Fatalf("advance state: %v", err)
+	}
+
+	replayResp, replayRaw := postWorkRaw(t, ts.URL,
+		idempotentCreateBody("wrk_state_b", key, "echo state", true))
+	if replayResp.StatusCode != http.StatusOK {
+		t.Fatalf("replay: status=%d body=%s", replayResp.StatusCode, string(replayRaw))
+	}
+	replayed := decodeCreatedWork(t, replayRaw)
+	if replayed.ID != first.ID {
+		t.Fatalf("replay changed work id: first=%s second=%s", first.ID, replayed.ID)
+	}
+	if replayed.State != workgraph.StateRunning {
+		t.Fatalf("replay returned stale state=%s want RUNNING", replayed.State)
+	}
+}
