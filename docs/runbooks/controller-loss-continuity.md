@@ -94,6 +94,30 @@ This closes the ambiguous-ack gap after server acceptance. It cannot recover a
 mission definition that existed only in volatile controller memory and never
 reached WORKS, so durable mission intent still has to exist before execution.
 
+## Authentication continuity
+
+Production `works run` uses the existing WORKS bearer/enrollment boundary.
+When an enrollment secret is available, resilient submission attaches the
+bearer token on every attempt and handles one definitive `401` by re-enrolling
+and retrying.
+
+This matters because the current dev-mode HMAC issuer intentionally rotates its
+signing key when `works-api` restarts, invalidating outstanding tokens.
+
+```text
+valid CLI token
+  -> works-api restarts / issuer rotates
+  -> POST receives 401 before mutation
+  -> CLI re-enrolls once
+  -> retries the same submission
+  -> canonical Work accepted/reconciled
+```
+
+A `401` retry is safe even without an idempotency key because WORKS rejects
+the request in authentication middleware before the mutating handler runs.
+Transport/read ambiguity and 429/5xx remain retryable **only** with a stable
+idempotency key.
+
 ## Recovery rule
 
 After any controller/UI interruption:
