@@ -242,3 +242,36 @@ func TestSubmitWorkWithReconcile_APIRestartRenewsTokenAndKeepsIdentity(t *testin
 		t.Fatalf("auth recovery created duplicate works: count=%d", len(works))
 	}
 }
+
+
+func TestSubmitWorkWithReconcile_NoKeyTransportAmbiguityDoesNotRetryEvenWhenAuthCanRenew(t *testing.T) {
+	ts, st := submissionTestServer(t)
+	transport := &dropFirstResponseTransport{base: http.DefaultTransport}
+	client := &http.Client{Transport: transport}
+	auth := &cliAuth{
+		api:          ts.URL,
+		enrollSecret: "renewal-is-configured-but-must-not-authorize-transport-retry",
+	}
+
+	_, err := submitWorkWithReconcile(
+		client,
+		ts.URL+"/v1/works",
+		submissionPayload(t, ""),
+		"",
+		auth,
+	)
+	if err == nil {
+		t.Fatal("expected ambiguous no-key submission to fail")
+	}
+	if got := transport.calls.Load(); got != 1 {
+		t.Fatalf("auth capability accidentally enabled blind transport retry: calls=%d want 1", got)
+	}
+
+	works, listErr := st.ListWorks(context.Background(), 10)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(works) != 1 {
+		t.Fatalf("server accepted work count=%d want 1", len(works))
+	}
+}
