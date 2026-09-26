@@ -56,7 +56,7 @@ func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byt
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
-			if attempt < maxAttempts {
+			if idempotencyKey != "" && attempt < maxAttempts {
 				time.Sleep(submitRetryDelay(attempt))
 				continue
 			}
@@ -70,9 +70,12 @@ func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byt
 		_ = resp.Body.Close()
 		if readErr != nil {
 			lastErr = readErr
-			if attempt < maxAttempts {
+			if idempotencyKey != "" && attempt < maxAttempts {
 				time.Sleep(submitRetryDelay(attempt))
 				continue
+			}
+			if idempotencyKey == "" {
+				return submitResult{}, fmt.Errorf("ambiguous response read not retried without --idempotency-key: %w", readErr)
 			}
 			return submitResult{}, fmt.Errorf("read submit response after %d attempts: %w", attempt, readErr)
 		}
