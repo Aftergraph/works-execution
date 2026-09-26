@@ -26,6 +26,7 @@ import (
 	"github.com/JonasAbde/works-execution/packages/pipeline"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/webhook"
+	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
 // WebhookConfig configures the webhook handler. Secret is the
@@ -153,7 +154,7 @@ func (s *Server) githubWebhookHandler(w http.ResponseWriter, r *http.Request) {
 	// the repo owns its pipeline (DAG, pool pinning, cache). When
 	// the repo has no works.yml (or no token is configured), fall
 	// back to the built-in single-node verify behavior.
-	workID := workgraph.NewID("wrk")
+	workID := "wrk_" + shaID("github-delivery:" + deliveryID)
 	g, err := s.workFromPipeline(r.Context(), delivery)
 	if err != nil {
 		if errors.Is(err, errPipelineSkip) {
