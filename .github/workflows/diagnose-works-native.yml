@@ -1,0 +1,88 @@
+name: WORKS native diagnosis
+
+on:
+  pull_request:
+    types: [synchronize, opened, reopened]
+
+permissions:
+  contents: read
+  statuses: read
+
+jobs:
+  diagnose:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, aie-interop]
+    timeout-minutes: 5
+    steps:
+      - name: Resolve native WORKS status for exact head
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          status_json=""
+          work_id=""
+          for _ in $(seq 1 24); do
+            status_json="$(curl -fsS --max-time 5               -H "Authorization: Bearer $GH_TOKEN"               -H "Accept: application/vnd.github+json"               "https://api.github.com/repos/$REPO/commits/$HEAD_SHA/status")"
+            work_id="$(python3 -c 'import json,sys,re; d=json.load(sys.stdin); xs=[x for x in d.get("statuses",[]) if x.get("context")=="works-execution"]; s=(xs[0].get("description","") if xs else ""); m=re.search(r"(wrk_[0-9a-f]+)",s); print(m.group(1) if m else "")' <<<"$status_json")"
+            [[ -n "$work_id" ]] && break
+            sleep 5
+          done
+          [[ -n "$work_id" ]] || { echo "No WORKS status/work_id found for $HEAD_SHA" >&2; exit 2; }
+          state="$(python3 -c 'import json,sys; d=json.load(sys.stdin); xs=[x for x in d.get("statuses",[]) if x.get("context")=="works-execution"]; print(xs[0].get("state","") if xs else "")' <<<"$status_json")"
+          echo "head_sha=$HEAD_SHA"
+          echo "work_id=$work_id"
+          echo "native_status=$state"
+          echo "work_id=$work_id" >> "$GITHUB_OUTPUT"
+
+      - name: Read canonical WORKS state from VDS-local control plane
+        env:
+          WORK_ID: ${{ steps.resolve.outputs.work_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=http://127.0.0.1:18191
+          curl -fsS --max-time 5 "$BASE/healthz" >/dev/null
+          work="$(curl -fsS --max-time 10 "$BASE/v1/works/$WORK_ID")"
+          python3 - <<'PY' <<<"$work"
+          import json,sys
+          w=json.load(sys.stdin)
+          print("work_id=", w.get("id"))
+          print("state=", w.get("state"))
+          print("source=", json.dumps(w.get("source",{}), sort_keys=True))
+          print("attempts=")
+          for a in w.get("attempts",[]):
+              print(json.dumps({
+                  "id":a.get("id"), "node_id":a.get("node_id"),
+                  "status":a.get("status"), "exit_code":a.get("exit_code"),
+                  "error":a.get("error"), "log_ref":a.get("log_ref")
+              }, sort_keys=True))
+          print("evidence=")
+          for e in w.get("evidence",[]):
+              print(json.dumps({
+                  "node_id":e.get("node_id"), "type":e.get("type"),
+                  "result":e.get("result"), "details":e.get("details")
+              }, sort_keys=True))
+          PY
+
+      - name: Read failed node logs
+        env:
+          WORK_ID: ${{ steps.resolve.outputs.work_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=http://127.0.0.1:18191
+          work="$(curl -fsS --max-time 10 "$BASE/v1/works/$WORK_ID")"
+          nodes="$(python3 -c 'import json,sys; w=json.load(sys.stdin); print(" ".join(sorted({a.get("node_id","") for a in w.get("attempts",[]) if a.get("status") in ("failed","timed_out") and a.get("node_id")})))' <<<"$work")"
+          if [[ -z "$nodes" ]]; then
+            echo "No failed/timed_out node attempts recorded"
+            exit 0
+          fi
+          for node in $nodes; do
+            echo "===== node:$node ====="
+            curl -fsS --max-time 10 "$BASE/v1/works/$WORK_ID/nodes/$node/logs" || true
+            echo
+          done
