@@ -18,6 +18,7 @@ import (
 	"github.com/JonasAbde/works-execution/internal/dispatch"
 	"github.com/JonasAbde/works-execution/packages/cache"
 	"github.com/JonasAbde/works-execution/services/api"
+	"github.com/JonasAbde/works-execution/services/evidence"
 	"github.com/JonasAbde/works-execution/services/publisher"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
@@ -33,6 +34,9 @@ func main() {
 		webUIPublic       = flag.Bool("webui-public", envBool("WORKS_WEBUI_PUBLIC", false), "serve /v1/ui execution view without a Bearer token (read-only)")
 		rabControlKey     = flag.String("rab-control-token", envOr("WORKS_RAB_CONTROL_TOKEN", ""), "HMAC key for server-verified RAB control tokens at lease claim (k-062); empty keeps the k-058 presence-only advertisement law")
 		verifierToken     = flag.String("verifier-token", envOr("WORKS_VERIFIER_TOKEN", ""), "dedicated Sentinel verifier credential for semantic verdict ingest; empty disables ingest")
+		evidenceHMACKey   = flag.String("evidence-hmac-key", envOr("WORKS_EVIDENCE_HMAC_KEY", ""), "HMAC key for evidence-bundle production (GET /v1/works/{id}/evidence); empty keeps the endpoint 503 fail-closed")
+		evidenceKeyID     = flag.String("evidence-key-id", envOr("WORKS_EVIDENCE_KEY_ID", "works-api-evidence-v1"), "key id recorded in evidence-bundle signatures")
+		evidenceRunnerID  = flag.String("evidence-runner-id", envOr("WORKS_EVIDENCE_RUNNER_ID", "works-api"), "runner id recorded in evidence bundles")
 	)
 	flag.Parse()
 
@@ -110,6 +114,17 @@ func main() {
 		logger.Printf("Sentinel verification ingest enabled")
 	} else {
 		logger.Printf("Sentinel verification ingest unavailable (no WORKS_VERIFIER_TOKEN)")
+	}
+	// Evidence-bundle production. The signing key is never logged. An empty
+	// key keeps the evidence endpoint 503 fail-closed (evidence_unavailable).
+	if *evidenceHMACKey != "" && len(*evidenceHMACKey) < 32 {
+		logger.Fatalf("WORKS_EVIDENCE_HMAC_KEY must be at least 32 bytes when configured")
+	}
+	srv.EvidenceConfig = evidenceConfigFromValues(*evidenceHMACKey, *evidenceKeyID, *evidenceRunnerID)
+	if srv.EvidenceConfig != nil {
+		logger.Printf("evidence producer enabled (key_id=%s, runner=%s)", *evidenceKeyID, *evidenceRunnerID)
+	} else {
+		logger.Printf("evidence producer unavailable (no WORKS_EVIDENCE_HMAC_KEY; GET /v1/works/{id}/evidence returns 503)")
 	}
 
 	platformAPIToken := envOr("WORKS_API_TOKEN", "")
@@ -246,6 +261,34 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// envBool returns the parsed bool of an env var, falling back to
+// `def` when unset/empty or unparseable.
+// evidenceConfigFromValues builds the evidence-bundle producer config. A
+// key shorter than 32 bytes is rejected (nil, fail-closed) rather than
+// silently weakening the HMAC.
+func evidenceConfigFromValues(key, keyID, runnerID string) *api.EvidenceConfig {
+	if key == "" {
+		return nil
+	}
+	if len(key) < 32 {
+		return nil
+	}
+	if keyID == "" {
+		keyID = "works-api-evidence-v1"
+	}
+	if runnerID == "" {
+		runnerID = "works-api"
+	}
+	return &api.EvidenceConfig{
+		KeyID:   keyID,
+		HMACKey: []byte(key),
+		Runner: evidence.Runner{
+			ID:         runnerID,
+			TrustClass: "standard",
+		},
+	}
 }
 
 // envBool returns the parsed bool of an env var, falling back to
