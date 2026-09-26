@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-const maxIdempotentSubmitAttempts = 3
+const (
+	maxIdempotentSubmitAttempts = 3
+	defaultSubmitTimeout         = 15 * time.Second
+)
 
 type submitResult struct {
 	StatusCode int
@@ -28,6 +31,14 @@ type submitResult struct {
 func submitWorkWithReconcile(client *http.Client, endpoint string, payload []byte, idempotencyKey string, auth *cliAuth) (submitResult, error) {
 	if client == nil {
 		client = http.DefaultClient
+	}
+	// http.DefaultClient has no timeout. Clone zero-timeout clients so a
+	// half-open connection cannot pin a controller forever before it reaches
+	// the bounded idempotent reconciliation loop.
+	if client.Timeout <= 0 {
+		clone := *client
+		clone.Timeout = defaultSubmitTimeout
+		client = &clone
 	}
 
 	maxAttempts := 1
