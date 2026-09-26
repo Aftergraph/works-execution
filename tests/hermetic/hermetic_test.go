@@ -97,6 +97,30 @@ func TestPrepare_AllowListIntersection(t *testing.T) {
 
 // TestPrepare_CreatesIsolatedWorkspace verifies the workdir exists,
 // is empty, and is a fresh per-attempt directory.
+func TestPrepare_DerivesTMPDIRFromSelectedRoot(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "custom-worker-scratch")
+	prep, err := sandbox.Prepare(context.Background(), "true", map[string]string{
+		"TMPDIR": "/tmp/caller-must-not-win",
+	}, sandbox.Manifest{
+		ActionID:   "tmpdir-root",
+		Filesystem: sandbox.FSIsolated,
+	}, sandbox.Options{ProbeNetwork: false, Root: root})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	t.Cleanup(prep.Cleanup)
+
+	env := envMap(prep.Env)
+	want := filepath.Join(root, "tmp")
+	if env["TMPDIR"] != want {
+		t.Fatalf("TMPDIR=%q want %q", env["TMPDIR"], want)
+	}
+	if info, err := os.Stat(want); err != nil || !info.IsDir() {
+		t.Fatalf("derived TMPDIR not provisioned: info=%v err=%v", info, err)
+	}
+}
+
 func TestPrepare_CreatesIsolatedWorkspace(t *testing.T) {
 	t.Parallel()
 	prep, err := sandbox.Prepare(context.Background(), "true", nil, sandbox.Manifest{
