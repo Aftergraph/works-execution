@@ -7,34 +7,22 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
+	"github.com/JonasAbde/works-execution/packages/protocol"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/audit"
 	"github.com/JonasAbde/works-execution/services/observability"
 )
 
-const RecoveryCauseHeader = "X-Works-Recovery-Cause"
-
-var allowedRecoveryCauses = map[string]struct{}{
-	"ambiguous_transport":     {},
-	"ambiguous_response_read": {},
-	"transient_status":        {},
-	"auth_renewal":            {},
-	"controller_reconnect":    {},
-}
+const RecoveryCauseHeader = protocol.RecoveryCauseHeader
 
 func normalizeRecoveryCause(v string) string {
-	v = strings.ToLower(strings.TrimSpace(v))
-	if _, ok := allowedRecoveryCauses[v]; ok {
-		return v
-	}
-	return ""
+	return protocol.NormalizeRecoveryCause(v)
 }
 
 func ambiguousAckCause(v string) bool {
-	return v == "ambiguous_transport" || v == "ambiguous_response_read"
+	return protocol.IsAmbiguousAckCause(v)
 }
 
 // ReliabilityTelemetry joins ephemeral Prometheus counters with durable
@@ -77,7 +65,7 @@ func (s *Server) recordReliabilityReplay(
 				m.AmbiguousAckRecovered.Inc()
 			}
 		}
-		if recoveryCause == "controller_reconnect" {
+		if recoveryCause == protocol.RecoveryCauseControllerReconnect {
 			m.ControllerReconnectRequests.Inc()
 			if outcome == "recovered" {
 				m.ControllerReconnectRecovered.Inc()
