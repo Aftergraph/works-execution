@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/api"
@@ -283,5 +284,69 @@ func TestSubmitWorkWithReconcile_NoKeyTransportAmbiguityDoesNotRetryEvenWhenAuth
 	}
 	if len(works) != 1 {
 		t.Fatalf("server accepted work count=%d want 1", len(works))
+	}
+}
+
+
+type stallFirstResponseTransport struct {
+	base  http.RoundTripper
+	calls atomic.Int32
+}
+
+func (t *stallFirstResponseTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	n := t.calls.Add(1)
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	if n != 1 {
+		return resp, nil
+	}
+
+	// The server has already handled the request and produced a response, but
+	// the controller never receives it. Hold the transport until the client's
+	// deadline proves every attempt is actually bounded.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+func TestSubmitWorkWithReconcile_HalfOpenAcceptedResponseTimesOutAndReconciles(t *testing.T) {
+	ts, st := submissionTestServer(t)
+	transport := &stallFirstResponseTransport{base: http.DefaultTransport}
+	client := &http.Client{Transport: transport, Timeout: 50 * time.Millisecond}
+
+	start := time.Now()
+	result, err := submitWorkWithReconcile(
+		client,
+		ts.URL+"/v1/works",
+		submissionPayload(t, "idem-half-open"),
+		"idem-half-open",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("half-open reconciliation: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("submission was not bounded: elapsed=%s", elapsed)
+	}
+	if result.StatusCode != http.StatusOK || !result.Replay {
+		t.Fatalf("half-open replay status=%d replay=%v body=%s",
+			result.StatusCode, result.Replay, string(result.Body))
+	}
+	if result.Attempts != 2 {
+		t.Fatalf("half-open attempts=%d want 2", result.Attempts)
+	}
+	if got := transport.calls.Load(); got != 2 {
+		t.Fatalf("transport calls=%d want 2", got)
+	}
+
+	works, err := st.ListWorks(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(works) != 1 {
+		t.Fatalf("half-open recovery created duplicate works: count=%d", len(works))
 	}
 }
