@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -147,11 +149,74 @@ func sameWorkCreationIdentity(a, b *workgraph.Work) bool {
 	return bytes.Equal(canonicalCreationIntent(a), canonicalCreationIntent(b))
 }
 
+func rawCreationIntentHash(w *workgraph.Work) string {
+	if w == nil {
+		return ""
+	}
+	// Normalize representation-only differences without applying admission
+	// defaults. The hash captures exactly the semantic caller intent that was
+	// accepted, independent of later policy/default changes.
+	raw, _ := json.Marshal(creationIntent{
+		Source:       w.Source,
+		Objective:    w.Objective,
+		Graph:        w.Graph,
+		Requirements: w.Requirements,
+		Policy:       w.Policy,
+		Mission:      w.Mission,
+	})
+	var in creationIntent
+	_ = json.Unmarshal(raw, &in)
+	for id, n := range in.Graph.Nodes {
+		sort.Strings(n.Needs)
+		sort.Strings(n.Permissions)
+		sort.Strings(n.SideEffects)
+		sort.Strings(n.Evidence.Types)
+		if n.Retries != nil {
+			sort.Strings(n.Retries.RetryOn)
+		}
+		if n.CacheSpec != nil {
+			sort.Strings(n.CacheSpec.KeyInputs)
+		}
+		if len(n.Needs) == 0 { n.Needs = nil }
+		if len(n.Permissions) == 0 { n.Permissions = nil }
+		if len(n.SideEffects) == 0 { n.SideEffects = nil }
+		if len(n.Evidence.Types) == 0 { n.Evidence.Types = nil }
+		if len(n.Env) == 0 { n.Env = nil }
+		in.Graph.Nodes[id] = n
+	}
+	if len(in.Policy.SecretsScope) == 0 {
+		in.Policy.SecretsScope = nil
+	} else {
+		sort.Strings(in.Policy.SecretsScope)
+	}
+	encoded, _ := json.Marshal(in)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
+}
+
+func replayMatchesDurableIntent(existing, request *workgraph.Work, queue bool) bool {
+	if existing == nil || request == nil {
+		return false
+	}
+	if existing.CreationIntentHash != "" && existing.QueueRequested != nil {
+		return existing.CreationIntentHash == rawCreationIntentHash(request) &&
+			*existing.QueueRequested == queue
+	}
+	// Legacy v13 rows have no persisted pre-admission intent metadata. They
+	// may be read/reconciled conservatively, but queue repair is never inferred
+	// for them because the original queue decision is unknowable.
+	return sameWorkCreationIdentity(existing, request)
+}
+
+
 // reconcileReplayQueue closes the crash seam between durable creation and the
 // convenience queue transition. A replay may complete only the missing
 // CREATED -> QUEUED transition; later states are never moved backwards.
-func (s *Server) reconcileReplayQueue(ctx context.Context, existing *workgraph.Work, queue bool) (*workgraph.Work, error) {
-	if existing == nil || !queue || existing.State != workgraph.StateCreated {
+func (s *Server) reconcileReplayQueue(ctx context.Context, existing *workgraph.Work) (*workgraph.Work, error) {
+	// Queue repair is permitted only when v14 durable metadata proves that
+	// the ORIGINAL accepted submission requested queue=true. Never infer this
+	// from a later replay.
+	if existing == nil || existing.QueueRequested == nil || !*existing.QueueRequested || existing.State != workgraph.StateCreated {
 		return existing, nil
 	}
 	updated, err := s.Store.UpdateState(ctx, existing.ID, workgraph.StateQueued)
