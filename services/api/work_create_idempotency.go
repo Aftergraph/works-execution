@@ -1,25 +1,22 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
-	"reflect"
+	"sort"
 
+	"github.com/JonasAbde/works-execution/internal/manifest"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
-// idempotencyWorkGetter is intentionally narrower than store.Store so older
-// test doubles do not need to grow a reconciliation method. SQLiteStore
-// implements it through GetWorkByIdempotencyKey.
 type idempotencyWorkGetter interface {
 	GetWorkByIdempotencyKey(ctx context.Context, key string) (*workgraph.Work, error)
 }
 
-// lookupIdempotentWork returns the canonical Work already bound to the key.
-// A nil result means no accepted Work is known. Stores without the optional
-// lookup surface preserve the historical 409-on-conflict behavior.
 func (s *Server) lookupIdempotentWork(ctx context.Context, key string) (*workgraph.Work, error) {
 	if key == "" {
 		return nil, nil
@@ -35,31 +32,128 @@ func (s *Server) lookupIdempotentWork(ctx context.Context, key string) (*workgra
 	return w, err
 }
 
-// sameWorkCreationIdentity compares only immutable creation intent.
-//
-// Work ID and correlation ID are controller-generated identities and are
-// deliberately excluded: a replacement controller may mint fresh values after
-// losing the original response. State/attempts/artifacts/evidence are also
-// excluded because they evolve after durable acceptance.
-//
-// Queue is not a Work field; it is a convenience transition on POST. Replays
-// never apply queue a second time. A caller that wants to queue an existing
-// CREATED Work must use POST /v1/works/{id}/queue.
-func sameWorkCreationIdentity(a, b *workgraph.Work) bool {
-	if a == nil || b == nil {
-		return false
-	}
-	return reflect.DeepEqual(a.Source, b.Source) &&
-		reflect.DeepEqual(a.Objective, b.Objective) &&
-		reflect.DeepEqual(a.Graph, b.Graph) &&
-		reflect.DeepEqual(a.Requirements, b.Requirements) &&
-		reflect.DeepEqual(a.Policy, b.Policy) &&
-		reflect.DeepEqual(a.Mission, b.Mission)
+// creationIntent is the immutable semantic payload used for idempotency
+// comparison. Controller-generated IDs, timestamps, state and runtime outputs
+// are deliberately excluded.
+type creationIntent struct {
+	Source       workgraph.Source
+	Objective    workgraph.Objective
+	Graph        workgraph.Graph
+	Requirements workgraph.Requirements
+	Policy       workgraph.Policy
+	Mission      *workgraph.MissionContract
 }
 
-// writeIdempotentReplay returns the authoritative existing Work without
-// applying any new mutation. The header makes replay observable to clients
-// without changing the frozen Work wire shape.
+// canonicalCreationIntent produces a stable semantic encoding of creation
+// intent. It neutralizes admission defaults that were persisted by historical
+// WORKS versions so an accepted Work can be recovered before current admission
+// policy is re-run.
+func canonicalCreationIntent(w *workgraph.Work) []byte {
+	if w == nil {
+		return nil
+	}
+
+	raw, _ := json.Marshal(creationIntent{
+		Source:       w.Source,
+		Objective:    w.Objective,
+		Graph:        w.Graph,
+		Requirements: w.Requirements,
+		Policy:       w.Policy,
+		Mission:      w.Mission,
+	})
+	var in creationIntent
+	_ = json.Unmarshal(raw, &in)
+
+	for id, n := range in.Graph.Nodes {
+		sort.Strings(n.Needs)
+		sort.Strings(n.Permissions)
+		sort.Strings(n.SideEffects)
+		sort.Strings(n.Evidence.Types)
+		if n.Retries != nil {
+			sort.Strings(n.Retries.RetryOn)
+		}
+		if n.CacheSpec != nil {
+			sort.Strings(n.CacheSpec.KeyInputs)
+		}
+
+		// Slice-4 historical admission defaults are semantic omission.
+		if n.TimeoutS == manifest.DefaultTimeoutSeconds {
+			n.TimeoutS = 0
+		}
+		if len(n.Permissions) == 1 && n.Permissions[0] == "read" {
+			n.Permissions = nil
+		}
+		if n.Retries != nil &&
+			n.Retries.MaxAttempts == manifest.DefaultRetryMaxAttempts &&
+			n.Retries.Backoff == manifest.DefaultBackoff &&
+			len(n.Retries.RetryOn) == 0 {
+			n.Retries = nil
+		}
+		if n.CacheSpec != nil &&
+			!n.CacheSpec.Enabled &&
+			n.CacheSpec.Scope == manifest.DefaultCacheScope &&
+			len(n.CacheSpec.KeyInputs) == 0 {
+			n.CacheSpec = nil
+		}
+
+		if len(n.Needs) == 0 {
+			n.Needs = nil
+		}
+		if len(n.Permissions) == 0 {
+			n.Permissions = nil
+		}
+		if len(n.SideEffects) == 0 {
+			n.SideEffects = nil
+		}
+		if len(n.Evidence.Types) == 0 {
+			n.Evidence.Types = nil
+		}
+		if len(n.Env) == 0 {
+			n.Env = nil
+		}
+		in.Graph.Nodes[id] = n
+	}
+
+	if len(in.Policy.SecretsScope) == 0 {
+		in.Policy.SecretsScope = nil
+	} else {
+		sort.Strings(in.Policy.SecretsScope)
+	}
+	if in.Mission != nil &&
+		in.Mission.BudgetCeiling == nil &&
+		len(in.Mission.Verification) == 0 &&
+		len(in.Mission.PurposeBindings) == 0 &&
+		in.Mission.KillSwitch == "" {
+		in.Mission = nil
+	}
+
+	out, _ := json.Marshal(in)
+	return out
+}
+
+func sameWorkCreationIdentity(a, b *workgraph.Work) bool {
+	return bytes.Equal(canonicalCreationIntent(a), canonicalCreationIntent(b))
+}
+
+// reconcileReplayQueue closes the crash seam between durable creation and the
+// convenience queue transition. A replay may complete only the missing
+// CREATED -> QUEUED transition; later states are never moved backwards.
+func (s *Server) reconcileReplayQueue(ctx context.Context, existing *workgraph.Work, queue bool) (*workgraph.Work, error) {
+	if existing == nil || !queue || existing.State != workgraph.StateCreated {
+		return existing, nil
+	}
+	updated, err := s.Store.UpdateState(ctx, existing.ID, workgraph.StateQueued)
+	if err == nil {
+		return updated, nil
+	}
+
+	latest, getErr := s.Store.GetWork(ctx, existing.ID)
+	if getErr == nil && latest.State != workgraph.StateCreated {
+		return latest, nil
+	}
+	return nil, err
+}
+
 func writeIdempotentReplay(w http.ResponseWriter, existing *workgraph.Work) {
 	w.Header().Set("X-Works-Idempotent-Replay", "true")
 	writeJSON(w, http.StatusOK, existing)
