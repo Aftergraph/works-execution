@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/JonasAbde/works-execution/packages/verifiedstate"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
@@ -54,6 +55,18 @@ type WorkResumer interface {
 	ResumeFromCheckpoint(ctx context.Context, id string) (any, any, error)
 }
 
+// ResumeWorldObserver supplies fresh fingerprints for the exact subjects a
+// verification-aware checkpoint says must be re-observed. Implementations are
+// trusted control-plane adapters (for example Runtime/Git/authority observers),
+// never workers or model output.
+type ResumeWorldObserver interface {
+	ObserveResumeSnapshot(
+		ctx context.Context,
+		workID string,
+		checkpoint verifiedstate.Checkpoint,
+	) (verifiedstate.Snapshot, error)
+}
+
 // resumeReceipt is the durable record of one governed resume. Keyed by
 // idempotency_key; a replay of identical input returns the stored result,
 // changed input under the same key is a conflict.
@@ -73,6 +86,7 @@ type resumeHandler struct {
 	getter   resumeStoreGetter
 	resume   resumeStoreResumer
 	receipts *receiptStore
+	observer ResumeWorldObserver
 	secret   string
 }
 
@@ -86,6 +100,12 @@ type resumeStoreGetter interface {
 
 type resumeStoreResumer interface {
 	ResumeFromCheckpoint(ctx context.Context, id string) (*workStateView, error)
+	ResumeFromCheckpointReconciled(
+		ctx context.Context,
+		id string,
+		expectedCheckpointHash string,
+		current verifiedstate.Snapshot,
+	) (*workStateView, verifiedstate.ReconcileResult, error)
 }
 
 // WireResumeRoutes mounts POST /v1/works/{id}/resume on the given
@@ -106,6 +126,7 @@ func WireResumeRoutes(reg RouteRegistrar, s *Server, bridgeSecret string) {
 		getter:   resumeGetter{s.Store},
 		resume:   resumeStore{s.Store},
 		receipts: &receiptStore{st: s.Store},
+		observer: s.ResumeObserver,
 		secret:   bridgeSecret,
 	}
 	reg.Handle("POST /v1/works/{id}/resume", s.requireBearer(h))
@@ -231,10 +252,44 @@ func (h *resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resumed, err := h.resume.ResumeFromCheckpoint(ctx, workID)
+	var resumed *workStateView
+	checkpoint, verificationAware, checkpointErr := verifiedstate.CheckpointFromStateSnapshot(rec.Handoff.StateSnapshot)
+	if checkpointErr != nil {
+		writeError(w, http.StatusConflict, "resume_reconciliation_invalid", checkpointErr.Error())
+		return
+	}
+
+	if verificationAware {
+		if h.observer == nil {
+			writeError(w, http.StatusServiceUnavailable, "resume_reconciliation_unavailable",
+				"verification-aware checkpoint requires a trusted world observer")
+			return
+		}
+		current, observeErr := h.observer.ObserveResumeSnapshot(ctx, workID, checkpoint)
+		if observeErr != nil {
+			writeError(w, http.StatusServiceUnavailable, "resume_observation_failed",
+				"trusted world observation failed")
+			return
+		}
+		var reconcileResult verifiedstate.ReconcileResult
+		resumed, reconcileResult, err = h.resume.ResumeFromCheckpointReconciled(
+			ctx, workID, body.CheckpointHash, current,
+		)
+		_ = reconcileResult // retained by the store result for later evidence/journal wiring
+	} else {
+		resumed, err = h.resume.ResumeFromCheckpoint(ctx, workID)
+	}
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "not found")
+			return
+		}
+		if errors.Is(err, store.ErrReconciliationRequired) {
+			writeError(w, http.StatusConflict, "resume_reconciliation_required", err.Error())
+			return
+		}
+		if errors.Is(err, store.ErrInvalidReconciliationCheckpoint) {
+			writeError(w, http.StatusConflict, "resume_reconciliation_invalid", err.Error())
 			return
 		}
 		// Includes ErrStaleHandoff / ErrCorruptHandoff / non-mission:
@@ -317,6 +372,31 @@ func (s resumeStore) ResumeFromCheckpoint(ctx context.Context, id string) (*work
 		return nil, err
 	}
 	return &workStateView{ID: w.ID, State: string(w.State)}, nil
+}
+
+func (s resumeStore) ResumeFromCheckpointReconciled(
+	ctx context.Context,
+	id string,
+	expectedCheckpointHash string,
+	current verifiedstate.Snapshot,
+) (*workStateView, verifiedstate.ReconcileResult, error) {
+	type reconciledResumer interface {
+		ResumeFromCheckpointReconciled(
+			ctx context.Context,
+			id string,
+			expectedCheckpointHash string,
+			current verifiedstate.Snapshot,
+		) (*workgraph.Work, *workgraph.Handoff, verifiedstate.ReconcileResult, error)
+	}
+	rs, ok := s.st.(reconciledResumer)
+	if !ok {
+		return nil, verifiedstate.ReconcileResult{}, errors.New("resume: store does not implement ResumeFromCheckpointReconciled")
+	}
+	w, _, result, err := rs.ResumeFromCheckpointReconciled(ctx, id, expectedCheckpointHash, current)
+	if err != nil {
+		return nil, result, err
+	}
+	return &workStateView{ID: w.ID, State: string(w.State)}, result, nil
 }
 
 // ---------------------------------------------------------------------------
