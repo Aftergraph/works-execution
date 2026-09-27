@@ -1484,6 +1484,19 @@ func handoffHash(payload string) string {
 // is the operator-granted, kernel-instantiated BudgetLedger — never agent-
 // constructed (see test TestUnauthorizedResumeRejected).
 func (s *SQLiteStore) ResumeFromCheckpoint(ctx context.Context, id string) (*workgraph.Work, *workgraph.Handoff, error) {
+	return s.resumeFromCheckpoint(ctx, id, false, "")
+}
+
+// resumeFromCheckpoint is the single RUNNING transition for checkpoint resume.
+// verificationReconciled is private so callers cannot assert it directly; only
+// ResumeFromCheckpointReconciled can reach the true branch after reconciling a
+// trusted live observation against the exact checkpoint hash.
+func (s *SQLiteStore) resumeFromCheckpoint(
+	ctx context.Context,
+	id string,
+	verificationReconciled bool,
+	expectedCheckpointHash string,
+) (*workgraph.Work, *workgraph.Handoff, error) {
 	w, err := s.GetWork(ctx, id)
 	if err != nil {
 		return nil, nil, err
@@ -1497,19 +1510,33 @@ func (s *SQLiteStore) ResumeFromCheckpoint(ctx context.Context, id string) (*wor
 	default:
 		return nil, nil, fmt.Errorf("%w: work %s is %s, not resumable", ErrStaleHandoff, id, w.State)
 	}
-	h, checkpointState, err := s.LatestHandoff(ctx, id)
+
+	rec, err := s.LatestHandoffRecord(ctx, id)
 	if err != nil {
 		return nil, nil, err // ErrNoHandoff / ErrCorruptHandoff — fail closed
 	}
-	if checkpointState != string(w.State) {
+	if rec.ToState != w.State {
 		return nil, nil, fmt.Errorf("%w: checkpoint at %s, work at %s",
-			ErrStaleHandoff, checkpointState, w.State)
+			ErrStaleHandoff, rec.ToState, w.State)
 	}
+	if expectedCheckpointHash != "" && rec.PayloadHash != expectedCheckpointHash {
+		return nil, nil, fmt.Errorf("%w: checkpoint changed before resume", ErrStaleHandoff)
+	}
+
+	needsReconciliation, err := handoffNeedsVerifiedReconciliation(&rec.Handoff)
+	if err != nil {
+		return nil, nil, err
+	}
+	if needsReconciliation && !verificationReconciled {
+		return nil, nil, fmt.Errorf("%w: verification-aware checkpoint cannot use blind resume", ErrReconciliationRequired)
+	}
+
 	resumed, err := s.UpdateStateEventful(ctx, id, workgraph.StateRunning)
 	if err != nil {
 		return nil, nil, err
 	}
-	return resumed, h, nil
+	h := rec.Handoff
+	return resumed, &h, nil
 }
 
 // nullable returns the sql.NullString-compatible value. SQLite driver uses
