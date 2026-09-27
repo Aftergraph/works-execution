@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // HandoffStateKey is the reserved handoff.state_snapshot key carrying a
@@ -14,10 +15,36 @@ import (
 // handoff wire contract.
 const HandoffStateKey = "aftergraph_verified_state"
 
-// CheckpointSchema versions the value stored at HandoffStateKey.
+// CheckpointSchema is the original local-observer checkpoint version.
 const CheckpointSchema = "verified-state-checkpoint/0.1"
 
+// CheckpointSchemaObserved adds explicit observation bindings so an external
+// Runtime can discover how monitored roots must be re-observed without relying
+// on node-id naming conventions.
+const CheckpointSchemaObserved = "verified-state-checkpoint/0.2"
+
 var ErrInvalidCheckpoint = errors.New("verifiedstate: invalid checkpoint")
+
+// ObservationKind identifies a control-plane observation adapter. These kinds
+// describe how to observe mutable roots; they do not grant authority.
+type ObservationKind string
+
+const (
+	ObservationGitRef    ObservationKind = "GIT_REF"
+	ObservationAuthority ObservationKind = "AUTHORITY"
+	ObservationResource  ObservationKind = "RESOURCE"
+	ObservationEvent     ObservationKind = "EVENT"
+	ObservationTemporal  ObservationKind = "TEMPORAL"
+)
+
+// ObservationBinding tells Runtime how one monitored checkpoint node can be
+// re-observed. Locator is an opaque, non-secret control-plane locator whose
+// grammar is owned by the selected adapter.
+type ObservationBinding struct {
+	NodeID  string          `json:"node_id"`
+	Kind    ObservationKind `json:"kind"`
+	Locator string          `json:"locator"`
+}
 
 // Checkpoint is the verification-aware portion of a durable handoff.
 //
@@ -28,10 +55,11 @@ var ErrInvalidCheckpoint = errors.New("verifiedstate: invalid checkpoint")
 // fingerprints. This makes a checkpoint a record of verified truth, not a bag
 // of agent assertions.
 type Checkpoint struct {
-	Schema   string   `json:"schema"`
-	Nodes    []Node   `json:"nodes"`
-	Edges    []Edge   `json:"edges,omitempty"`
-	Snapshot Snapshot `json:"snapshot"`
+	Schema       string               `json:"schema"`
+	Nodes        []Node               `json:"nodes"`
+	Edges        []Edge               `json:"edges,omitempty"`
+	Snapshot     Snapshot             `json:"snapshot"`
+	Observations []ObservationBinding `json:"observations,omitempty"`
 }
 
 // NewCheckpoint constructs and validates a verification-aware handoff
@@ -51,12 +79,40 @@ func NewCheckpoint(nodes []Node, edges []Edge, snapshot Snapshot) (Checkpoint, e
 	return cp, nil
 }
 
+// NewObservedCheckpoint constructs the cross-process checkpoint version. Every
+// monitored snapshot root must have exactly one explicit observation binding.
+func NewObservedCheckpoint(
+	nodes []Node,
+	edges []Edge,
+	snapshot Snapshot,
+	observations []ObservationBinding,
+) (Checkpoint, error) {
+	cp := Checkpoint{
+		Schema:       CheckpointSchemaObserved,
+		Nodes:        cloneNodes(nodes),
+		Edges:        append([]Edge(nil), edges...),
+		Snapshot:     cloneSnapshot(snapshot),
+		Observations: append([]ObservationBinding(nil), observations...),
+	}
+	if err := cp.Validate(); err != nil {
+		return Checkpoint{}, err
+	}
+	return cp, nil
+}
+
 // Validate proves that the checkpoint contains a canonical verified graph and
 // that every monitored fingerprint is exactly the fingerprint that was
 // verified. It fails closed on partial or contradictory checkpoint state.
 func (c Checkpoint) Validate() error {
-	if c.Schema != CheckpointSchema {
-		return fmt.Errorf("%w: schema %q, want %q", ErrInvalidCheckpoint, c.Schema, CheckpointSchema)
+	switch c.Schema {
+	case CheckpointSchema:
+		if len(c.Observations) != 0 {
+			return fmt.Errorf("%w: %s cannot carry observation bindings", ErrInvalidCheckpoint, CheckpointSchema)
+		}
+	case CheckpointSchemaObserved:
+		// v0.2 observation bindings are validated after graph/snapshot checks.
+	default:
+		return fmt.Errorf("%w: unsupported schema %q", ErrInvalidCheckpoint, c.Schema)
 	}
 	if len(c.Nodes) == 0 {
 		return fmt.Errorf("%w: nodes are required", ErrInvalidCheckpoint)
@@ -86,6 +142,11 @@ func (c Checkpoint) Validate() error {
 		n, ok := g.Node(id)
 		if !ok || n.Fingerprint != fingerprint {
 			return fmt.Errorf("%w: snapshot fingerprint for %s does not match canonical verified fingerprint", ErrInvalidCheckpoint, id)
+		}
+	}
+	if c.Schema == CheckpointSchemaObserved {
+		if err := validateObservationBindings(c.Snapshot, c.Observations); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -176,12 +237,47 @@ func CheckpointFromStateSnapshot(state map[string]any) (Checkpoint, bool, error)
 	return cp, true, nil
 }
 
+func validateObservationBindings(snapshot Snapshot, bindings []ObservationBinding) error {
+	if len(bindings) != len(snapshot) {
+		return fmt.Errorf("%w: observed checkpoint requires exactly one binding per monitored subject", ErrInvalidCheckpoint)
+	}
+	seen := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		if binding.NodeID == "" || strings.TrimSpace(binding.Locator) == "" || !validObservationKind(binding.Kind) {
+			return fmt.Errorf("%w: invalid observation binding for %q", ErrInvalidCheckpoint, binding.NodeID)
+		}
+		if _, ok := snapshot[binding.NodeID]; !ok {
+			return fmt.Errorf("%w: observation binding %s is not a monitored snapshot subject", ErrInvalidCheckpoint, binding.NodeID)
+		}
+		if _, duplicate := seen[binding.NodeID]; duplicate {
+			return fmt.Errorf("%w: duplicate observation binding for %s", ErrInvalidCheckpoint, binding.NodeID)
+		}
+		seen[binding.NodeID] = struct{}{}
+	}
+	for id := range snapshot {
+		if _, ok := seen[id]; !ok {
+			return fmt.Errorf("%w: monitored subject %s has no observation binding", ErrInvalidCheckpoint, id)
+		}
+	}
+	return nil
+}
+
+func validObservationKind(kind ObservationKind) bool {
+	switch kind {
+	case ObservationGitRef, ObservationAuthority, ObservationResource, ObservationEvent, ObservationTemporal:
+		return true
+	default:
+		return false
+	}
+}
+
 func cloneCheckpoint(in Checkpoint) Checkpoint {
 	return Checkpoint{
-		Schema:   in.Schema,
-		Nodes:    cloneNodes(in.Nodes),
-		Edges:    append([]Edge(nil), in.Edges...),
-		Snapshot: cloneSnapshot(in.Snapshot),
+		Schema:       in.Schema,
+		Nodes:        cloneNodes(in.Nodes),
+		Edges:        append([]Edge(nil), in.Edges...),
+		Snapshot:     cloneSnapshot(in.Snapshot),
+		Observations: append([]ObservationBinding(nil), in.Observations...),
 	}
 }
 
