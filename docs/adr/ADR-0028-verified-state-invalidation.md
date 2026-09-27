@@ -1,6 +1,6 @@
 # ADR-0028: Verification lifecycle, typed invalidation, and resume reconciliation
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-09-27  
 **Deciders:** Aftergraph maintainers  
 **Owner:** WORKS execution truth; cross-system contract promotion remains governance-owned
@@ -177,6 +177,10 @@ Reject or revise this design if tests show any of the following:
 - No existing frozen contract changes.
 - No API behavior changes.
 - No persistent schema changes.
+
+## Acceptance evidence
+
+Accepted on 2026-09-27 after the branch passed the repository's normal gates on commit `3f61b4fc348261e8046729137286072fa8fabc36`: `go build ./...`, `go vet ./...`, `go test ./...`, the integrity before/after benchmark, and CodeQL all completed successfully. The slice changes no existing API, frozen contract, or persistent schema.
 
 ## Rollback
 
