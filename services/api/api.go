@@ -34,6 +34,11 @@ import (
 type Server struct {
 	Store  store.Store
 	Logger *log.Logger
+	// ResumeObserver supplies fresh, externally observed fingerprints for
+	// verification-aware handoff reconciliation. It is intentionally outside
+	// the worker/model. Nil keeps legacy handoffs compatible but causes any
+	// verification-aware resume to fail closed until an observer is wired.
+	ResumeObserver ResumeWorldObserver
 	// ArtifactsDir is the directory where workers write artifact/log files.
 	// Required for the GET /v1/works/{id}/nodes/{n}/logs endpoint. Optional
 	// in V1; when nil, the log endpoint returns 503.
