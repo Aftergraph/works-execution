@@ -3,7 +3,9 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +110,13 @@ func TestObservedHandoffExposesObservationPlanWithoutCanonicalFingerprint(t *tes
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawBody), "git:Aftergraph/runtime@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") {
+		t.Fatal("handoff observation plan leaked prior canonical fingerprint")
+	}
 	var view struct {
 		CheckpointHash    string `json:"checkpoint_hash"`
 		VerificationAware bool   `json:"verification_aware"`
@@ -121,7 +130,7 @@ func TestObservedHandoffExposesObservationPlanWithoutCanonicalFingerprint(t *tes
 			} `json:"subjects"`
 		} `json:"reconciliation"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+	if err := json.Unmarshal(rawBody, &view); err != nil {
 		t.Fatal(err)
 	}
 	if view.CheckpointHash != hash || !view.VerificationAware || view.Reconciliation == nil {
@@ -136,13 +145,6 @@ func TestObservedHandoffExposesObservationPlanWithoutCanonicalFingerprint(t *tes
 	if subject.NodeID != "repo-head" || subject.Kind != "GIT_REF" ||
 		subject.Locator != "github:Aftergraph/runtime#refs/heads/main" {
 		t.Fatalf("subject plan = %+v", subject)
-	}
-	// The public observation plan deliberately does not include the prior
-	// canonical fingerprint. Runtime should observe the world, not echo the
-	// value it is trying to prove unchanged.
-	raw, _ := json.Marshal(view.Reconciliation)
-	if string(raw) == "" {
-		t.Fatal("unreachable")
 	}
 }
 
