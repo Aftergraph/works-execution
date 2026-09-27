@@ -1,6 +1,6 @@
 # ADR-0029: Verification-aware resume reconciliation boundary
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-09-27  
 **Deciders:** Aftergraph maintainers  
 **Owner:** WORKS resume state transition; Runtime/external adapters own live-world observation
@@ -155,6 +155,10 @@ Reject or revise this design if any test demonstrates:
 - wrong checkpoint hash blocks resume.
 - observation failure blocks resume.
 - existing resume tests remain green.
+
+## Acceptance evidence
+
+Accepted on 2026-09-27 after commit `90d4b574a538a32c5c84ac765d92773fbe6155a3` passed the repository Normal-track gates: `go build ./...`, `go vet ./...`, `go test ./...`, integrity before/after benchmark, and CodeQL. The implementation also preserves the existing legacy resume suite while adding explicit anti-bypass and live-world reconciliation tests.
 
 ## Follow-up
 
