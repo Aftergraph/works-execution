@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -83,7 +84,7 @@ func main() {
 	srv := &api.Server{
 		Store:            st,
 		Logger:           logger,
-		ArtifactsDir:     envOr("WORKS_ARTIFACTS", ""),
+		ArtifactsDir:     worksArtifactsDir(),
 		EnrollSecret:     *enrollSecret,
 		Policy:           policyEngine,
 		AuthEnabled:      true,
@@ -254,6 +255,16 @@ func main() {
 		logger.Fatalf("listen: %v", err)
 	}
 	logger.Printf("works-api stopped")
+}
+
+func worksArtifactsDir() string {
+	if configured := strings.TrimSpace(os.Getenv("WORKS_ARTIFACTS")); configured != "" {
+		return configured
+	}
+	if info, err := os.Stat("/var/lib/works"); err == nil && info.IsDir() {
+		return filepath.Join("/var/lib/works", "artifacts")
+	}
+	return filepath.Join(os.TempDir(), "works-artifacts")
 }
 
 func allowedReposFromEnv() map[string]bool {

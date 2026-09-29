@@ -187,8 +187,8 @@ func TestRunCommand_ResolvesSecretRefEndToEnd(t *testing.T) {
 	if res.Status != "succeeded" || res.ExitCode != 0 {
 		t.Fatalf("status=%s exit=%d log=%q", res.Status, res.ExitCode, res.CombinedLog)
 	}
-	if got := strings.TrimSpace(string(res.CombinedLog)); got != sentinel {
-		t.Fatalf("child saw %q, want resolved sentinel", got)
+	if got := strings.TrimSpace(string(res.CombinedLog)); got != "[REDACTED]" {
+		t.Fatalf("child output=%q, want secret value redacted", got)
 	}
 }
 
@@ -209,8 +209,41 @@ func TestRunCommand_ResolvesSecretRefSandboxPath(t *testing.T) {
 	if res.Status != "succeeded" || res.ExitCode != 0 {
 		t.Fatalf("status=%s exit=%d log=%q", res.Status, res.ExitCode, res.CombinedLog)
 	}
-	if got := strings.TrimSpace(string(res.CombinedLog)); got != sentinel {
-		t.Fatalf("sandboxed child saw %q, want resolved sentinel", got)
+	if got := strings.TrimSpace(string(res.CombinedLog)); got != "[REDACTED]" {
+		t.Fatalf("sandboxed output=%q, want secret value redacted", got)
+	}
+}
+
+func TestRedactResolvedSecretOutputPreservesNonSecretValues(t *testing.T) {
+	requested := map[string]string{
+		"TOKEN": "secret://env/redaction-test",
+		"PLAIN": "ordinary value",
+	}
+	resolved := map[string]string{"TOKEN": "abc123", "PLAIN": "ordinary value"}
+	got := string(redactResolvedSecretOutput([]byte("token=abc123 plain=ordinary value"), requested, resolved))
+	if got != "token=[REDACTED] plain=ordinary value" {
+		t.Fatalf("redacted output=%q", got)
+	}
+}
+
+func TestRedactResolvedSecretOutputHandlesOverlappingValues(t *testing.T) {
+	requested := map[string]string{
+		"SHORT": "secret://env/short",
+		"LONG":  "secret://env/long",
+	}
+	resolved := map[string]string{"SHORT": "abc", "LONG": "abc123"}
+	got := string(redactResolvedSecretOutput([]byte("long=abc123 short=abc"), requested, resolved))
+	if got != "long=[REDACTED] short=[REDACTED]" {
+		t.Fatalf("overlapping secret output=%q", got)
+	}
+}
+
+func TestHasSecretRefs(t *testing.T) {
+	if hasSecretRefs(map[string]string{"TOKEN": sentinelRef}) != true {
+		t.Fatal("secret ref was not detected")
+	}
+	if hasSecretRefs(map[string]string{"TOKEN": "ordinary-value"}) {
+		t.Fatal("literal env value was treated as a secret ref")
 	}
 }
 

@@ -338,16 +338,68 @@ func (s *Server) heartbeatLease(w http.ResponseWriter, r *http.Request, leaseID 
 
 // completeLeaseBody is POST /v1/leases/{id}/complete.
 type completeLeaseBody struct {
-	ExitCode int                  `json:"exit_code"`
-	Artifact *workgraph.Artifact  `json:"artifact,omitempty"`
-	Evidence []workgraph.Evidence `json:"evidence,omitempty"`
+	ExitCode        int                  `json:"exit_code"`
+	Artifact        *workgraph.Artifact  `json:"artifact,omitempty"`
+	ArtifactContent []byte               `json:"artifact_content"`
+	Evidence        []workgraph.Evidence `json:"evidence,omitempty"`
 }
+
+const maxCompleteLeaseRequestBytes int64 = workgraph.MaxArtifactBytes*4/3 + (1 << 20)
 
 func (s *Server) completeLease(w http.ResponseWriter, r *http.Request, leaseID string) {
 	var body completeLeaseBody
+	r.Body = http.MaxBytesReader(w, r.Body, maxCompleteLeaseRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "completion_too_large", "lease completion exceeds the WORKS request limit")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
+	}
+	if body.Artifact == nil && body.ArtifactContent != nil {
+		writeError(w, http.StatusBadRequest, "artifact_metadata_required", "artifact metadata is required when artifact bytes are supplied")
+		return
+	}
+	if body.ExitCode == 0 && body.Artifact == nil {
+		writeError(w, http.StatusUnprocessableEntity, "artifact_required", "successful lease completion requires a published artifact")
+		return
+	}
+	if body.Artifact != nil {
+		lease, err := s.Store.GetLease(r.Context(), leaseID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "lease_not_found", leaseID)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "lease_lookup_failed", "failed to load lease")
+			return
+		}
+		if lease.Status != workgraph.LeaseActive {
+			writeError(w, http.StatusConflict, "lease_not_active", "artifact upload requires an active lease")
+			return
+		}
+		if body.Artifact.NodeID != lease.NodeID {
+			writeError(w, http.StatusBadRequest, "artifact_node_mismatch", "artifact node does not match the active lease")
+			return
+		}
+		if err := s.persistWorkerArtifact(lease, body.Artifact, body.ArtifactContent); err != nil {
+			switch {
+			case errors.Is(err, errArtifactStoreUnavailable):
+				writeError(w, http.StatusServiceUnavailable, "artifacts_unavailable", "artifact storage is not configured")
+			case errors.Is(err, errArtifactTooLarge):
+				writeError(w, http.StatusRequestEntityTooLarge, "artifact_too_large", "artifact exceeds the WORKS transfer limit")
+			case errors.Is(err, errArtifactContentMissing):
+				writeError(w, http.StatusUnprocessableEntity, "artifact_content_required", "worker must supply artifact bytes unless the canonical shared artifact file is present")
+			case errors.Is(err, errArtifactMetadataMismatch):
+				writeError(w, http.StatusUnprocessableEntity, "artifact_integrity_failed", "artifact digest, size, or node metadata does not match its content")
+			default:
+				s.logf("artifact persistence failed for lease %s: %v", leaseID, err)
+				writeError(w, http.StatusInternalServerError, "artifact_store_failed", "failed to persist artifact")
+			}
+			return
+		}
 	}
 	wk, err := s.Store.CompleteLease(r.Context(), leaseID, body.ExitCode, body.Artifact, body.Evidence)
 	if err != nil {

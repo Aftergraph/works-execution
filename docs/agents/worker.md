@@ -59,8 +59,8 @@ slice (see `platform-ai-failure-intel` in the registry).
 | Send `POST /v1/leases/{id}/heartbeat` | HTTP POST every `HeartbeatEvery` | same |
 | Execute subprocess via host-native shell (`sh -c` on POSIX; non-interactive PowerShell on Windows) | `exec.CommandContext` | same |
 | Kill subprocess on lease loss | `cmd.Process.Kill()` | same |
-| Write artifact to `<ArtifactsDir>/<workID>/<nodeID>.log` | `os.WriteFile` with sha256 | same |
-| Report result via `POST /v1/leases/{id}/complete` | HTTP POST | same |
+| Write the worker-local log artifact and POST its bytes with `POST /v1/leases/{id}/complete` | SHA-256 metadata plus base64 JSON content; the API verifies and stores a server-owned CAS copy | same |
+| Retrieve an uploaded artifact | `GET /v1/works/{id}/artifacts/{sha256}` or the node logs endpoint | same |
 | Voluntarily release lease | `POST /v1/leases/{id}/release` | same |
 
 ## Tools
@@ -73,11 +73,17 @@ slice (see `platform-ai-failure-intel` in the registry).
 
 The worker's host-command path is not an OS sandbox. `Worker.execute` calls
 `runCommand` with a nil manifest, so commands inherit the worker environment
-(with four named control variables removed), receive the Work's resolved
-environment values, and run with the worker account's normal filesystem and
-network permissions. The sandbox package's environment/workspace preparation
-is not wired into this production call; its network check is also not a
-syscall-level egress block.
+(with named control credentials and all `SECRET_*` resolver backing variables
+removed), receive only the Work's explicitly resolved environment values, and
+run with the worker account's normal filesystem and network permissions. The
+sandbox package's environment/workspace preparation is not wired into this
+production call; its network check is also not a syscall-level egress block.
+
+Values resolved from `secret://` refs are masked in captured subprocess output
+before it becomes an artifact or evidence detail. Jobs with secret refs bypass
+cache lookup and publication. Cache fingerprints now use version 2, so old
+unversioned entries are not replayed after this change. Exact-value masking
+cannot identify transformed or encoded secrets.
 
 On Windows, the installer stores DPAPI-protected secret ciphertext with an ACL
 for the same user that runs the scheduled task. The launcher decrypts values
@@ -136,7 +142,8 @@ is used as a multi-tenant security boundary.
 
 - Run `Node.Run` through the host-native shell adapter (`sh -c` on POSIX; `powershell.exe -NoLogo -NoProfile -NonInteractive -Command` on Windows).
 - Create the artifact file under `<ArtifactsDir>/<workID>/<nodeID>.log`.
-- POST result, evidence, and artifact metadata back via `/v1/leases/{id}/complete`.
+- Include artifact bytes with the metadata in `/v1/leases/{id}/complete`; the API does not rely on a worker-local path.
+- Only complete a successful node when its artifact is within the shared 32 MiB transfer limit and has a matching SHA-256 digest.
 - Respond to SIGTERM by cancelling the in-flight subprocess and releasing
   the lease.
 

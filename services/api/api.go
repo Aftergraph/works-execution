@@ -314,6 +314,10 @@ func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/works/")
 	parts := strings.Split(path, "/")
 	// parts: [id] OR [id, action] OR [id, "nodes", nodeID, "logs"] OR [id, "evidence"] OR [id, "provenance"]
+	if len(parts) == 3 && parts[1] == "artifacts" {
+		s.workArtifactHandler(w, r, parts[0], parts[2])
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "nodes" {
 		s.workLogsHandler(w, r)
 		return
@@ -894,8 +898,10 @@ func (s *Server) workLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	workID, nodeID := parts[0], parts[2]
 
-	// Verify the work exists.
-	if _, err := s.Store.GetWork(r.Context(), workID); err != nil {
+	// Verify the work exists and use its canonical artifact reference when
+	// the worker uploaded bytes from another host.
+	work, err := s.Store.GetWork(r.Context(), workID)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "work_not_found", workID)
 			return
@@ -904,7 +910,41 @@ func (s *Server) workLogsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logPath := filepath.Join(s.ArtifactsDir, workID, nodeID+".log")
+	var casArtifact *workgraph.Artifact
+	var logPath string
+	for i := len(work.Artifacts) - 1; i >= 0; i-- {
+		artifact := work.Artifacts[i]
+		if artifact.NodeID == nodeID && artifact.Path == artifactCASRelativePath(artifact.ID) {
+			copy := artifact
+			casArtifact = &copy
+			logPath = artifactCASPath(s.ArtifactsDir, artifact.ID)
+			break
+		}
+	}
+	if casArtifact != nil {
+		content, err := readVerifiedCASArtifact(s.ArtifactsDir, *casArtifact)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				writeError(w, http.StatusNotFound, "logs_not_found", "logs not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "artifact_integrity_failed", "stored artifact content failed metadata or digest verification")
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Length", fmt.Sprint(len(content)))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+		return
+	}
+	if logPath == "" {
+		if !safeArtifactPathSegment(workID) || !safeArtifactPathSegment(nodeID) {
+			writeError(w, http.StatusNotFound, "logs_not_found", "logs not found")
+			return
+		}
+		logPath = filepath.Join(s.ArtifactsDir, workID, nodeID+".log")
+	}
 	if _, err := os.Stat(logPath); err != nil {
 		if os.IsNotExist(err) {
 			writeError(w, http.StatusNotFound, "logs_not_found", logPath)
@@ -913,5 +953,7 @@ func (s *Server) workLogsHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "stat_failed", err.Error())
 		return
 	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	http.ServeFile(w, r, logPath)
 }

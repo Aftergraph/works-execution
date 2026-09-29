@@ -56,6 +56,7 @@ func EnsureSchema(db *sql.DB) error {
 // Key is the canonical fingerprint input. Every field participates in
 // the hash; nothing outside it does.
 type Key struct {
+	Version    int               `json:"version,omitempty"`
 	Run        string            `json:"run"`
 	Repository string            `json:"repository,omitempty"`
 	Ref        string            `json:"ref,omitempty"`
@@ -87,6 +88,10 @@ func (k Key) Fingerprint() (string, error) {
 // makes every push a fresh key by construction).
 func KeyFromNode(work *workgraph.Work, node *workgraph.Node, scope string) Key {
 	k := Key{
+		// Version 2 isolates entries written before artifact output and
+		// secret handling were hardened. The one-time cache miss avoids
+		// replaying legacy logs that may contain unredacted secret values.
+		Version:    2,
 		Run:        node.Run,
 		Repository: work.Source.Repository,
 		Ref:        work.Source.Ref,
