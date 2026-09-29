@@ -23,6 +23,12 @@ func createArtifactLease(t *testing.T) (*httptest.Server, store.Store, *workgrap
 	srv, ts, st := newTestServer(t)
 	artifactRoot := t.TempDir()
 	srv.ArtifactsDir = artifactRoot
+	t.Cleanup(func() {
+		ts.Close()
+		if err := srv.CloseArtifactRoot(); err != nil {
+			t.Errorf("close artifact root: %v", err)
+		}
+	})
 	work := &workgraph.Work{
 		ID:        workgraph.NewID("wrk"),
 		State:     workgraph.StateQueued,
@@ -176,5 +182,237 @@ func TestCompleteLeaseRejectsArtifactForInactiveLeaseBeforePersisting(t *testing
 	}
 	if _, err := os.Stat(filepath.Join(artifactRoot, "cas")); !os.IsNotExist(err) {
 		t.Fatalf("inactive lease wrote CAS content, stat error=%v", err)
+	}
+}
+
+func TestCompleteLeaseAcceptsLegacySharedLogArtifact(t *testing.T) {
+	ts, st, work, lease, artifactRoot := createArtifactLease(t)
+	content := []byte("legacy shared artifact bytes")
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	legacyDir := filepath.Join(artifactRoot, work.ID)
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "node-1.log"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"exit_code": 0,
+		"artifact": workgraph.Artifact{
+			ID: digest, NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)), Path: "../../untrusted.log",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/v1/leases/"+lease.ID+"/complete", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("complete status=%d, want valid shared legacy artifact accepted", resp.StatusCode)
+	}
+	storedWork, err := st.GetWork(context.Background(), work.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedWork.Artifacts) != 1 || storedWork.Artifacts[0].Path != filepath.ToSlash(filepath.Join("cas", "sha256", digest[:2], digest)) {
+		t.Fatalf("stored artifacts=%+v, want canonical CAS locator", storedWork.Artifacts)
+	}
+	storedBytes, err := os.ReadFile(filepath.Join(artifactRoot, filepath.FromSlash(storedWork.Artifacts[0].Path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(storedBytes, content) {
+		t.Fatalf("stored legacy bytes=%q, want %q", storedBytes, content)
+	}
+}
+
+func TestCompleteLeaseRejectsCASParentSymlinkEscape(t *testing.T) {
+	ts, _, _, lease, artifactRoot := createArtifactLease(t)
+	content := []byte("artifact must stay within the configured root")
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	prefixDir := filepath.Join(artifactRoot, "cas", "sha256")
+	if err := os.MkdirAll(prefixDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(prefixDir, digest[:2])); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"exit_code": 0,
+		"artifact": workgraph.Artifact{
+			ID: digest, NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)),
+		},
+		"artifact_content": content,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/v1/leases/"+lease.ID+"/complete", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("completion succeeded through a CAS symlink that escapes ArtifactsDir")
+	}
+	if _, err := os.Stat(filepath.Join(outside, digest)); !os.IsNotExist(err) {
+		t.Fatalf("escaped CAS file was created, stat error=%v", err)
+	}
+}
+
+func TestCompleteLeaseRejectsLegacyLogSymlinkEscape(t *testing.T) {
+	ts, _, work, lease, artifactRoot := createArtifactLease(t)
+	content := []byte("legacy worker bytes outside the artifact root")
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "node-1.log"), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(artifactRoot, work.ID)); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"exit_code": 0,
+		"artifact": workgraph.Artifact{
+			ID: digest, NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/v1/leases/"+lease.ID+"/complete", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("complete status=%d, want missing legacy artifact rejected with 422", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(artifactRoot, "cas")); !os.IsNotExist(err) {
+		t.Fatalf("legacy symlink content was persisted, stat error=%v", err)
+	}
+}
+
+func TestCompleteLeaseRejectsLegacyLogFileSymlinkEscape(t *testing.T) {
+	ts, _, work, lease, artifactRoot := createArtifactLease(t)
+	content := []byte("legacy leaf symlink bytes")
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	legacyDir := filepath.Join(artifactRoot, work.ID)
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	outsideLog := filepath.Join(outside, "outside.log")
+	if err := os.WriteFile(outsideLog, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideLog, filepath.Join(legacyDir, "node-1.log")); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"exit_code": 0,
+		"artifact": workgraph.Artifact{
+			ID: digest, NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/v1/leases/"+lease.ID+"/complete", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("complete status=%d, want external legacy symlink rejected", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(artifactRoot, "cas")); !os.IsNotExist(err) {
+		t.Fatalf("legacy leaf symlink content was persisted, stat error=%v", err)
+	}
+}
+
+func TestArtifactHandlersRejectCASSymlinkEscape(t *testing.T) {
+	ts, _, work, lease, artifactRoot := createArtifactLease(t)
+	content := []byte("artifact reads must stay within the configured root")
+	sum := sha256.Sum256(content)
+	digest := hex.EncodeToString(sum[:])
+	body, err := json.Marshal(map[string]any{
+		"exit_code": 0,
+		"artifact": workgraph.Artifact{
+			ID: digest, NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)),
+		},
+		"artifact_content": content,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/v1/leases/"+lease.ID+"/complete", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("complete status=%d", resp.StatusCode)
+	}
+
+	prefixDir := filepath.Join(artifactRoot, "cas", "sha256")
+	if err := os.RemoveAll(filepath.Join(prefixDir, digest[:2])); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, digest), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(prefixDir, digest[:2])); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	for _, path := range []string{
+		"/v1/works/" + work.ID + "/artifacts/" + digest,
+		"/v1/works/" + work.ID + "/nodes/node-1/logs",
+	} {
+		got, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotBytes, readErr := io.ReadAll(got.Body)
+		got.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if got.StatusCode == http.StatusOK || bytes.Contains(gotBytes, content) {
+			t.Fatalf("GET %s served content through a CAS symlink escape", path)
+		}
+	}
+}
+
+func TestWorkLogsRejectsLegacyLogSymlinkEscape(t *testing.T) {
+	ts, _, work, _, artifactRoot := createArtifactLease(t)
+	secret := []byte("outside log must not be served")
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "node-1.log"), secret, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(artifactRoot, work.ID)); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	resp, err := http.Get(ts.URL + "/v1/works/" + work.ID + "/nodes/node-1/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode == http.StatusOK || bytes.Contains(got, secret) {
+		t.Fatal("work logs handler served a legacy log through a symlink escape")
 	}
 }

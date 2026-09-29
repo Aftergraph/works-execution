@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/JonasAbde/works-execution/internal/sandbox"
+	"github.com/JonasAbde/works-execution/internal/workspaths"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/source"
 )
@@ -471,14 +472,21 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.HeartbeatEvery = 10 * time.Second
 	}
 	if w.ArtifactsDir == "" {
-		w.ArtifactsDir = filepath.Join(os.TempDir(), "works-artifacts")
-	}
-	if err := os.MkdirAll(w.ArtifactsDir, 0o755); err != nil {
-		return fmt.Errorf("create artifacts dir: %w", err)
+		w.ArtifactsDir = workspaths.DefaultArtifactsDir()
 	}
 	if w.Logger == nil {
 		w.Logger = log.Default()
 	}
+	artifactRoot, artifactPath, err := workspaths.OpenArtifactsRoot(w.ArtifactsDir)
+	if err != nil {
+		return fmt.Errorf("open artifacts dir: %w", err)
+	}
+	w.ArtifactsDir = artifactPath
+	defer func() {
+		if err := artifactRoot.Close(); err != nil {
+			w.logf("close artifacts dir: %v", err)
+		}
+	}()
 
 	// BYOC (RFC-0004): register as a scheduler-visible runner and
 	// re-assert every heartbeat. Registration is idempotent so the
@@ -505,7 +513,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				w.registerRunner(ctx)
 			}
 		case <-t.C:
-			if err := w.tick(ctx); err != nil {
+			if err := w.tick(ctx, artifactRoot); err != nil {
 				w.logf("tick error: %v", err)
 			}
 		}
@@ -540,13 +548,13 @@ func (w *Worker) registerRunner(ctx context.Context) {
 }
 
 // tick does one polling cycle.
-func (w *Worker) tick(ctx context.Context) error {
+func (w *Worker) tick(ctx context.Context, artifactRoot *os.Root) error {
 	items, err := w.Client.Ready(ctx)
 	if err != nil {
 		return err
 	}
 	for _, item := range items {
-		if err := w.execute(ctx, item); err != nil {
+		if err := w.execute(ctx, item, artifactRoot); err != nil {
 			w.logf("execute %s/%s: %v", item.WorkID, item.NodeID, err)
 		}
 	}
@@ -554,7 +562,7 @@ func (w *Worker) tick(ctx context.Context) error {
 }
 
 // execute grants a lease, runs the node, reports the result.
-func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
+func (w *Worker) execute(ctx context.Context, item ReadyItem, artifactRoot *os.Root) error {
 	leaseID, _, err := w.Client.GrantLease(ctx, item.WorkID, item.NodeID, w.ID, w.LeaseTTL)
 	if err != nil {
 		// Conflict or other failure — skip silently. This is normal under
@@ -645,7 +653,7 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 			res.ExitCode = -1
 			res.CombinedLog = artifactFailureLog("artifact exceeds WORKS transfer limit", res.CombinedLog)
 		} else {
-			path, sum, size, err := writeArtifact(w.ArtifactsDir, item.WorkID, item.NodeID, res.CombinedLog)
+			path, sum, size, err := writeArtifact(artifactRoot, w.ArtifactsDir, item.WorkID, item.NodeID, res.CombinedLog)
 			if err != nil {
 				res.Status = "failed"
 				res.ExitCode = -1
@@ -1052,21 +1060,43 @@ func runDocker(ctx context.Context, image, command string, env map[string]string
 
 // writeArtifact saves bytes to <dir>/<workID>/<nodeID>.log and returns the
 // path, sha256 sum, and size. The sum is the artifact ID (content-addressed).
-func writeArtifact(dir, workID, nodeID string, data []byte) (path, sum string, size int64, err error) {
-	d := filepath.Join(dir, workID)
-	if err := os.MkdirAll(d, 0o700); err != nil {
+func writeArtifact(root *os.Root, dir, workID, nodeID string, data []byte) (path, sum string, size int64, err error) {
+	if root == nil || !workspaths.SafeArtifactPathSegment(workID) || !workspaths.SafeArtifactPathSegment(nodeID) {
+		return "", "", 0, errors.New("work and node IDs must be safe artifact path segments")
+	}
+	if err := root.Mkdir(workID, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return "", "", 0, err
 	}
-	if err := os.Chmod(d, 0o700); err != nil {
+	dirInfo, err := root.Lstat(workID)
+	if err != nil {
 		return "", "", 0, err
 	}
-	path = filepath.Join(d, nodeID+".log")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if dirInfo.Mode()&os.ModeSymlink != 0 || !dirInfo.IsDir() {
+		return "", "", 0, errors.New("artifact work path is not a real directory")
+	}
+	relativePath := filepath.Join(workID, nodeID+".log")
+	if err := root.Remove(relativePath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", "", 0, err
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	f, err := root.OpenFile(relativePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
 		return "", "", 0, err
 	}
+	written, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil {
+		_ = root.Remove(relativePath)
+		return "", "", 0, writeErr
+	}
+	if closeErr != nil {
+		_ = root.Remove(relativePath)
+		return "", "", 0, closeErr
+	}
+	if written != len(data) {
+		_ = root.Remove(relativePath)
+		return "", "", 0, io.ErrShortWrite
+	}
+	path = filepath.Join(dir, relativePath)
 	h := sha256.Sum256(data)
 	sum = hex.EncodeToString(h[:])
 	size = int64(len(data))

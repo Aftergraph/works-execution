@@ -10,13 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/JonasAbde/works-execution/internal/dispatch"
+	"github.com/JonasAbde/works-execution/internal/workspaths"
 	"github.com/JonasAbde/works-execution/packages/cache"
 	"github.com/JonasAbde/works-execution/services/api"
 	"github.com/JonasAbde/works-execution/services/audit"
@@ -94,6 +94,9 @@ func main() {
 			Metrics: reliabilityMetrics,
 			Audit:   reliabilityAudit,
 		},
+	}
+	if err := srv.InitializeArtifacts(); err != nil {
+		logger.Fatalf("initialize artifact storage %s: %v", srv.ArtifactsDir, err)
 	}
 	logger.Printf("observability enabled (/metrics, /v1/reliability)")
 	if *webhookSecret != "" {
@@ -228,11 +231,16 @@ func main() {
 		}
 	}()
 
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelShutdown()
-		_ = httpSrv.Shutdown(shutdownCtx)
+		shutdownErr := httpSrv.Shutdown(shutdownCtx)
+		if shutdownErr != nil {
+			logger.Printf("HTTP shutdown did not drain cleanly: %v", shutdownErr)
+		}
 		// k-068: drain in-flight publisher goroutines after the HTTP
 		// server has stopped accepting new state transitions. Bounded
 		// by the same shutdown window so a stuck GitHub call cannot
@@ -240,6 +248,11 @@ func main() {
 		drainCtx, cancelDrain := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelDrain()
 		srv.WaitPublisher(drainCtx)
+		if shutdownErr == nil {
+			if err := srv.CloseArtifactRoot(); err != nil {
+				logger.Printf("close artifact storage: %v", err)
+			}
+		}
 	}()
 
 	// Conversation V1: platform bridge secret for the governed /resume
@@ -254,6 +267,11 @@ func main() {
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("listen: %v", err)
 	}
+	if ctx.Err() != nil {
+		<-shutdownDone
+	} else if err := srv.CloseArtifactRoot(); err != nil {
+		logger.Printf("close artifact storage: %v", err)
+	}
 	logger.Printf("works-api stopped")
 }
 
@@ -261,10 +279,7 @@ func worksArtifactsDir() string {
 	if configured := strings.TrimSpace(os.Getenv("WORKS_ARTIFACTS")); configured != "" {
 		return configured
 	}
-	if info, err := os.Stat("/var/lib/works"); err == nil && info.IsDir() {
-		return filepath.Join("/var/lib/works", "artifacts")
-	}
-	return filepath.Join(os.TempDir(), "works-artifacts")
+	return workspaths.DefaultArtifactsDir()
 }
 
 func allowedReposFromEnv() map[string]bool {

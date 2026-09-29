@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/JonasAbde/works-execution/internal/workspaths"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
@@ -22,6 +24,56 @@ var (
 	errArtifactTooLarge         = errors.New("artifact exceeds the WORKS transfer limit")
 	errArtifactMetadataMismatch = errors.New("artifact metadata does not match its lease or content")
 )
+
+// InitializeArtifacts pins the configured artifact directory before serving
+// requests or starting workers. The root handle is retained for the lifetime
+// of the Server, so replacing the directory entry cannot retarget later I/O.
+func (s *Server) InitializeArtifacts() error {
+	if s.ArtifactsDir == "" {
+		return errArtifactStoreUnavailable
+	}
+	_, err := s.artifactRootHandle()
+	return err
+}
+
+// CloseArtifactRoot releases the pinned artifact directory handle after the
+// server has stopped accepting requests and drained active handlers.
+func (s *Server) CloseArtifactRoot() error {
+	s.artifactRootMu.Lock()
+	defer s.artifactRootMu.Unlock()
+	if s.artifactRoot == nil {
+		return nil
+	}
+	err := s.artifactRoot.Close()
+	s.artifactRoot = nil
+	s.artifactRootPath = ""
+	return err
+}
+
+func (s *Server) artifactRootHandle() (*os.Root, error) {
+	s.artifactRootMu.Lock()
+	defer s.artifactRootMu.Unlock()
+	if s.ArtifactsDir == "" {
+		return nil, errArtifactStoreUnavailable
+	}
+	rootPath, err := filepath.Abs(s.ArtifactsDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve artifact root: %w", err)
+	}
+	if s.artifactRoot != nil {
+		if s.artifactRootPath != rootPath {
+			return nil, errors.New("artifact root configuration changed after initialization")
+		}
+		return s.artifactRoot, nil
+	}
+	root, rootPath, err := workspaths.OpenArtifactsRoot(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	s.artifactRoot = root
+	s.artifactRootPath = rootPath
+	return root, nil
+}
 
 func artifactDigest(data []byte) string {
 	sum := sha256.Sum256(data)
@@ -43,25 +95,8 @@ func artifactCASRelativePath(digest string) string {
 	return filepath.ToSlash(filepath.Join("cas", "sha256", digest[:2], digest))
 }
 
-func artifactCASPath(root, digest string) string {
-	relative := artifactCASRelativePath(digest)
-	if relative == "" {
-		return ""
-	}
-	return filepath.Join(root, filepath.FromSlash(relative))
-}
-
 func safeArtifactPathSegment(value string) bool {
-	if value == "" || value == "." || value == ".." || filepath.Base(value) != value {
-		return false
-	}
-	for _, r := range value {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
-			return false
-		}
-	}
-	return true
+	return workspaths.SafeArtifactPathSegment(value)
 }
 
 // persistWorkerArtifact verifies a worker's bytes and places them in the API
@@ -75,15 +110,20 @@ func (s *Server) persistWorkerArtifact(lease *workgraph.Lease, artifact *workgra
 	if lease == nil || artifact == nil || artifact.NodeID == "" || artifact.NodeID != lease.NodeID {
 		return errArtifactMetadataMismatch
 	}
+	// All names beneath ArtifactsDir are opened relative to its pinned root,
+	// even when a worker-created symlink or junction is present.
+	root, err := s.artifactRootHandle()
+	if err != nil {
+		return err
+	}
 
 	content := supplied
 	if content == nil {
 		if !safeArtifactPathSegment(lease.WorkID) || !safeArtifactPathSegment(lease.NodeID) {
 			return errArtifactContentMissing
 		}
-		legacyPath := filepath.Join(s.ArtifactsDir, lease.WorkID, lease.NodeID+".log")
-		var err error
-		content, err = readLimitedArtifactFile(legacyPath)
+		legacyPath := filepath.Join(lease.WorkID, lease.NodeID+".log")
+		content, err = readLimitedArtifactFile(root, legacyPath)
 		if errors.Is(err, errArtifactTooLarge) {
 			return err
 		}
@@ -98,23 +138,23 @@ func (s *Server) persistWorkerArtifact(lease *workgraph.Lease, artifact *workgra
 		return errArtifactMetadataMismatch
 	}
 
-	destination := artifactCASPath(s.ArtifactsDir, artifact.ID)
+	destination := artifactCASRelativePath(artifact.ID)
 	if destination == "" {
 		return errArtifactMetadataMismatch
 	}
-	if err := persistCASBytes(destination, content); err != nil {
+	if err := persistCASBytes(root, filepath.FromSlash(destination), content); err != nil {
 		return fmt.Errorf("persist verified artifact: %w", err)
 	}
-	artifact.Path = artifactCASRelativePath(artifact.ID)
+	artifact.Path = destination
 	return nil
 }
 
-func persistCASBytes(destination string, content []byte) error {
+func persistCASBytes(root *os.Root, destination string, content []byte) error {
 	dir := filepath.Dir(destination)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := root.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	if existing, err := readLimitedArtifactFile(destination); err == nil {
+	if existing, err := readLimitedArtifactFile(root, destination); err == nil {
 		if bytes.Equal(existing, content) {
 			return nil
 		}
@@ -123,16 +163,16 @@ func persistCASBytes(destination string, content []byte) error {
 		return err
 	}
 
-	tmp, err := os.CreateTemp(dir, ".artifact-*")
+	randomName := make([]byte, 16)
+	if _, err := cryptorand.Read(randomName); err != nil {
+		return err
+	}
+	tmpName := filepath.Join(dir, ".artifact-"+hex.EncodeToString(randomName))
+	tmp, err := root.OpenFile(tmpName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
+	defer root.Remove(tmpName)
 	if _, err := tmp.Write(content); err != nil {
 		_ = tmp.Close()
 		return err
@@ -144,8 +184,8 @@ func persistCASBytes(destination string, content []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, destination); err != nil {
-		if existing, readErr := readLimitedArtifactFile(destination); readErr == nil && bytes.Equal(existing, content) {
+	if err := root.Rename(tmpName, destination); err != nil {
+		if existing, readErr := readLimitedArtifactFile(root, destination); readErr == nil && bytes.Equal(existing, content) {
 			return nil
 		}
 		return err
@@ -153,8 +193,8 @@ func persistCASBytes(destination string, content []byte) error {
 	return nil
 }
 
-func readLimitedArtifactFile(path string) ([]byte, error) {
-	file, err := os.Open(path)
+func readLimitedArtifactFile(root *os.Root, path string) ([]byte, error) {
+	file, err := root.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -169,12 +209,12 @@ func readLimitedArtifactFile(path string) ([]byte, error) {
 	return content, nil
 }
 
-func readVerifiedCASArtifact(root string, artifact workgraph.Artifact) ([]byte, error) {
+func readVerifiedCASArtifact(root *os.Root, artifact workgraph.Artifact) ([]byte, error) {
 	if !validArtifactDigest(artifact.ID) || artifact.Path != artifactCASRelativePath(artifact.ID) ||
 		artifact.Size < 0 || artifact.Size > workgraph.MaxArtifactBytes {
 		return nil, errArtifactMetadataMismatch
 	}
-	file, err := os.Open(artifactCASPath(root, artifact.ID))
+	file, err := root.Open(filepath.FromSlash(artifactCASRelativePath(artifact.ID)))
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +266,12 @@ func (s *Server) workArtifactHandler(w http.ResponseWriter, r *http.Request, wor
 		writeError(w, http.StatusNotFound, "artifact_not_found", "artifact not found")
 		return
 	}
-	content, err := readVerifiedCASArtifact(s.ArtifactsDir, *matched)
+	artifactRoot, err := s.artifactRootHandle()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "artifact_store_failed", "artifact storage is unavailable")
+		return
+	}
+	content, err := readVerifiedCASArtifact(artifactRoot, *matched)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			writeError(w, http.StatusNotFound, "artifact_content_not_found", "artifact content not found")

@@ -42,7 +42,10 @@ type Server struct {
 	// ArtifactsDir is the directory where workers write artifact/log files.
 	// Required for the GET /v1/works/{id}/nodes/{n}/logs endpoint. Optional
 	// in V1; when nil, the log endpoint returns 503.
-	ArtifactsDir string
+	ArtifactsDir     string
+	artifactRootMu   sync.Mutex
+	artifactRoot     *os.Root
+	artifactRootPath string
 	// EvidenceConfig configures the /v1/works/{id}/evidence handler.
 	// When nil, the endpoint returns 503 (evidence unavailable).
 	EvidenceConfig *EvidenceConfig
@@ -911,18 +914,21 @@ func (s *Server) workLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var casArtifact *workgraph.Artifact
-	var logPath string
 	for i := len(work.Artifacts) - 1; i >= 0; i-- {
 		artifact := work.Artifacts[i]
 		if artifact.NodeID == nodeID && artifact.Path == artifactCASRelativePath(artifact.ID) {
 			copy := artifact
 			casArtifact = &copy
-			logPath = artifactCASPath(s.ArtifactsDir, artifact.ID)
 			break
 		}
 	}
 	if casArtifact != nil {
-		content, err := readVerifiedCASArtifact(s.ArtifactsDir, *casArtifact)
+		artifactRoot, err := s.artifactRootHandle()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "artifact_store_failed", "artifact storage is unavailable")
+			return
+		}
+		content, err := readVerifiedCASArtifact(artifactRoot, *casArtifact)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				writeError(w, http.StatusNotFound, "logs_not_found", "logs not found")
@@ -938,22 +944,31 @@ func (s *Server) workLogsHandler(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(content)
 		return
 	}
-	if logPath == "" {
-		if !safeArtifactPathSegment(workID) || !safeArtifactPathSegment(nodeID) {
-			writeError(w, http.StatusNotFound, "logs_not_found", "logs not found")
-			return
-		}
-		logPath = filepath.Join(s.ArtifactsDir, workID, nodeID+".log")
+	if !safeArtifactPathSegment(workID) || !safeArtifactPathSegment(nodeID) {
+		writeError(w, http.StatusNotFound, "logs_not_found", "logs not found")
+		return
 	}
-	if _, err := os.Stat(logPath); err != nil {
-		if os.IsNotExist(err) {
-			writeError(w, http.StatusNotFound, "logs_not_found", logPath)
+	artifactRoot, err := s.artifactRootHandle()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "stat_failed", err.Error())
+		return
+	}
+	logFile, err := artifactRoot.Open(filepath.Join(workID, nodeID+".log"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusNotFound, "logs_not_found", "logs not found")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "stat_failed", err.Error())
 		return
 	}
+	defer logFile.Close()
+	info, err := logFile.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "stat_failed", err.Error())
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeFile(w, r, logPath)
+	http.ServeContent(w, r, nodeID+".log", info.ModTime(), logFile)
 }

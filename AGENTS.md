@@ -10,7 +10,7 @@ This file is the local execution contract for coding agents, bots, reviewers, an
 
 ## Stack
 
-- Language: Go 1.23+.
+- Language: Go 1.25+ (see `go.mod`).
 - State: SQLite (see ADR-0005).
 - Worker: local subprocess for V1.
 - CLI: Go (`cmd/works`).

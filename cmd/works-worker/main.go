@@ -30,7 +30,7 @@ func main() {
 		apiURL                  = flag.String("api", envOr("WORKS_API", "http://127.0.0.1:8080"), "control plane URL")
 		workerID                = flag.String("id", envOr("WORKS_WORKER_ID", "wrkr_local_"+randomSuffix()), "worker id")
 		dbPath                  = flag.String("db", envOr("WORKS_DB", "/tmp/works.db"), "(unused; worker uses HTTP only — kept for backward compat)")
-		artDir                  = flag.String("artifacts", envOr("WORKS_ARTIFACTS", "/tmp/works-artifacts"), "artifact directory")
+		artDir                  = flag.String("artifacts", envOr("WORKS_ARTIFACTS", ""), "artifact directory")
 		pollEvery               = flag.Duration("poll", 2*time.Second, "poll interval")
 		leaseTTL                = flag.Duration("lease-ttl", 25*time.Second, "lease TTL")
 		heartbeatEvery          = flag.Duration("heartbeat", 10*time.Second, "heartbeat interval")
@@ -50,8 +50,8 @@ func main() {
 		logger.Fatal(err)
 	}
 
-	// Open the store only to share the artifacts dir creation with the API
-	// if the user is co-locating them. The worker itself uses HTTP only.
+	// The worker uses HTTP only. Run initializes its pinned artifact root
+	// when no explicit directory is configured.
 	_ = dbPath
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
