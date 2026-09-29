@@ -1,0 +1,55 @@
+package main
+
+import (
+	"net/http"
+	"testing"
+)
+
+func TestValidateEnrollmentConfiguration(t *testing.T) {
+	tests := []struct {
+		name      string
+		secret    string
+		apiURL    string
+		allowDev  bool
+		wantError bool
+	}{
+		{name: "missing secret fails by default", apiURL: "http://127.0.0.1:8080", wantError: true},
+		{name: "blank secret fails by default", secret: "  ", apiURL: "http://127.0.0.1:8080", wantError: true},
+		{name: "configured secret supports remote API", secret: "configured", apiURL: "https://works.example"},
+		{name: "explicit dev mode permits loopback without secret", apiURL: "http://127.0.0.1:8080", allowDev: true},
+		{name: "explicit dev mode permits localhost", apiURL: "http://localhost:8080", allowDev: true},
+		{name: "explicit dev mode permits IPv6 loopback", apiURL: "http://[::1]:8080", allowDev: true},
+		{name: "explicit dev mode refuses remote API", secret: "configured", apiURL: "https://works.example", allowDev: true, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateEnrollmentConfiguration(tt.secret, tt.apiURL, tt.allowDev)
+			if (err != nil) != tt.wantError {
+				t.Fatalf("validateEnrollmentConfiguration() error = %v, wantError %v", err, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestAllowUnauthenticatedFallbackRequiresExplicitLoopbackDevMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		allowDev bool
+		want     bool
+	}{
+		{name: "503 without opt-in is denied", status: http.StatusServiceUnavailable},
+		{name: "503 with opt-in is allowed", status: http.StatusServiceUnavailable, allowDev: true, want: true},
+		{name: "401 remains denied in dev mode", status: http.StatusUnauthorized, allowDev: true},
+		{name: "500 remains a transient error", status: http.StatusInternalServerError, allowDev: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := allowUnauthenticatedFallback(tt.status, tt.allowDev); got != tt.want {
+				t.Fatalf("allowUnauthenticatedFallback() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

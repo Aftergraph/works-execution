@@ -29,6 +29,16 @@ operations retain their additional platform-token checks.
 | `/v1/webhook/github` | HMAC-verified — see below |
 | `/v1/runners`, `/v1/runners/{id}` | Identity lookup/listing stays public for operator discovery (k-002); only the capability-advertisement surface (`/abi`) is bearer — capability info is operationally sensitive |
 
+## Worker startup policy
+
+`works-worker` requires `WORKS_ENROLL_SECRET` by default and exits if it is
+missing or blank. Unauthenticated operation requires the explicit
+`--allow-unauthenticated-dev` flag, and that flag is accepted only when
+`WORKS_API` is a loopback URL. A server-side 503 enrollment response also
+fails closed unless that same local-development opt-in is present. A 401 or
+403 enrollment response always fails; the dev flag does not bypass rejected
+credentials. Do not enable this mode for a remote or production control plane.
+
 ## Runner surface ownership (k-061)
 
 Bearer proves token validity, not ownership. On the mutating runner
