@@ -164,7 +164,11 @@ func randomSuffix() string {
 }
 
 func validateEnrollmentConfiguration(enrollSecret, apiURL string, allowUnauthenticatedDev bool) error {
-	if allowUnauthenticatedDev && !isLoopbackAPIURL(apiURL) {
+	apiIsLoopback, err := validateAPIURL(apiURL)
+	if err != nil {
+		return err
+	}
+	if allowUnauthenticatedDev && !apiIsLoopback {
 		return errors.New("--allow-unauthenticated-dev requires a loopback WORKS_API URL")
 	}
 	if strings.TrimSpace(enrollSecret) == "" && !allowUnauthenticatedDev {
@@ -177,14 +181,23 @@ func allowUnauthenticatedFallback(statusCode int, allowUnauthenticatedDev bool) 
 	return statusCode == http.StatusServiceUnavailable && allowUnauthenticatedDev
 }
 
-func isLoopbackAPIURL(raw string) bool {
+func validateAPIURL(raw string) (bool, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.User != nil || u.Hostname() == "" {
-		return false
+	if err != nil || u.User != nil || u.Hostname() == "" ||
+		(!strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https")) {
+		return false, errors.New("WORKS_API must be an absolute HTTP(S) URL without embedded credentials")
 	}
-	if strings.EqualFold(u.Hostname(), "localhost") {
+	loopback := isLoopbackHostname(u.Hostname())
+	if !loopback && !strings.EqualFold(u.Scheme, "https") {
+		return false, errors.New("non-loopback WORKS_API URLs must use HTTPS")
+	}
+	return loopback, nil
+}
+
+func isLoopbackHostname(host string) bool {
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
-	ip := net.ParseIP(u.Hostname())
+	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }

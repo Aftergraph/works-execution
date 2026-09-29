@@ -37,7 +37,9 @@ missing or blank. Unauthenticated operation requires the explicit
 `WORKS_API` is a loopback URL. A server-side 503 enrollment response also
 fails closed unless that same local-development opt-in is present. A 401 or
 403 enrollment response always fails; the dev flag does not bypass rejected
-credentials. Do not enable this mode for a remote or production control plane.
+credentials. Remote `WORKS_API` URLs must use HTTPS; plaintext HTTP is
+accepted only for loopback, and URL-embedded credentials are rejected. Do not
+enable unauthenticated mode for a remote or production control plane.
 
 ## Runner surface ownership (k-061)
 

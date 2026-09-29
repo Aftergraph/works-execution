@@ -16,10 +16,14 @@ func TestValidateEnrollmentConfiguration(t *testing.T) {
 		{name: "missing secret fails by default", apiURL: "http://127.0.0.1:8080", wantError: true},
 		{name: "blank secret fails by default", secret: "  ", apiURL: "http://127.0.0.1:8080", wantError: true},
 		{name: "configured secret supports remote API", secret: "configured", apiURL: "https://works.example"},
+		{name: "configured secret refuses remote plaintext HTTP", secret: "configured", apiURL: "http://works.example", wantError: true},
+		{name: "configured secret allows loopback HTTP", secret: "configured", apiURL: "http://127.0.0.1:8080"},
 		{name: "explicit dev mode permits loopback without secret", apiURL: "http://127.0.0.1:8080", allowDev: true},
 		{name: "explicit dev mode permits localhost", apiURL: "http://localhost:8080", allowDev: true},
 		{name: "explicit dev mode permits IPv6 loopback", apiURL: "http://[::1]:8080", allowDev: true},
 		{name: "explicit dev mode refuses remote API", secret: "configured", apiURL: "https://works.example", allowDev: true, wantError: true},
+		{name: "unsupported API scheme is rejected", secret: "configured", apiURL: "ftp://works.example", wantError: true},
+		{name: "embedded API credentials are rejected", secret: "configured", apiURL: "https://user:password@works.example", wantError: true},
 	}
 
 	for _, tt := range tests {
