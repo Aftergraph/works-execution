@@ -207,17 +207,17 @@ type ProvenanceConfig struct {
 //     the mutating paths additionally enforce worker_id == runner_id
 //     ownership (runner_authz.go). GET /v1/runners/{id} (identity
 //     lookup) stays public.
-//   - /v1/works/* and /healthz remain unauthenticated (operator surface).
+//   - /v1/works/* requires a Bearer token; /healthz remains public.
 func (s *Server) Routes() http.Handler {
 	s.ensureIssuer()
 	mux := http.NewServeMux()
-	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))                        // POST = create, GET = list
-	mux.HandleFunc("/v1/works/", s.workPathHandler)                                                   // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
-	mux.Handle("POST /v2/works/{id}/accept", http.HandlerFunc(s.acceptDispatchV2))                    // dispatch.acceptance/2.0 + materialized execution-context/1.0
+	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))                                                            // POST = create, GET = list
+	mux.Handle("/v1/works/", s.requireBearer(http.HandlerFunc(s.workPathHandler)))                                                        // work item reads, state changes, logs, evidence
+	mux.Handle("POST /v2/works/{id}/accept", http.HandlerFunc(s.acceptDispatchV2))                                                        // dispatch.acceptance/2.0 + materialized execution-context/1.0
 	mux.Handle("POST /v2/works/{id}/acceptances/{execution}/verification-subject", http.HandlerFunc(s.bindDispatchVerificationSubjectV2)) // post-effect exact-subject binding
-	mux.Handle("POST /v1/works/{id}/verification", http.HandlerFunc(s.workVerificationIngestHandler)) // Sentinel-owned semantic verifier ingest
-	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)                          // GET immutable execution context
-	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)                                             // unauthenticated; issues tokens
+	mux.Handle("POST /v1/works/{id}/verification", http.HandlerFunc(s.workVerificationIngestHandler))                                     // Sentinel-owned semantic verifier ingest
+	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)                                                              // GET immutable execution context
+	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)                                                                                 // unauthenticated; issues tokens
 	// /v1/workers/ and /v1/leases/ are mounted through auth middleware.
 	// We can't wrap an http.Handler with a HandleFunc, so we register the
 	// mux's path under a small dispatcher that runs requireBearer first.
@@ -241,7 +241,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /v1/runners/{id}/abi/negotiate", s.requireBearer(http.HandlerFunc(s.negotiateRunnerABI))) // negotiate caps (k-061 bearer read, fail-closed)
 	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler)))                    // GET = CloudEvents audit stream
 	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                                   // GET = DORA metrics
-	mux.Handle("/v1/reliability", s.requireBearer(http.HandlerFunc(s.reliabilityHandler)))                        // GET = durable replay reliability report
+	mux.Handle("/v1/reliability", s.requireBearer(http.HandlerFunc(s.reliabilityHandler)))                     // GET = durable replay reliability report
 	mux.HandleFunc("/healthz", s.healthz)
 	// M1 (k-impl-018): GitHub webhook receiver. Unauthenticated by
 	// design — HMAC signature is the security boundary. Operators
@@ -334,20 +334,11 @@ func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
 		s.createExecutionContext(w, r, parts[0])
 		return
 	}
-	// The dispatch acceptance seam. Authentication is enforced here because
-	// workPathHandler is registered WITHOUT requireBearer, and every other
-	// state-mutating surface an untrusted caller can reach sits behind it.
-	// Wrapping the accept branch keeps the Runtime → WORKS boundary
-	// authenticated before the authority-epoch resolver is ever wired, so a
-	// future live mount cannot be reached by a caller who merely knows a work
-	// ID. Method is still checked inside the handler, so with auth disabled
-	// (dev/tests) a non-POST gets 405 rather than falling through to the
-	// work-item handler.
+	// The whole /v1/works/ subtree is mounted behind requireBearer. Keep the
+	// dispatch method check here so a non-POST gets 405 rather than falling
+	// through to the work-item handler.
 	if len(parts) == 2 && parts[1] == "accept" {
-		accept := http.HandlerFunc(func(aw http.ResponseWriter, ar *http.Request) {
-			s.acceptDispatch(aw, ar, parts[0])
-		})
-		s.requireBearer(accept).ServeHTTP(w, r)
+		s.acceptDispatch(w, r, parts[0])
 		return
 	}
 	s.workItemHandler(w, r)
@@ -692,24 +683,30 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 	// Snapshot the runner pool once per request. The scheduler is pure;
 	// we don't need to hold the lock across the full scan.
 	//
-	// BYOC (RFC-0004): runners whose LastHeartbeatAt is older than
-	// 3× heartbeat interval are treated as stale and excluded from
-	// the pool — a dead runner must not keep claiming pool-scoped
-	// work. Registered identities carry a heartbeat timestamp; very
-	// old registrations (pre-BYOC) without one are kept for
-	// backward compatibility.
+	// Legacy unscoped scheduling retains registrations without heartbeat
+	// metadata. Pool-scoped work uses only active identities with fresh
+	// heartbeats, matching the lease-grant boundary below.
 	var pool []*scheduler.Runner
+	var livePool []*scheduler.Runner
 	if s.RunnerRegistry != nil {
 		all := s.RunnerRegistry.List()
+		legacyEligible := make([]*runner.Identity, 0, len(all))
 		live := make([]*runner.Identity, 0, len(all))
-		staleCutoff := time.Now().Add(-3 * defaultHeartbeatInterval)
+		now := time.Now()
+		staleCutoff := now.Add(-3 * defaultHeartbeatInterval)
 		for _, id := range all {
-			if id.LastHeartbeatAt != nil && id.LastHeartbeatAt.Before(staleCutoff) {
+			if id == nil {
 				continue
 			}
-			live = append(live, id)
+			if id.LastHeartbeatAt == nil || !id.LastHeartbeatAt.Before(staleCutoff) {
+				legacyEligible = append(legacyEligible, id)
+			}
+			if runnerHasFreshHeartbeat(id, now) {
+				live = append(live, id)
+			}
 		}
-		pool = runnersFromIdentities(live)
+		pool = runnersFromIdentities(legacyEligible)
+		livePool = runnersFromIdentities(live)
 	}
 
 	type readyItem struct {
@@ -738,6 +735,21 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 	var skipped []unschedulable
 
 	for _, work := range list {
+		candidatePool := pool
+		if work.Requirements.Pool != "" {
+			candidatePool = livePool
+			if len(candidatePool) == 0 {
+				for _, nid := range work.ReadyNodes(activeByWork[work.ID]) {
+					skipped = append(skipped, unschedulable{
+						WorkID: work.ID,
+						NodeID: nid,
+						Reason: "pool-scoped work requires an active runner with a fresh heartbeat",
+					})
+				}
+				continue
+			}
+		}
+
 		// Honor active leases: don't return a node another worker is leasing.
 		// (Batched into one query above; nil means "no active leases".)
 		for _, nid := range work.ReadyNodes(activeByWork[work.ID]) {
@@ -757,7 +769,7 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 			// enrolled can still poll. Production deployments will always
 			// have at least one runner registered (worker startup blocks
 			// on /v1/workers/enroll → /v1/runners/register).
-			if len(pool) == 0 {
+			if len(candidatePool) == 0 {
 				items = append(items, item)
 				if len(items) >= limit {
 					break
@@ -785,7 +797,7 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 			// Snapshot the node (value copy) so the scheduler sees an
 			// immutable view even if the caller mutates later iterations.
 			nodeCopy := n
-			assignment, err := scheduler.Select(r.Context(), work, &nodeCopy, pool)
+			assignment, err := scheduler.Select(r.Context(), work, &nodeCopy, candidatePool)
 			if err != nil {
 				// No eligible runner for this node. Record it under
 				// unschedulable so operators see the failure cause,

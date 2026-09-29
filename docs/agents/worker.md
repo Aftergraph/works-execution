@@ -67,27 +67,35 @@ slice (see `platform-ai-failure-intel` in the registry).
 
 - HTTP client (Go `net/http`).
 - Subprocess executor (`os/exec`).
-- Local filesystem access (artifacts directory only).
-- The `sh` shell.
+- Host filesystem access available to the worker's operating-system identity.
+- Host network access available to the worker's operating-system identity.
+- Host-native shell (`sh` on POSIX; PowerShell on Windows).
 
-The worker does **not** have:
+The worker's host-command path is not an OS sandbox. `Worker.execute` calls
+`runCommand` with a nil manifest, so commands inherit the worker environment
+(with four named control variables removed), receive the Work's resolved
+environment values, and run with the worker account's normal filesystem and
+network permissions. The sandbox package's environment/workspace preparation
+is not wired into this production call; its network check is also not a
+syscall-level egress block.
 
-- Network access to anything other than the configured API URL.
-- Filesystem access to anything other than its `ArtifactsDir`.
-- Privilege to mutate Work or Lease state outside the lease protocol.
-- Ability to call other workers, schedule itself, or modify its own binary.
+On Windows, the installer stores DPAPI-protected secret ciphertext with an ACL
+for the same user that runs the scheduled task. The launcher decrypts values
+into the worker process. Removing named variables from a child environment is
+useful hygiene, but it does not isolate those secrets from code running as the
+same Windows user; same-user DPAPI ciphertext is not a vault boundary.
 
 ## Permissions
 
-Default-deny. The worker is a single-purpose process:
+The following describes the current V1 host-process behavior, not a
+default-deny sandbox:
 
-- **Read:** own config flags + the API URL + the ArtifactsDir path.
-- **Write:** `<ArtifactsDir>/<workID>/<nodeID>.log` only.
-- **Network:** outbound HTTPS/HTTP to the API URL only. All other outbound
-  network access from subprocesses is **denied by default** under the
-  Hermetic Execution Standard (#111, slice 3).
-- **Process:** spawn child processes; receive SIGTERM/SIGINT for graceful
-  shutdown; receive SIGKILL from the lease-reaper on lease loss.
+- **Read/write:** any path permitted by the worker account's OS ACLs; this
+  includes the artifact directory but is not limited to it.
+- **Network:** the worker uses the configured API URL and may check out source
+  from GitHub. Leased subprocesses inherit ordinary host network access.
+- **Process:** spawn host child processes. Lease loss and timeout target the
+  direct subprocess; process-tree containment is not established here.
 
 ## Authority
 
@@ -99,11 +107,11 @@ Default-deny. The worker is a single-purpose process:
 | Modify Work state | No | All state transitions go through the API. |
 | Modify Lease state | Yes, on its own lease only | `complete`, `release`, `heartbeat`. |
 | Spawn other workers | No | The control plane does that. |
-| Read other tenants' work | No | The API scopes by tenant (slice 3 RBAC). |
+| Read other tenants' work | Not established | Worker JWTs identify a worker; the current worker API path does not bind each Work read or state mutation to an owning tenant. |
 
-**Tenant isolation:** the worker only sees works for its tenant. Cross-tenant
-data access is impossible because the API rejects the request (slice 3
-enforces this in middleware; slice 1+2 enforces via DB schema).
+Do not treat a worker ID or a Work ID as tenant authorization. Per-work
+tenant/owner authorization must be implemented and verified before this API
+is used as a multi-tenant security boundary.
 
 ## Risk classification (NIST AI RMF 1.0)
 
@@ -114,10 +122,11 @@ enforces this in middleware; slice 1+2 enforces via DB schema).
   this classification is provisional and `BLOCKED: requires-external-audit`
   applies to the formal `eu-ai-act` standard.
 - **Impact profile:** the worker can execute arbitrary user-supplied shell
-  commands. The blast radius is bounded by:
-  1. Lease scope (only the granted node).
-  2. Hermetic execution default (slice 3) — no network, no secrets by default.
-  3. Timeout (`TimeoutS` field on Node, propagated as `exec.CommandContext`).
+  commands. A lease authorizes the requested command, while the host OS
+  identity determines its actual filesystem, network, and privilege access.
+  The current path does not provide hermetic isolation. Use only trusted Work
+  authors until a restricted execution environment and secret boundary are
+  implemented and proven.
 - **Failure modes:**
   - Subprocess crash → attempt marked failed.
   - Lease lost → subprocess killed, attempt marked cancelled.
@@ -133,13 +142,11 @@ enforces this in middleware; slice 1+2 enforces via DB schema).
 
 ## Prohibited actions
 
+These are policy expectations; the V1 host-process path does not technically
+enforce the filesystem or network restrictions below.
+
 - Modify the Work object directly (must go through `/v1/leases/{id}/complete`).
-- Read or write to filesystem paths outside `ArtifactsDir` and its parent.
-- Make outbound HTTP requests other than to the configured API URL.
 - Bypass the lease protocol (e.g. spawning children that grant themselves leases).
-- Persist long-lived credentials anywhere on disk.
-- Network access from the subprocess (slice 3 hermetic default; denied at
-  the subprocess layer).
 - Self-modification (no update mechanism in V1).
 
 ## Escalation rules

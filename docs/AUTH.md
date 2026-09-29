@@ -5,7 +5,7 @@
 | Endpoint | Methods |
 |---|---|
 | `/v1/works` | POST (create), GET (list) |
-| `/v1/works/*` | work item dispatch |
+| `/v1/works/*` | work item reads, queue/cancel, logs, evidence and provenance; execution-context writes also require the platform token |
 | `/v1/workers/*` (except `/enroll`) | GET `/v1/workers/ready` |
 | `/v1/leases`, `/v1/leases/*` | lease acquire/complete/heartbeat |
 | `/v1/runners/register` | POST (runner identity) — bearer since k-061 |
@@ -13,6 +13,12 @@
 | `/v1/runners/{id}/abi/negotiate` | POST (bearer read, k-061) |
 | `/v1/audit-events` | GET (CloudEvents audit stream) — hardened in this PR |
 | `/v1/dora` | GET (DORA metrics) — hardened in this PR |
+
+Bearer authentication on `/v1/works/*` proves possession of an enrolled
+worker JWT. It does not provide per-Work owner or tenant authorization:
+work reads and queue/cancel are not yet bound to an owning principal. Do not
+treat this route as a multi-tenant isolation boundary. Platform bridge
+operations retain their additional platform-token checks.
 
 ## Public endpoints (no Bearer)
 
