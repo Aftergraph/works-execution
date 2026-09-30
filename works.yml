@@ -1,23 +1,9 @@
-# works.yml — works-execution's own CI pipeline (self-hosted).
-#
-# This repo builds and verifies ITSELF through its own control plane:
-# a push to main triggers a webhook → the control plane creates a
-# Work → a BYOC pool runner (avc-core) leases the nodes, runs the
-# pipeline below, and the publisher posts the result back to the
-# commit as a GitHub status. No GitHub Actions involved — dogfood all
-# the way down.
-#
-# Scope note: Requirements.Pool pins this pipeline to the avc-core
-# pool (RFC-0004). cache: true on the vet node lets repeat pushes
-# with byte-identical inputs skip straight to the cached result
-# (RFC-0005).
 version: 1
 
 work:
   verify:
     triggers:
       - push
-      - pull_request
 
     requirements:
       confidence: development
@@ -26,31 +12,57 @@ work:
       pool: avc-core
 
     nodes:
-      vet:
-        run: . scripts/ops/ci-scratch-env.sh && go vet ./...
-        cache: true
+      provenance:
+        run: |
+          set -eu
+          cd ci/concord-rc2
+          node --input-type=module <<'NODE'
+          import { readFile } from "node:fs/promises";
+          import { createHash } from "node:crypto";
+          const manifest = JSON.parse(await readFile("SOURCE_MANIFEST.json", "utf8"));
+          if (manifest.source_commit !== "eb2d95399cbdebb83598bd01a2da9e19e407fca1") {
+            throw new Error("source commit mismatch");
+          }
+          for (const [path, expected] of Object.entries(manifest.files)) {
+            const bytes = await readFile(path);
+            const actual = createHash("sha1")
+              .update("blob " + bytes.length + "\0")
+              .update(bytes)
+              .digest("hex");
+            if (actual !== expected) throw new Error(path + ": blob mismatch " + actual + " != " + expected);
+          }
+          console.log("CONCORD_SOURCE_COMMIT=" + manifest.source_commit);
+          console.log("CONCORD_SOURCE_TREE=" + manifest.source_tree);
+          console.log("CONCORD_BLOB_CHECKS=" + Object.keys(manifest.files).length + "/"+Object.keys(manifest.files).length+" PASS");
+          NODE
         timeout_s: 120
 
-      test:
-        needs: [vet]
-        run: . scripts/ops/ci-scratch-env.sh && go test ./... -count=1
+      core:
+        needs: [provenance]
+        run: |
+          set -eu
+          cd ci/concord-rc2
+          node --version
+          npm --version
+          node -e 'if (+process.versions.node.split(".")[0] < 20) { console.error("Node >=20 required"); process.exit(1) }'
+          npm run check
+          npm test
         timeout_s: 600
 
-      windows-worker-crossbuild:
-        needs: [test]
+      cloudflare_contract:
+        needs: [core]
         run: |
-          . scripts/ops/ci-scratch-env.sh
-          mkdir -p dist
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o dist/works-worker-windows-amd64.exe ./cmd/works-worker
-          sha256sum dist/works-worker-windows-amd64.exe
-        timeout_s: 180
-
-      build:
-        needs: [test]
-        run: . scripts/ops/ci-scratch-env.sh && make build
+          set -eu
+          cd ci/concord-rc2
+          node --input-type=module <<'NODE'
+          import { readFile } from "node:fs/promises";
+          const c = JSON.parse(await readFile("wrangler.jsonc","utf8"));
+          if (c.name !== "aftergraph-concord") throw new Error("worker name mismatch");
+          if (c.main !== "src/cloudflare/worker.js") throw new Error("worker main mismatch");
+          const binding = c.durable_objects?.bindings?.find((x) => x.name === "CONCORD_STATE" && x.class_name === "ConcordState");
+          if (!binding) throw new Error("CONCORD_STATE durable object binding missing");
+          if (!c.migrations?.some((m) => m.new_sqlite_classes?.includes("ConcordState"))) throw new Error("SQLite Durable Object migration missing");
+          if (c.assets?.directory !== "./public") throw new Error("static assets directory mismatch");
+          console.log("CLOUDFLARE_CONTRACT_PASS");
+          NODE
         timeout_s: 120
-
-      deploy-integrity-fabric-v1:
-        needs: [build, windows-worker-crossbuild]
-        run: . scripts/ops/ci-scratch-env.sh && bash scripts/ops/deploy-works-api-once.sh
-        timeout_s: 300

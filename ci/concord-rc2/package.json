@@ -1,0 +1,31 @@
+{
+  "name": "@aftergraph/concord",
+  "version": "1.0.0-rc.2",
+  "private": true,
+  "type": "module",
+  "description": "Provenance-aware bidirectional synchronization fabric for trusted agent replicas.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "check": "node --check src/server.js && node --check src/engine.js && node --check src/store.js && node --check src/crypto.js && node --check src/governance.js && node --check src/verification.js && node --check src/client.js && node --check src/adapters/http.js && node --check src/adapters/trust-gateway.js && node --check src/adapters/verifier-provider.js && node --check bin/concord.js && node --check tools/import-friday-export.js && node --check public/app.js && node --check src/cloudflare/store.js && node --check src/cloudflare/worker.js && node --check src/bridge/validation.js && node --check tools/concord-runner-bridge.mjs",
+    "test:e2e": "node --test test/e2e.test.js",
+    "import:friday": "node tools/import-friday-export.js",
+    "cloudflare:types": "wrangler types",
+    "cloudflare:check": "wrangler deploy --dry-run --outdir .cloudflare-dist",
+    "cloudflare:dev": "wrangler dev",
+    "cloudflare:deploy": "wrangler deploy",
+    "verify:cloudflare": "npm run check && npm test && npm run cloudflare:check",
+    "cloudflare:deploy:token": "bash tools/cloudflare-deploy.sh",
+    "verify:release": "npm run verify:cloudflare"
+  },
+  "bin": {
+    "concord": "./bin/concord.js"
+  },
+  "devDependencies": {
+    "wrangler": "4.143.0"
+  }
+}

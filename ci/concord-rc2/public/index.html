@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Aftergraph Concord</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <div class="eyebrow">AFTERGRAPH / CONCORD</div>
+        <h1>Continuity Fabric</h1>
+        <p>Friday ↔ Fo ↔ future agents. Provenance first. Conflict closed.</p>
+      </div>
+      <div class="headerActions">
+        <button id="auth" class="pill neutral" type="button">AUTH</button>
+        <div id="health" class="pill neutral">CONNECTING</div>
+      </div>
+    </header>
+    <main>
+      <section class="hero card">
+        <div>
+          <span class="label">REVISION</span>
+          <strong id="revision">—</strong>
+        </div>
+        <div>
+          <span class="label">REPLICAS</span>
+          <strong id="replicaCount">—</strong>
+        </div>
+        <div>
+          <span class="label">ASSERTIONS</span>
+          <strong id="assertionCount">—</strong>
+        </div>
+        <div>
+          <span class="label">HOLD</span>
+          <strong id="holdCount">—</strong>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="card span2">
+          <div class="sectionHead"><h2>Replica topology</h2><span>live</span></div>
+          <div id="replicas" class="replicas empty">No replicas registered.</div>
+        </article>
+        <article class="card">
+          <div class="sectionHead"><h2>Integrity</h2></div>
+          <dl id="integrity"></dl>
+        </article>
+        <article class="card span2">
+          <div class="sectionHead"><h2>Claims</h2><span>canonical projection</span></div>
+          <div id="claims" class="tableWrap"></div>
+        </article>
+        <article class="card">
+          <div class="sectionHead"><h2>Needs attention</h2><span>fail closed</span></div>
+          <div id="conflicts"></div>
+        </article>
+        <article class="card span3">
+          <div class="sectionHead"><h2>Independent verification</h2><span>exact subject</span></div>
+          <div id="verification" class="verification"></div>
+        </article>
+        <article class="card span3">
+          <div class="sectionHead"><h2>Event journal</h2><span id="streamState">SSE</span></div>
+          <div id="events" class="events"></div>
+        </article>
+      </section>
+    </main>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

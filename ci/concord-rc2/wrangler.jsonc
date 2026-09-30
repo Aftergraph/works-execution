@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "aftergraph-concord",
+  "main": "src/cloudflare/worker.js",
+  "compatibility_date": "2026-10-01",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "CONCORD_GOVERNANCE_MODE": "required",
+    "CONCORD_VERIFICATION_MODE": "registered-signed",
+    "CONCORD_TRUST_GATEWAY_TIMEOUT_MS": "5000",
+    "CONCORD_VERIFIER_PATH": "/v1/verify",
+    "CONCORD_VERIFIER_TIMEOUT_MS": "10000"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CONCORD_STATE",
+        "class_name": "ConcordState"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ConcordState"
+      ]
+    }
+  ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  }
+}
