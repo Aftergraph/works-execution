@@ -8,11 +8,28 @@ TARGET=''
 BASE_URL='http://127.0.0.1:18191'
 SMOKE_WORK_ID='wrk_3995b52a8e30d244dc83f6413bba0df2'
 RECEIPT_DIR='/var/lib/works/deployments'
+DEPLOY_LOCK='/run/lock/aftergraph-works-api-deploy.lock'
 
 fail() {
   printf 'works-api-live-deploy: %s\n' "$*" >&2
   exit 2
 }
+
+# The native WORKS pipeline and an operator can observe the same marked main
+# commit. Serialize them before either can create a rollback copy or replace
+# the API binary. When invoked by a least-privilege operator, acquire the
+# root-owned lock while re-executing the guarded script under sudo.
+if [[ "${WORKS_API_DEPLOY_LOCKED:-}" != "1" ]]; then
+  command -v flock >/dev/null 2>&1 || fail "flock_unavailable"
+  if [[ "$(id -u)" -ne 0 ]]; then
+    if sudo -n env WORKS_API_DEPLOY_LOCKED=1 flock -n "$DEPLOY_LOCK" "$0" "$@"; then
+      exit 0
+    fi
+    fail "deployment_lock_held_or_operator_authority_unavailable"
+  fi
+  exec 9>"$DEPLOY_LOCK"
+  flock -n 9 || fail "deployment_lock_held"
+fi
 
 json_skip() {
   printf '{"deployment":"skipped","reason":"%s","sha":"%s"}\n' "$1" "$2"
@@ -36,9 +53,62 @@ health_ok() {
   curl -fsS --max-time 2 "$BASE_URL/healthz" >/dev/null 2>&1
 }
 
+load_enrollment_secret() {
+  if [[ -n "${WORKS_ENROLL_SECRET:-}" ]]; then
+    printf '%s' "$WORKS_ENROLL_SECRET"
+    return 0
+  fi
+
+  local env_file="${WORKS_DEPLOY_ENV_FILE:-/etc/works/works.env}"
+  sudo -n awk -F= '
+    $1 == "WORKS_ENROLL_SECRET" {
+      value = substr($0, index($0, "=") + 1)
+      first = substr(value, 1, 1)
+      last = substr(value, length(value), 1)
+      if ((first == "\"" && last == "\"") || (first == "\047" && last == "\047")) {
+        value = substr(value, 2, length(value) - 2)
+      }
+      print value
+      found = 1
+      exit
+    }
+    END { if (!found) exit 1 }
+  ' "$env_file"
+}
+
 integrity_smoke() {
-  local out
-  out="$(curl -fsS --max-time 5 "$BASE_URL/v1/works/$SMOKE_WORK_ID/evidence")" || return 1
+  local enroll_secret request_file enrollment_file bearer_config out
+  [[ -n "${tmpdir:-}" && -d "$tmpdir" ]] || return 1
+  enroll_secret="$(load_enrollment_secret)" || return 1
+  [[ -n "$enroll_secret" ]] || return 1
+
+  request_file="$tmpdir/deploy-smoke-enroll-request.json"
+  enrollment_file="$tmpdir/deploy-smoke-enrollment.json"
+  bearer_config="$tmpdir/deploy-smoke-bearer.curl"
+  printf '%s' "$enroll_secret" |
+    python3 -c 'import json,sys; print(json.dumps({"worker_id":"wrkr_deploy_smoke","challenge":sys.stdin.read(),"ttl_seconds":60}))' \
+      > "$request_file" || return 1
+  curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+    --data-binary "@$request_file" "$BASE_URL/v1/workers/enroll" > "$enrollment_file" || return 1
+  if ! python3 - "$enrollment_file" "$bearer_config" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    token = json.load(source)["token"]
+if not re.fullmatch(r"[A-Za-z0-9_.-]{16,4096}", token):
+    raise SystemExit("enrollment returned an invalid bearer token")
+with open(sys.argv[2], "w", encoding="utf-8") as config:
+    config.write(f'header = "Authorization: Bearer {token}"\n')
+PY
+  then
+    return 1
+  fi
+  chmod 0600 "$bearer_config" || return 1
+
+  out="$(curl -fsS --max-time 5 --config "$bearer_config" \
+    "$BASE_URL/v1/works/$SMOKE_WORK_ID/evidence")" || return 1
   grep -Fq '"canonicalization":"aftergraph-json-canonical/1"' <<<"$out" || return 1
   grep -Fq '"algorithm":"sha256"' <<<"$out" || return 1
   grep -Fq '"algorithm":"blake3"' <<<"$out" || return 1
@@ -81,16 +151,30 @@ mutated=false
 
 cleanup() {
   local rc=$?
+  local restore_next backup_hash pid running_hash rollback_verified
   trap - EXIT
   set +e
   if [[ "$rc" -ne 0 && "$mutated" == true && -n "$backup" ]] && sudo test -f "$backup"; then
-    sudo cp -a "$backup" "$TARGET"
-    sudo systemctl restart "$SERVICE"
-    for _ in $(seq 1 40); do
-      health_ok && break
-      sleep 0.5
-    done
-    printf 'works-api-live-deploy: rollback=true rc=%s sha=%s\n' "$rc" "$sha" >&2
+    restore_next="$TARGET.rollback-next.$short_sha.$$"
+    rollback_verified=false
+    if sudo cp -a "$backup" "$restore_next" && sudo mv -f "$restore_next" "$TARGET" &&
+      sudo systemctl restart "$SERVICE"; then
+      for _ in $(seq 1 40); do
+        health_ok && break
+        sleep 0.5
+      done
+      backup_hash="$(sudo sha256sum "$backup" | awk '{print $1}')"
+      pid="$(sudo systemctl show "$SERVICE" -p MainPID --value)"
+      if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && health_ok; then
+        running_hash="$(sudo sha256sum "/proc/$pid/exe" | awk '{print $1}')"
+        [[ "$running_hash" == "$backup_hash" ]] && rollback_verified=true
+      fi
+    fi
+    if [[ "$rollback_verified" == true ]]; then
+      printf 'works-api-live-deploy: rollback=verified rc=%s sha=%s binary_sha256=%s\n' "$rc" "$sha" "$backup_hash" >&2
+    else
+      printf 'works-api-live-deploy: rollback=FAILED rc=%s sha=%s\n' "$rc" "$sha" >&2
+    fi
   fi
   rm -rf "$tmpdir"
   exit "$rc"
@@ -106,16 +190,26 @@ candidate_hash="$(sha256sum "$candidate" | awk '{print $1}')"
 [[ "$candidate_hash" =~ ^[0-9a-f]{64}$ ]] || fail "candidate_hash_invalid"
 
 # Idempotent retry: if this exact source revision is already installed and
-# healthy, prove the live Integrity Fabric surface and return without mutation.
+# exact build is running and healthy, prove the live Integrity Fabric surface
+# and return without mutation. A matching VCS revision alone is insufficient:
+# compiler/build flags can produce a different binary from the reviewed one.
 installed_revision="$(revision_of "$TARGET" || true)"
-if [[ "$installed_revision" == "$sha" ]] && health_ok && integrity_smoke; then
+installed_hash="$(sudo sha256sum "$TARGET" | awk '{print $1}')"
+pid="$(sudo systemctl show "$SERVICE" -p MainPID --value)"
+running_hash=""
+if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+  running_hash="$(sudo sha256sum "/proc/$pid/exe" | awk '{print $1}')"
+fi
+if [[ "$installed_revision" == "$sha" && "$installed_hash" == "$candidate_hash" &&
+  "$running_hash" == "$candidate_hash" ]] && health_ok && integrity_smoke; then
   printf '{"deployment":"verified","changed":false,"sha":"%s","binary_sha256":"%s","integrity_smoke":true}\n' \
     "$sha" "$candidate_hash"
   exit 0
 fi
 
-backup="$TARGET.rollback.$short_sha"
-next="$TARGET.next.$short_sha"
+deployment_id="$(date -u +%Y%m%dT%H%M%SZ).$$"
+backup="$TARGET.rollback.$short_sha.$deployment_id"
+next="$TARGET.next.$short_sha.$deployment_id"
 
 sudo cp -a "$TARGET" "$backup"
 sudo install -m 0755 "$candidate" "$next"
