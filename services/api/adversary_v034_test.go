@@ -109,15 +109,11 @@ package api
 //	   row is true about bearer but reads as if the verbs were authorized.
 //	   TestAdversary34_NonGrantLeaseVerbsUnbound.
 //
-//	E. MEDIUM doc-drift — docs/AUTH.md (edited by k-061) misstates the
-//	   boundary in two rows and omits a whole law:
-//	   - AUTH.md:8 puts `/v1/works/*` in the "Endpoints requiring Bearer
-//	     auth" table, but api.go:177 mounts the "/v1/works/" prefix WITHOUT
-//	     requireBearer: anonymous GET /v1/works/{id} -> 200 and anonymous
-//	     POST /v1/works/{id}/cancel -> 200 (a real state mutation). The
-//	     route comment in api.go even says so ("remain unauthenticated
-//	     (operator surface)"): the doc row is false, not the code.
-//	     TestAdversary34_AuthMDWorksSubtreeRowIsFalse.
+//	E. MEDIUM doc-drift — docs/AUTH.md misstates some route boundaries and
+//	   omits a whole law. The former `/v1/works/` mount left work reads and
+//	   queue/cancel unauthenticated despite the Bearer row in AUTH.md. The
+//	   mount and regression assertion now require Bearer auth;
+//	   TestAdversary34_AuthMDWorksSubtreeRequiresBearer.
 //	   - AUTH.md:21 lists `/readyz` as a public endpoint; no such route
 //	     exists (404 page not found), and the doc never mentions the
 //	     k-058/k-062 control-token law, WORKS_RAB_CONTROL_TOKEN, or the
@@ -1113,45 +1109,65 @@ func a34FindLine(lines []string, needle string) (int, string) {
 	return 0, ""
 }
 
-// TestAdversary34_AuthMDWorksSubtreeRowIsFalse reproduces finding E1:
-// docs/AUTH.md:8 lists `/v1/works/*` under "Endpoints requiring Bearer auth",
-// but Routes() mounts the "/v1/works/" prefix with NO requireBearer (api.go:177
-// — whose own comment says these routes "remain unauthenticated (operator
-// surface)"). On an auth-ON server, an anonymous caller can READ any work and
-// CANCEL any work. The doc row is the lie; the code is the (documented in
-// code, not in docs) intent.
-//
-// PIN: fails when either the row is corrected (moved to the public table, or
-// narrowed to the routes that ARE bearer-gated) or the subtree is actually
-// wrapped — both correct fixes, both require this test to be rewritten as the
-// matching regression assertion.
-func TestAdversary34_AuthMDWorksSubtreeRowIsFalse(t *testing.T) {
+// TestAdversary34_AuthMDWorksSubtreeRequiresBearer closes finding E1:
+// item reads and state changes must match the Bearer-auth row in docs/AUTH.md.
+// Anonymous requests are rejected before handler side effects.
+func TestAdversary34_AuthMDWorksSubtreeRequiresBearer(t *testing.T) {
 	lines := a34AuthMD(t)
 	no, row := a34FindLine(lines, "| `/v1/works/*` |")
 	if no == 0 {
-		t.Fatal("PIN INVALID: AUTH.md no longer has a `/v1/works/*` row — check whether the drift was " +
-			"fixed (then assert the corrected posture here) or just renamed (then fix this needle)")
+		t.Fatal("AUTH.md must document the authenticated /v1/works/* subtree")
 	}
 	t.Logf("pinned doc row docs/AUTH.md:%d: %s", no, row)
 	bearerHdr, _ := a34FindLine(lines, "## Endpoints requiring Bearer auth")
 	publicHdr, _ := a34FindLine(lines, "## Public endpoints")
 	if !(bearerHdr < no) || (publicHdr != 0 && no > publicHdr) {
-		t.Fatalf("PIN INVALID: the `/v1/works/*` row moved out of the bearer table (line %d between %d and %d) — "+
-			"the doc is fixed; rewrite this test to assert the corrected posture", no, bearerHdr, publicHdr)
+		t.Fatalf("/v1/works/* must be documented under Bearer auth (line %d, bearer header %d, public header %d)", no, bearerHdr, publicHdr)
 	}
 
 	f := a34New(t, true, false) // production posture: bearer enforced
 	w := f.work()
-	if r := f.get("/v1/works/"+w, ""); r.code != http.StatusOK {
-		t.Fatalf("PIN INVALID: anonymous work read is no longer served (%d %s) — subtree is gated now",
-			r.code, r.text())
+	if r := f.get("/v1/works/"+w, ""); r.code != http.StatusUnauthorized {
+		t.Fatalf("anonymous work read must be rejected before lookup: %d %s", r.code, r.text())
 	}
 	cancel := f.post("/v1/works/"+w+"/cancel", `{}`, "")
-	if cancel.code != http.StatusOK || cancel.field("state") != string(workgraph.StateCancelled) {
-		t.Fatalf("unexpected cancel answer (%d %s) — re-derive this finding", cancel.code, cancel.text())
+	if cancel.code != http.StatusUnauthorized {
+		t.Fatalf("anonymous work cancel must be rejected before mutation: %d %s", cancel.code, cancel.text())
 	}
-	// And the exact-match parent IS gated, which is what makes the doc row
-	// read as a general statement about the subtree.
+	created := &workgraph.Work{
+		ID:        workgraph.NewID("w"),
+		Source:    workgraph.Source{Type: "cli"},
+		Objective: workgraph.Objective{Type: "verify_change"},
+		Graph:     workgraph.Graph{Nodes: map[string]workgraph.Node{"a": {ID: "a", Run: "echo a"}}},
+		State:     workgraph.StateCreated,
+	}
+	if err := f.st.CreateWork(context.Background(), created); err != nil {
+		t.Fatal(err)
+	}
+	queue := f.post("/v1/works/"+created.ID+"/queue", `{}`, "")
+	if queue.code != http.StatusUnauthorized {
+		t.Fatalf("anonymous work queue must be rejected before mutation: %d %s", queue.code, queue.text())
+	}
+	stored, err := f.st.GetWork(context.Background(), w)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != workgraph.StateQueued {
+		t.Fatalf("anonymous cancel changed work state to %s", stored.State)
+	}
+	storedCreated, err := f.st.GetWork(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedCreated.State != workgraph.StateCreated {
+		t.Fatalf("anonymous queue changed work state to %s", storedCreated.State)
+	}
+	// The authenticated route continues to serve enrolled callers.
+	authorized := f.mint("wrkr_operator")
+	if r := f.get("/v1/works/"+w, authorized); r.code != http.StatusOK {
+		t.Fatalf("authorized work read failed: %d %s", r.code, r.text())
+	}
+	// The exact-match parent is also bearer-gated.
 	if r := f.get("/v1/works", ""); r.code != http.StatusUnauthorized {
 		t.Fatalf("GET /v1/works must be bearer-gated (AUTH.md row 7): %d %s", r.code, r.text())
 	}

@@ -71,7 +71,7 @@ token for private deployments.
 
 ## Verification (production VDS, 2026-08-31)
 
-- 200 on all pages locally and via `works.rendetalje.dk` (Cloudflare
+- 200 on all pages locally and via `works.aftergraph.org` (Cloudflare
   tunnel).
 - SSE stream confirmed live: `: stream open` + `event: work` frames.
 - k-impl-031 done; `badgeFor` template panic (21:05) fixed in `fd4fb03`

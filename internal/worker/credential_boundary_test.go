@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestSanitizedWorkerProcessEnvStripsControlCredentials(t *testing.T) {
+func TestSanitizedWorkerProcessEnvStripsControlCredentialsAndResolverValues(t *testing.T) {
 	t.Setenv("WORKS_SCRATCH_ROOT", t.TempDir())
 	in := []string{
 		"PATH=C:\\Windows",
@@ -14,6 +14,7 @@ func TestSanitizedWorkerProcessEnvStripsControlCredentials(t *testing.T) {
 		"WORKS_GITHUB_TOKEN=github-secret-must-not-leak",
 		"GITHUB_TOKEN=actions-secret-must-not-leak",
 		"GH_TOKEN=cli-secret-must-not-leak",
+		"SECRET_ENV_UNDECLARED=undeclared-secret-must-not-leak",
 		"WORKS_API=https://works.example.invalid",
 		"WORKS_WORKER_ID=wrkr_jonas_lenovo",
 	}
@@ -31,7 +32,7 @@ func TestSanitizedWorkerProcessEnvStripsControlCredentials(t *testing.T) {
 
 func TestSanitizedWorkerProcessEnvIsCaseInsensitive(t *testing.T) {
 	t.Setenv("WORKS_SCRATCH_ROOT", t.TempDir())
-	got := sanitizedWorkerProcessEnv([]string{"works_enroll_secret=x", "Gh_ToKeN=y", "SAFE=z"})
+	got := sanitizedWorkerProcessEnv([]string{"works_enroll_secret=x", "Gh_ToKeN=y", "sEcReT_ENV_TOKEN=z", "SAFE=z"})
 	want := []string{"SAFE=z", "TMPDIR=" + os.Getenv("WORKS_SCRATCH_ROOT")}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sanitized env = %#v, want %#v", got, want)

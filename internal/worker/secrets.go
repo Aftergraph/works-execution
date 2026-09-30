@@ -40,6 +40,8 @@ package worker
 
 import (
 	"context"
+	"sort"
+	"strings"
 
 	"github.com/JonasAbde/works-execution/services/runner"
 )
@@ -71,4 +73,44 @@ func resolveItemEnv(ctx context.Context, env map[string]string) (map[string]stri
 	// Scope "" is the global lookup (documented kernel mapping). A nil
 	// lookup means the real process env via os.LookupEnv.
 	return runner.NewEnvSecretResolver("", nil).ResolveEnv(ctx, "", env)
+}
+
+func hasSecretRefs(env map[string]string) bool {
+	for _, value := range env {
+		if runner.IsSecretRef(value) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactResolvedSecretOutput masks values that came from secret refs before
+// subprocess output can enter an artifact or evidence record.
+// Literal environment values are left alone because they are not secret refs.
+func redactResolvedSecretOutput(output []byte, requested, resolved map[string]string) []byte {
+	var values []string
+	for name, ref := range requested {
+		if !runner.IsSecretRef(ref) {
+			continue
+		}
+		value := resolved[name]
+		if value == "" {
+			continue
+		}
+		values = append(values, value)
+	}
+	if len(values) == 0 {
+		return output
+	}
+	sort.Slice(values, func(i, j int) bool {
+		if len(values[i]) == len(values[j]) {
+			return values[i] < values[j]
+		}
+		return len(values[i]) > len(values[j])
+	})
+	replacements := make([]string, 0, len(values)*2)
+	for _, value := range values {
+		replacements = append(replacements, value, "[REDACTED]")
+	}
+	return []byte(strings.NewReplacer(replacements...).Replace(string(output)))
 }

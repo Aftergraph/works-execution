@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JonasAbde/works-execution/internal/scheduler"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/runner"
 	"github.com/JonasAbde/works-execution/services/work/store"
@@ -163,29 +164,20 @@ func (s *Server) grantLease(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// BYOC pool enforcement (RFC-0004): the scheduler's pool filter is
-	// advisory — the /ready endpoint simply won't offer pool-scoped
-	// nodes to foreign workers. Enforcement happens HERE at lease
-	// grant: if the work names a pool, the leasing worker must be
-	// registered with the matching pool:<name> label. A worker that
-	// bypasses /ready (or races it) gets 403. This is the actual
-	// isolation boundary; without it the scheduler filter is just a
-	// performance hint.
-	if s.RunnerRegistry != nil && work.Requirements.Pool != "" {
-		id, ok := s.RunnerRegistry.get(body.WorkerID)
-		inPool := false
-		if ok && id != nil {
-			for _, l := range id.Capabilities.Labels {
-				if l == "pool:"+work.Requirements.Pool {
-					inPool = true
-					break
-				}
-			}
-		}
-		if !inPool {
-			s.logf("pool denied: worker=%s not in pool=%q for work=%s",
-				body.WorkerID, work.Requirements.Pool, body.WorkID)
-			writeError(w, http.StatusForbidden, "pool_mismatch",
-				"worker is not registered in pool "+work.Requirements.Pool)
+	// advisory — /ready does not offer pool-scoped nodes to foreign or stale
+	// workers. Enforcement happens HERE at lease grant as well, so a direct
+	// claim, missing registry, stale heartbeat, or inactive registration
+	// cannot bypass the isolation boundary.
+	if pool := work.Requirements.Pool; pool != "" && !s.runnerIsLivePoolMember(body.WorkerID, pool, time.Now()) {
+		s.logf("pool denied: worker=%s is not an active live member of pool=%q for work=%s",
+			body.WorkerID, pool, body.WorkID)
+		writeError(w, http.StatusForbidden, "pool_mismatch",
+			"worker is not an active, live member of pool "+pool)
+		return
+	}
+	if work.Requirements.Pool != "" {
+		if eligible, reason := s.poolRunnerMeetsWorkRequirements(r.Context(), body.WorkerID, work, body.NodeID); !eligible {
+			writeError(w, http.StatusForbidden, "runner_not_eligible", reason)
 			return
 		}
 	}
@@ -254,6 +246,62 @@ func (s *Server) grantLease(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// runnerIsLivePoolMember is the mutation-time BYOC boundary. /ready is a
+// placement hint and may retain pre-BYOC identities without heartbeats for
+// compatibility; a pool-scoped lease must always have a current, active
+// registration because a pool label alone is not proof of liveness.
+func (s *Server) runnerIsLivePoolMember(workerID, pool string, now time.Time) bool {
+	if s.RunnerRegistry == nil {
+		return false
+	}
+	id, ok := s.RunnerRegistry.get(workerID)
+	if !ok || !runnerHasFreshHeartbeat(id, now) {
+		return false
+	}
+	for _, label := range id.Capabilities.Labels {
+		if label == "pool:"+pool {
+			return true
+		}
+	}
+	return false
+}
+
+// runnerHasFreshHeartbeat is the shared definition of an available runner.
+// Pool claims and alive-only discovery must agree: registration by itself is
+// not evidence that a worker process is still polling.
+func runnerHasFreshHeartbeat(id *runner.Identity, now time.Time) bool {
+	return id != nil &&
+		id.LifecycleState == runner.StateActive &&
+		id.LastHeartbeatAt != nil &&
+		!id.LastHeartbeatAt.Before(now.Add(-3*defaultHeartbeatInterval))
+}
+
+// poolRunnerMeetsWorkRequirements applies the same hard scheduler constraints
+// at the lease mutation boundary that /ready applies during placement. A
+// caller cannot bypass OS, architecture, trust, or other hard requirements by
+// posting a lease claim directly.
+func (s *Server) poolRunnerMeetsWorkRequirements(ctx context.Context, workerID string, work *workgraph.Work, nodeID string) (bool, string) {
+	if s.RunnerRegistry == nil {
+		return false, "runner registry is unavailable"
+	}
+	id, ok := s.RunnerRegistry.get(workerID)
+	if !ok || id == nil {
+		return false, "runner is not registered"
+	}
+	node, ok := work.Graph.Nodes[nodeID]
+	if !ok {
+		return true, "" // The store reports an unknown node using its established error.
+	}
+	assignment, err := scheduler.Select(ctx, work, &node, runnersFromIdentities([]*runner.Identity{id}))
+	if err == nil {
+		return true, ""
+	}
+	if assignment != nil && assignment.Reasoning != "" {
+		return false, assignment.Reasoning
+	}
+	return false, err.Error()
+}
+
 // firstReason returns the first deny reason in a slice, or a fallback
 // constant when the slice is empty. The policy engine guarantees the
 // slice is non-empty on deny, but defensive against future bundle changes.
@@ -290,16 +338,68 @@ func (s *Server) heartbeatLease(w http.ResponseWriter, r *http.Request, leaseID 
 
 // completeLeaseBody is POST /v1/leases/{id}/complete.
 type completeLeaseBody struct {
-	ExitCode int                  `json:"exit_code"`
-	Artifact *workgraph.Artifact  `json:"artifact,omitempty"`
-	Evidence []workgraph.Evidence `json:"evidence,omitempty"`
+	ExitCode        int                  `json:"exit_code"`
+	Artifact        *workgraph.Artifact  `json:"artifact,omitempty"`
+	ArtifactContent []byte               `json:"artifact_content"`
+	Evidence        []workgraph.Evidence `json:"evidence,omitempty"`
 }
+
+const maxCompleteLeaseRequestBytes int64 = workgraph.MaxArtifactBytes*4/3 + (1 << 20)
 
 func (s *Server) completeLease(w http.ResponseWriter, r *http.Request, leaseID string) {
 	var body completeLeaseBody
+	r.Body = http.MaxBytesReader(w, r.Body, maxCompleteLeaseRequestBytes)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "completion_too_large", "lease completion exceeds the WORKS request limit")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
+	}
+	if body.Artifact == nil && body.ArtifactContent != nil {
+		writeError(w, http.StatusBadRequest, "artifact_metadata_required", "artifact metadata is required when artifact bytes are supplied")
+		return
+	}
+	if body.ExitCode == 0 && body.Artifact == nil {
+		writeError(w, http.StatusUnprocessableEntity, "artifact_required", "successful lease completion requires a published artifact")
+		return
+	}
+	if body.Artifact != nil {
+		lease, err := s.Store.GetLease(r.Context(), leaseID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "lease_not_found", leaseID)
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "lease_lookup_failed", "failed to load lease")
+			return
+		}
+		if lease.Status != workgraph.LeaseActive {
+			writeError(w, http.StatusConflict, "lease_not_active", "artifact upload requires an active lease")
+			return
+		}
+		if body.Artifact.NodeID != lease.NodeID {
+			writeError(w, http.StatusBadRequest, "artifact_node_mismatch", "artifact node does not match the active lease")
+			return
+		}
+		if err := s.persistWorkerArtifact(lease, body.Artifact, body.ArtifactContent); err != nil {
+			switch {
+			case errors.Is(err, errArtifactStoreUnavailable):
+				writeError(w, http.StatusServiceUnavailable, "artifacts_unavailable", "artifact storage is not configured")
+			case errors.Is(err, errArtifactTooLarge):
+				writeError(w, http.StatusRequestEntityTooLarge, "artifact_too_large", "artifact exceeds the WORKS transfer limit")
+			case errors.Is(err, errArtifactContentMissing):
+				writeError(w, http.StatusUnprocessableEntity, "artifact_content_required", "worker must supply artifact bytes unless the canonical shared artifact file is present")
+			case errors.Is(err, errArtifactMetadataMismatch):
+				writeError(w, http.StatusUnprocessableEntity, "artifact_integrity_failed", "artifact digest, size, or node metadata does not match its content")
+			default:
+				s.logf("artifact persistence failed for lease %s: %v", leaseID, err)
+				writeError(w, http.StatusInternalServerError, "artifact_store_failed", "failed to persist artifact")
+			}
+			return
+		}
 	}
 	wk, err := s.Store.CompleteLease(r.Context(), leaseID, body.ExitCode, body.Artifact, body.Evidence)
 	if err != nil {

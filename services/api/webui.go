@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"html/template"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -608,8 +607,14 @@ func (s *Server) workViews(wk *workgraph.Work) ([]nodeView, []workgraph.Attempt)
 
 // readLogTail returns the last 4KB of a node's artifact log.
 func (s *Server) readLogTail(workID, nodeID string) (string, error) {
-	logPath := filepath.Join(s.ArtifactsDir, workID, nodeID+".log")
-	f, err := os.Open(logPath)
+	if !safeArtifactPathSegment(workID) || !safeArtifactPathSegment(nodeID) {
+		return "", errArtifactMetadataMismatch
+	}
+	root, err := s.artifactRootHandle()
+	if err != nil {
+		return "", err
+	}
+	f, err := root.Open(filepath.Join(workID, nodeID+".log"))
 	if err != nil {
 		return "", err
 	}

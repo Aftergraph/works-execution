@@ -710,7 +710,7 @@
         "services/api/webui.go",
         "cmd/works-api/main.go"
       ],
-      "notes": "Days 31-60 minimal web execution view \u2014 the last uncovered item. 200 on all pages locally + via works.rendetalje.dk. Public=true in prod (read-only); set WORKS_WEBUI_PUBLIC=false + token for private.",
+      "notes": "Days 31-60 minimal web execution view \u2014 the last uncovered item. 200 on all pages locally + via works.aftergraph.org. Public=true in prod (read-only); set WORKS_WEBUI_PUBLIC=false + token for private.",
       "created_at": "2026-08-31T21:00:00Z",
       "updated_at": "2026-08-31T21:00:00Z",
       "status": "done"

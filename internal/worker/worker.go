@@ -31,15 +31,17 @@ import (
 	"time"
 
 	"github.com/JonasAbde/works-execution/internal/sandbox"
+	"github.com/JonasAbde/works-execution/internal/workspaths"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/source"
 )
 
 // Client is the minimal HTTP client the worker uses to talk to the API.
 //
-// Slice 4 (k-impl-003) added Zero-Secret enrollment: workers obtain a
-// short-lived HS256 JWT from POST /v1/workers/enroll and present it as
-// `Authorization: Bearer <token>` on every subsequent request. The
+// Workers obtain a short-lived HS256 JWT from POST /v1/workers/enroll and
+// present it as `Authorization: Bearer <token>` on every subsequent request.
+// Enrollment can use the legacy shared challenge or a provisioned mTLS
+// certificate identity. The
 // Client stores the token in the `Token` field; if it is empty, the
 // client transparently falls back to the pre-slice-4 behavior of
 // sending no Authorization header. That keeps unit tests of the client
@@ -57,11 +59,14 @@ type Client struct {
 	// Enrollment JWTs are short-lived (default 1h). When they expire,
 	// every request 401s with token_expired. Instead of crashing or
 	// spinning, the client transparently re-enrolls once per request
-	// when all renewal fields are set. cmd/works-worker sets them from
-	// flags; cmd/works CLI sets them from --enroll-secret.
+	// when enrollment credentials are set. cmd/works-worker can use the mTLS
+	// certificate for renewal; cmd/works CLI retains the legacy challenge path.
 	WorkerID     string
 	EnrollSecret string
 	EnrollTTL    time.Duration
+	// CertificateEnrollment allows token renewal using the configured mTLS
+	// transport even when no shared enrollment secret is present.
+	CertificateEnrollment bool
 	// renewMu serializes re-enrollment attempts so a burst of 401s
 	// mints one token, not one per request.
 	renewMu sync.Mutex
@@ -81,18 +86,16 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusUnauthorized || c.EnrollSecret == "" {
+	if resp.StatusCode != http.StatusUnauthorized || (c.EnrollSecret == "" && !c.CertificateEnrollment) {
+		return resp, nil
+	}
+	if !c.renewToken(req.Context()) {
+		// Keep the original response intact so callers can inspect the 401.
 		return resp, nil
 	}
 	// Drain + close the 401 body before retrying.
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-
-	if !c.renewToken(req.Context()) {
-		// Re-enrollment failed; return the original 401 so the caller
-		// logs it and the tick loop keeps trying.
-		return c.HTTP.Do(req)
-	}
 	// Re-send with the fresh token.
 	req2 := req.Clone(req.Context())
 	req2.Header.Set("Authorization", "Bearer "+c.Token)
@@ -113,12 +116,12 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 }
 
 // renewToken re-enrolls and stores the fresh token. Returns false when
-// renewal is impossible (no secret) or failed (server error). Serialized
+// renewal is impossible (no enrollment identity) or failed (server error). Serialized
 // so concurrent 401s share one enrollment round-trip.
 func (c *Client) renewToken(ctx context.Context) bool {
 	c.renewMu.Lock()
 	defer c.renewMu.Unlock()
-	if c.EnrollSecret == "" || c.WorkerID == "" {
+	if (c.EnrollSecret == "" && !c.CertificateEnrollment) || c.WorkerID == "" {
 		return false
 	}
 	tok, err := c.Enroll(ctx, c.WorkerID, c.EnrollSecret, c.EnrollTTL)
@@ -369,12 +372,20 @@ func (c *Client) Heartbeat(ctx context.Context, leaseID string, ttl time.Duratio
 }
 
 // CompleteLease reports a terminal result.
-func (c *Client) CompleteLease(ctx context.Context, leaseID string, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) error {
-	body, _ := json.Marshal(map[string]any{
+func (c *Client) CompleteLease(ctx context.Context, leaseID string, exitCode int, artifact *workgraph.Artifact, artifactContent []byte, evidence []workgraph.Evidence) error {
+	payload := map[string]any{
 		"exit_code": exitCode,
 		"artifact":  artifact,
 		"evidence":  evidence,
-	})
+	}
+	if artifact != nil {
+		// encoding/json represents []byte as base64. Sending the bytes as part
+		// of completion makes the artifact independent of the worker's local
+		// filesystem; the control plane verifies and stores the canonical CAS
+		// copy before persisting the Work outcome.
+		payload["artifact_content"] = artifactContent
+	}
+	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/leases/"+leaseID+"/complete", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -463,14 +474,21 @@ func (w *Worker) Run(ctx context.Context) error {
 		w.HeartbeatEvery = 10 * time.Second
 	}
 	if w.ArtifactsDir == "" {
-		w.ArtifactsDir = filepath.Join(os.TempDir(), "works-artifacts")
-	}
-	if err := os.MkdirAll(w.ArtifactsDir, 0o755); err != nil {
-		return fmt.Errorf("create artifacts dir: %w", err)
+		w.ArtifactsDir = workspaths.DefaultArtifactsDir()
 	}
 	if w.Logger == nil {
 		w.Logger = log.Default()
 	}
+	artifactRoot, artifactPath, err := workspaths.OpenArtifactsRoot(w.ArtifactsDir)
+	if err != nil {
+		return fmt.Errorf("open artifacts dir: %w", err)
+	}
+	w.ArtifactsDir = artifactPath
+	defer func() {
+		if err := artifactRoot.Close(); err != nil {
+			w.logf("close artifacts dir: %v", err)
+		}
+	}()
 
 	// BYOC (RFC-0004): register as a scheduler-visible runner and
 	// re-assert every heartbeat. Registration is idempotent so the
@@ -497,7 +515,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				w.registerRunner(ctx)
 			}
 		case <-t.C:
-			if err := w.tick(ctx); err != nil {
+			if err := w.tick(ctx, artifactRoot); err != nil {
 				w.logf("tick error: %v", err)
 			}
 		}
@@ -532,13 +550,13 @@ func (w *Worker) registerRunner(ctx context.Context) {
 }
 
 // tick does one polling cycle.
-func (w *Worker) tick(ctx context.Context) error {
+func (w *Worker) tick(ctx context.Context, artifactRoot *os.Root) error {
 	items, err := w.Client.Ready(ctx)
 	if err != nil {
 		return err
 	}
 	for _, item := range items {
-		if err := w.execute(ctx, item); err != nil {
+		if err := w.execute(ctx, item, artifactRoot); err != nil {
 			w.logf("execute %s/%s: %v", item.WorkID, item.NodeID, err)
 		}
 	}
@@ -546,7 +564,7 @@ func (w *Worker) tick(ctx context.Context) error {
 }
 
 // execute grants a lease, runs the node, reports the result.
-func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
+func (w *Worker) execute(ctx context.Context, item ReadyItem, artifactRoot *os.Root) error {
 	leaseID, _, err := w.Client.GrantLease(ctx, item.WorkID, item.NodeID, w.ID, w.LeaseTTL)
 	if err != nil {
 		// Conflict or other failure — skip silently. This is normal under
@@ -570,14 +588,21 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 	}
 
 	cacheHit := false
+	cacheKey := item.CacheKey
+	hasSecretEnv := hasSecretRefs(item.Env)
+	if hasSecretEnv {
+		// Cached output may have been produced before secret output masking
+		// was enforced. Never replay or publish cache entries for secret jobs.
+		cacheKey = ""
+	}
 	var res execResult
-	if item.CacheKey != "" {
-		if e, err := w.Client.CacheLookup(ctx, item.CacheKey); err == nil && e.ExitCode == 0 {
+	if cacheKey != "" {
+		if e, err := w.Client.CacheLookup(ctx, cacheKey); err == nil && e.ExitCode == 0 {
 			cacheHit = true
 			res = execResult{
 				Status:      "succeeded",
 				ExitCode:    0,
-				CombinedLog: []byte("[cache hit " + item.CacheKey[:min(12, len(item.CacheKey))] + "] replayed from prior identical run:\n" + e.LogTail),
+				CombinedLog: []byte("[cache hit " + cacheKey[:min(12, len(cacheKey))] + "] replayed from prior identical run:\n" + e.LogTail),
 				Duration:    0,
 			}
 			w.logf("cache HIT %s/%s (lease=%s): replayed result", item.WorkID, item.NodeID, leaseID)
@@ -620,34 +645,34 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 
 	cancelHB() // stop heartbeats
 
-	// RFC-0005: publish successful, really-executed results to the
-	// cache so the next byte-identical node can skip execution.
-	// Cache-replayed results are NOT re-published (they add no new
-	// information and would mask the original creator).
-	if !cacheHit && res.Status == "succeeded" && item.CacheKey != "" {
-		if err := w.Client.CachePut(ctx, item.CacheKey, item.WorkID, item.NodeID, res.CombinedLog); err != nil {
-			w.logf("cache put: %v", err) // non-fatal
-		}
-	}
-
 	// If the heartbeat reported lease loss, the attempt is already cancelled
 	// by the reaper or by RevokeLease. We still POST /complete but expect
 	// 409 (lease not active). That's fine — the system has already moved on.
 	var artifact *workgraph.Artifact
 	if res.Status == "succeeded" {
-		path, sum, size, err := writeArtifact(w.ArtifactsDir, item.WorkID, item.NodeID, res.CombinedLog)
-		if err != nil {
-			w.logf("write artifact: %v", err)
+		if int64(len(res.CombinedLog)) > workgraph.MaxArtifactBytes {
+			res.Status = "failed"
+			res.ExitCode = -1
+			res.CombinedLog = artifactFailureLog("artifact exceeds WORKS transfer limit", res.CombinedLog)
 		} else {
-			artifact = &workgraph.Artifact{
-				ID:       sum,
-				NodeID:   item.NodeID,
-				MimeType: "text/plain",
-				Size:     size,
-				Path:     path,
+			path, sum, size, err := writeArtifact(artifactRoot, w.ArtifactsDir, item.WorkID, item.NodeID, res.CombinedLog)
+			if err != nil {
+				res.Status = "failed"
+				res.ExitCode = -1
+				res.CombinedLog = artifactFailureLog("worker could not persist required artifact", res.CombinedLog)
+				w.logf("write artifact: %v", err)
+			} else {
+				artifact = &workgraph.Artifact{
+					ID:       sum,
+					NodeID:   item.NodeID,
+					MimeType: "text/plain",
+					Size:     size,
+					Path:     path,
+				}
 			}
 		}
 	}
+
 	// Failed nodes persist a log tail in evidence Details so CI
 	// failures are diagnosable from the API/CLI without SSHing to
 	// the worker. (Successful nodes store the full log as artifact.)
@@ -667,8 +692,10 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 	if res.Status == "succeeded" {
 		if cacheHit {
 			evidenceDetails["cache"] = "hit" // replayed, zero execution
-		} else if item.CacheKey != "" {
+		} else if cacheKey != "" {
 			evidenceDetails["cache"] = "miss" // really executed, now stored
+		} else if item.CacheKey != "" && hasSecretEnv {
+			evidenceDetails["cache"] = "disabled_secret_env"
 		} else {
 			evidenceDetails["cache"] = "disabled" // node opted out
 		}
@@ -686,12 +713,39 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem) error {
 	for i := range evidence {
 		evidence[i].Seal()
 	}
-	if err := w.Client.CompleteLease(ctx, leaseID, res.ExitCode, artifact, evidence); err != nil {
+	var artifactContent []byte
+	if artifact != nil {
+		artifactContent = res.CombinedLog
+	}
+	if err := w.Client.CompleteLease(ctx, leaseID, res.ExitCode, artifact, artifactContent, evidence); err != nil {
 		w.logf("complete lease: %v", err)
 		// Fall back to release so the attempt isn't stuck running.
 		_ = w.Client.ReleaseLease(ctx, leaseID, "complete failed: "+err.Error())
+		return nil
+	}
+
+	// RFC-0005: cache a successful result only after the control plane accepted
+	// its required artifact. Cache-replayed results are NOT re-published (they
+	// add no new information and would mask the original creator).
+	if !cacheHit && res.Status == "succeeded" && cacheKey != "" {
+		if err := w.Client.CachePut(ctx, cacheKey, item.WorkID, item.NodeID, res.CombinedLog); err != nil {
+			w.logf("cache put: %v", err) // non-fatal
+		}
 	}
 	return nil
+}
+
+func artifactFailureLog(reason string, prior []byte) []byte {
+	const tailBytes = 2048
+	if len(prior) > tailBytes {
+		prior = prior[len(prior)-tailBytes:]
+	}
+	result := []byte(reason + "; node result rejected because evidence was not publishable")
+	if len(prior) == 0 {
+		return result
+	}
+	result = append(result, '\n', '\n')
+	return append(result, prior...)
 }
 
 // heartbeatLoop POSTs /heartbeat every HeartbeatEvery. If a heartbeat
@@ -753,6 +807,12 @@ func sanitizedWorkerProcessEnv(base []string) []string {
 		key, _, ok := strings.Cut(entry, "=")
 		if ok {
 			upper := strings.ToUpper(key)
+			// Secret resolver backing variables are process-local capability
+			// material. A command receives only refs explicitly declared in
+			// its Work, resolved into the item env above.
+			if strings.HasPrefix(upper, "SECRET_") {
+				continue
+			}
 			if _, private := workerPrivateEnv[upper]; private {
 				continue
 			}
@@ -807,6 +867,7 @@ type execResult struct {
 // by legacy callers and tests that don't opt into the sandbox.
 func runCommand(ctx context.Context, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}, workDir string, manifest ...*sandbox.Manifest) execResult {
 	start := time.Now()
+	requestedEnv := env
 
 	// ADR-0022 (k-057): resolve secret REFs against the process env at
 	// execution time, once here, before the sandbox/legacy branch below,
@@ -895,6 +956,7 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 	err := cmd.Run()
 	combined := append(stdout.Bytes(), '\n')
 	combined = append(combined, stderr.Bytes()...)
+	combined = redactResolvedSecretOutput(combined, requestedEnv, env)
 
 	res := execResult{
 		CombinedLog: combined,
@@ -934,6 +996,7 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 // --network=none, no-new-privileges, memory + CPU + PIDs caps) so a
 // docker run is strictly more isolated than the host path.
 func runDocker(ctx context.Context, image, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}) execResult {
+	requestedEnv := env
 	// ADR-0022 (k-057): resolve secret REFs before handing env to the
 	// container, same law as the host path. Fail closed: an unresolved
 	// ref fails the node without running docker, naming the REF only.
@@ -974,6 +1037,7 @@ func runDocker(ctx context.Context, image, command string, env map[string]string
 		r.Duration = res.Duration
 		r.ExitCode = res.ExitCode
 	}
+	r.CombinedLog = redactResolvedSecretOutput(r.CombinedLog, requestedEnv, env)
 	if leaseLost {
 		r.Status = "cancelled"
 		r.ExitCode = -1
@@ -998,15 +1062,43 @@ func runDocker(ctx context.Context, image, command string, env map[string]string
 
 // writeArtifact saves bytes to <dir>/<workID>/<nodeID>.log and returns the
 // path, sha256 sum, and size. The sum is the artifact ID (content-addressed).
-func writeArtifact(dir, workID, nodeID string, data []byte) (path, sum string, size int64, err error) {
-	d := filepath.Join(dir, workID)
-	if err := os.MkdirAll(d, 0o755); err != nil {
+func writeArtifact(root *os.Root, dir, workID, nodeID string, data []byte) (path, sum string, size int64, err error) {
+	if root == nil || !workspaths.SafeArtifactPathSegment(workID) || !workspaths.SafeArtifactPathSegment(nodeID) {
+		return "", "", 0, errors.New("work and node IDs must be safe artifact path segments")
+	}
+	if err := root.Mkdir(workID, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return "", "", 0, err
 	}
-	path = filepath.Join(d, nodeID+".log")
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	dirInfo, err := root.Lstat(workID)
+	if err != nil {
 		return "", "", 0, err
 	}
+	if dirInfo.Mode()&os.ModeSymlink != 0 || !dirInfo.IsDir() {
+		return "", "", 0, errors.New("artifact work path is not a real directory")
+	}
+	relativePath := filepath.Join(workID, nodeID+".log")
+	if err := root.Remove(relativePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", "", 0, err
+	}
+	f, err := root.OpenFile(relativePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", "", 0, err
+	}
+	written, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil {
+		_ = root.Remove(relativePath)
+		return "", "", 0, writeErr
+	}
+	if closeErr != nil {
+		_ = root.Remove(relativePath)
+		return "", "", 0, closeErr
+	}
+	if written != len(data) {
+		_ = root.Remove(relativePath)
+		return "", "", 0, io.ErrShortWrite
+	}
+	path = filepath.Join(dir, relativePath)
 	h := sha256.Sum256(data)
 	sum = hex.EncodeToString(h[:])
 	size = int64(len(data))

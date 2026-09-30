@@ -99,7 +99,7 @@ const defaultHeartbeatInterval = 10 * time.Second
 // identities (BYOC pool visibility). Query params:
 //
 //	pool=<name>  only runners labeled pool:<name>
-//	alive=true   only runners with a recent heartbeat (not stale)
+//	alive=true   only active runners with a recent heartbeat
 func (s *Server) listRunners(w http.ResponseWriter, r *http.Request) {
 	if s.RunnerRegistry == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"runners": []any{}})
@@ -108,14 +108,13 @@ func (s *Server) listRunners(w http.ResponseWriter, r *http.Request) {
 	all := s.RunnerRegistry.List()
 	poolFilter := r.URL.Query().Get("pool")
 	aliveOnly := r.URL.Query().Get("alive") == "true"
-	staleCutoff := time.Now().Add(-3 * defaultHeartbeatInterval)
 
 	out := make([]*runner.Identity, 0, len(all))
 	for _, id := range all {
 		if id == nil {
 			continue
 		}
-		if aliveOnly && id.LastHeartbeatAt != nil && id.LastHeartbeatAt.Before(staleCutoff) {
+		if aliveOnly && !runnerHasFreshHeartbeat(id, time.Now()) {
 			continue
 		}
 		if poolFilter != "" {

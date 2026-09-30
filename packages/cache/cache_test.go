@@ -68,6 +68,27 @@ func TestFingerprint_Deterministic(t *testing.T) {
 	}
 }
 
+func TestKeyFromNodeUsesNewFingerprintVersion(t *testing.T) {
+	work := sampleWork("acme/widgets", "abcdef0123456789abcdef0123456789abcdef01")
+	key := cache.KeyFromNode(work, sampleNode("echo hello"), "organization")
+	if key.Version != 2 {
+		t.Fatalf("cache fingerprint version=%d, want 2", key.Version)
+	}
+	current, err := key.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := key
+	legacy.Version = 0 // omitempty recreates the pre-versioned fingerprint input.
+	old, err := legacy.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == old {
+		t.Fatal("new fingerprint version must not reuse legacy cache entries")
+	}
+}
+
 func TestFingerprint_InputSensitivity(t *testing.T) {
 	w := sampleWork("acme/widgets", "abcdef0123456789abcdef0123456789abcdef01")
 	n := sampleNode("echo hello")

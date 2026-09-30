@@ -42,7 +42,10 @@ type Server struct {
 	// ArtifactsDir is the directory where workers write artifact/log files.
 	// Required for the GET /v1/works/{id}/nodes/{n}/logs endpoint. Optional
 	// in V1; when nil, the log endpoint returns 503.
-	ArtifactsDir string
+	ArtifactsDir     string
+	artifactRootMu   sync.Mutex
+	artifactRoot     *os.Root
+	artifactRootPath string
 	// EvidenceConfig configures the /v1/works/{id}/evidence handler.
 	// When nil, the endpoint returns 503 (evidence unavailable).
 	EvidenceConfig *EvidenceConfig
@@ -87,6 +90,11 @@ type Server struct {
 	// requireBearer middleware is a no-op. Default false; production
 	// cmd/works-api sets it true. Tests can leave it false.
 	AuthEnabled bool
+	// RequireWorkerMTLS binds worker enrollment and all worker execution
+	// endpoints to a verified client certificate carrying one canonical
+	// Aftergraph SPIFFE worker identity. cmd/works-api enables this only when
+	// its dedicated mTLS listener and worker CA are configured.
+	RequireWorkerMTLS bool
 	// WebhookConfig configures the GitHub webhook receiver
 	// (M1 / k-impl-018). When nil, POST /v1/webhook/github
 	// returns 503 (webhook not enabled). The webhook endpoint
@@ -198,7 +206,8 @@ type ProvenanceConfig struct {
 // Routes returns an http.Handler with the public API mounted under /v1.
 //
 // Authentication model (slice 4 / k-impl-003):
-//   - /v1/workers/enroll  — public; issues a short-lived HS256 JWT.
+//   - /v1/workers/enroll  — mTLS identity-bound when worker mTLS is configured;
+//     otherwise requires the legacy shared enrollment challenge.
 //   - /v1/leases/*        — requires Authorization: Bearer <enrollment-token>.
 //   - /v1/workers/*       — requires Authorization: Bearer <enrollment-token>.
 //     (Everything under that prefix except /enroll; currently /ready only.)
@@ -207,25 +216,25 @@ type ProvenanceConfig struct {
 //     the mutating paths additionally enforce worker_id == runner_id
 //     ownership (runner_authz.go). GET /v1/runners/{id} (identity
 //     lookup) stays public.
-//   - /v1/works/* and /healthz remain unauthenticated (operator surface).
+//   - /v1/works/* requires a Bearer token; /healthz remains public.
 func (s *Server) Routes() http.Handler {
 	s.ensureIssuer()
 	mux := http.NewServeMux()
-	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))                        // POST = create, GET = list
-	mux.HandleFunc("/v1/works/", s.workPathHandler)                                                   // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
-	mux.Handle("POST /v2/works/{id}/accept", http.HandlerFunc(s.acceptDispatchV2))                    // dispatch.acceptance/2.0 + materialized execution-context/1.0
+	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))                                                            // POST = create, GET = list
+	mux.Handle("/v1/works/", s.requireBearer(http.HandlerFunc(s.workPathHandler)))                                                        // work item reads, state changes, logs, evidence
+	mux.Handle("POST /v2/works/{id}/accept", http.HandlerFunc(s.acceptDispatchV2))                                                        // dispatch.acceptance/2.0 + materialized execution-context/1.0
 	mux.Handle("POST /v2/works/{id}/acceptances/{execution}/verification-subject", http.HandlerFunc(s.bindDispatchVerificationSubjectV2)) // post-effect exact-subject binding
-	mux.Handle("POST /v1/works/{id}/verification", http.HandlerFunc(s.workVerificationIngestHandler)) // Sentinel-owned semantic verifier ingest
-	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)                          // GET immutable execution context
-	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)                                             // unauthenticated; issues tokens
+	mux.Handle("POST /v1/works/{id}/verification", http.HandlerFunc(s.workVerificationIngestHandler))                                     // Sentinel-owned semantic verifier ingest
+	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)                                                              // GET immutable execution context
+	mux.Handle("/v1/workers/enroll", s.requireWorkerMTLS(http.HandlerFunc(s.enrollHandler)))                                              // mTLS identity when worker mTLS is enabled
 	// /v1/workers/ and /v1/leases/ are mounted through auth middleware.
 	// We can't wrap an http.Handler with a HandleFunc, so we register the
 	// mux's path under a small dispatcher that runs requireBearer first.
-	mux.Handle("/v1/workers/", s.requireBearer(http.HandlerFunc(s.workersAuthHandler)))
-	mux.Handle("/v1/leases", s.requireBearer(http.HandlerFunc(s.leasesPathHandler)))
-	mux.Handle("/v1/leases/", s.requireBearer(http.HandlerFunc(s.leaseItemHandler)))
-	mux.Handle("/v1/runners/register", s.requireBearer(http.HandlerFunc(s.registerRunner))) // POST runner identity (k-061)
-	mux.HandleFunc("/v1/runners/", s.runnerPathHandler)                                     // GET /v1/runners/{id}
+	mux.Handle("/v1/workers/", s.workerEndpoint(http.HandlerFunc(s.workersAuthHandler)))
+	mux.Handle("/v1/leases", s.workerEndpoint(http.HandlerFunc(s.leasesPathHandler)))
+	mux.Handle("/v1/leases/", s.workerEndpoint(http.HandlerFunc(s.leaseItemHandler)))
+	mux.Handle("/v1/runners/register", s.workerEndpoint(http.HandlerFunc(s.registerRunner))) // POST runner identity (k-061)
+	mux.HandleFunc("/v1/runners/", s.runnerPathHandler)                                      // GET /v1/runners/{id}
 	// k-053 (ADR-0012/0014): rab/1.0 runtime capability advertisement.
 	// Additive wildcard routes on the runner surface; the handlers enforce
 	// the integration-order law (RAB requires a registered identity, else
@@ -236,12 +245,12 @@ func (s *Server) Routes() http.Handler {
 	// capability info is operationally sensitive (identity reads stay
 	// public) - and the mutating paths enforce worker_id == runner_id
 	// ownership (runner_authz.go).
-	mux.Handle("POST /v1/runners/{id}/abi", s.requireBearer(http.HandlerFunc(s.postRunnerABI)))                // publish/overwrite RAB (k-059 bearer + k-061 ownership)
-	mux.Handle("GET /v1/runners/{id}/abi", s.requireBearer(http.HandlerFunc(s.getRunnerABI)))                  // read stored RAB (k-061 bearer read)
-	mux.Handle("POST /v1/runners/{id}/abi/negotiate", s.requireBearer(http.HandlerFunc(s.negotiateRunnerABI))) // negotiate caps (k-061 bearer read, fail-closed)
-	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler)))                    // GET = CloudEvents audit stream
-	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                                   // GET = DORA metrics
-	mux.Handle("/v1/reliability", s.requireBearer(http.HandlerFunc(s.reliabilityHandler)))                        // GET = durable replay reliability report
+	mux.Handle("POST /v1/runners/{id}/abi", s.workerEndpoint(http.HandlerFunc(s.postRunnerABI)))                // publish/overwrite RAB (k-059 bearer + k-061 ownership)
+	mux.Handle("GET /v1/runners/{id}/abi", s.workerEndpoint(http.HandlerFunc(s.getRunnerABI)))                  // read stored RAB (k-061 bearer read)
+	mux.Handle("POST /v1/runners/{id}/abi/negotiate", s.workerEndpoint(http.HandlerFunc(s.negotiateRunnerABI))) // negotiate caps (k-061 bearer read, fail-closed)
+	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler)))                     // GET = CloudEvents audit stream
+	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                                    // GET = DORA metrics
+	mux.Handle("/v1/reliability", s.requireBearer(http.HandlerFunc(s.reliabilityHandler)))                      // GET = durable replay reliability report
 	mux.HandleFunc("/healthz", s.healthz)
 	// M1 (k-impl-018): GitHub webhook receiver. Unauthenticated by
 	// design — HMAC signature is the security boundary. Operators
@@ -250,7 +259,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/webhook/github", s.githubWebhookHandler)
 	// RFC-0005: content-addressed cache. Behind Bearer auth like the
 	// worker surface — a cache write is a state mutation.
-	mux.Handle("/v1/cache/", s.requireBearer(http.HandlerFunc(s.cacheHandler)))
+	mux.Handle("/v1/cache/", s.workerEndpoint(http.HandlerFunc(s.cacheHandler)))
 	// RFC-0007: read-only execution view (HTML). Auth per WebUIConfig.
 	if s.WebUI != nil {
 		s.RegisterUI(mux)
@@ -314,6 +323,10 @@ func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/works/")
 	parts := strings.Split(path, "/")
 	// parts: [id] OR [id, action] OR [id, "nodes", nodeID, "logs"] OR [id, "evidence"] OR [id, "provenance"]
+	if len(parts) == 3 && parts[1] == "artifacts" {
+		s.workArtifactHandler(w, r, parts[0], parts[2])
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "nodes" {
 		s.workLogsHandler(w, r)
 		return
@@ -334,20 +347,11 @@ func (s *Server) workPathHandler(w http.ResponseWriter, r *http.Request) {
 		s.createExecutionContext(w, r, parts[0])
 		return
 	}
-	// The dispatch acceptance seam. Authentication is enforced here because
-	// workPathHandler is registered WITHOUT requireBearer, and every other
-	// state-mutating surface an untrusted caller can reach sits behind it.
-	// Wrapping the accept branch keeps the Runtime → WORKS boundary
-	// authenticated before the authority-epoch resolver is ever wired, so a
-	// future live mount cannot be reached by a caller who merely knows a work
-	// ID. Method is still checked inside the handler, so with auth disabled
-	// (dev/tests) a non-POST gets 405 rather than falling through to the
-	// work-item handler.
+	// The whole /v1/works/ subtree is mounted behind requireBearer. Keep the
+	// dispatch method check here so a non-POST gets 405 rather than falling
+	// through to the work-item handler.
 	if len(parts) == 2 && parts[1] == "accept" {
-		accept := http.HandlerFunc(func(aw http.ResponseWriter, ar *http.Request) {
-			s.acceptDispatch(aw, ar, parts[0])
-		})
-		s.requireBearer(accept).ServeHTTP(w, r)
+		s.acceptDispatch(w, r, parts[0])
 		return
 	}
 	s.workItemHandler(w, r)
@@ -692,24 +696,30 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 	// Snapshot the runner pool once per request. The scheduler is pure;
 	// we don't need to hold the lock across the full scan.
 	//
-	// BYOC (RFC-0004): runners whose LastHeartbeatAt is older than
-	// 3× heartbeat interval are treated as stale and excluded from
-	// the pool — a dead runner must not keep claiming pool-scoped
-	// work. Registered identities carry a heartbeat timestamp; very
-	// old registrations (pre-BYOC) without one are kept for
-	// backward compatibility.
+	// Legacy unscoped scheduling retains registrations without heartbeat
+	// metadata. Pool-scoped work uses only active identities with fresh
+	// heartbeats, matching the lease-grant boundary below.
 	var pool []*scheduler.Runner
+	var livePool []*scheduler.Runner
 	if s.RunnerRegistry != nil {
 		all := s.RunnerRegistry.List()
+		legacyEligible := make([]*runner.Identity, 0, len(all))
 		live := make([]*runner.Identity, 0, len(all))
-		staleCutoff := time.Now().Add(-3 * defaultHeartbeatInterval)
+		now := time.Now()
+		staleCutoff := now.Add(-3 * defaultHeartbeatInterval)
 		for _, id := range all {
-			if id.LastHeartbeatAt != nil && id.LastHeartbeatAt.Before(staleCutoff) {
+			if id == nil {
 				continue
 			}
-			live = append(live, id)
+			if id.LastHeartbeatAt == nil || !id.LastHeartbeatAt.Before(staleCutoff) {
+				legacyEligible = append(legacyEligible, id)
+			}
+			if runnerHasFreshHeartbeat(id, now) {
+				live = append(live, id)
+			}
 		}
-		pool = runnersFromIdentities(live)
+		pool = runnersFromIdentities(legacyEligible)
+		livePool = runnersFromIdentities(live)
 	}
 
 	type readyItem struct {
@@ -738,6 +748,21 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 	var skipped []unschedulable
 
 	for _, work := range list {
+		candidatePool := pool
+		if work.Requirements.Pool != "" {
+			candidatePool = livePool
+			if len(candidatePool) == 0 {
+				for _, nid := range work.ReadyNodes(activeByWork[work.ID]) {
+					skipped = append(skipped, unschedulable{
+						WorkID: work.ID,
+						NodeID: nid,
+						Reason: "pool-scoped work requires an active runner with a fresh heartbeat",
+					})
+				}
+				continue
+			}
+		}
+
 		// Honor active leases: don't return a node another worker is leasing.
 		// (Batched into one query above; nil means "no active leases".)
 		for _, nid := range work.ReadyNodes(activeByWork[work.ID]) {
@@ -757,7 +782,7 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 			// enrolled can still poll. Production deployments will always
 			// have at least one runner registered (worker startup blocks
 			// on /v1/workers/enroll → /v1/runners/register).
-			if len(pool) == 0 {
+			if len(candidatePool) == 0 {
 				items = append(items, item)
 				if len(items) >= limit {
 					break
@@ -785,7 +810,7 @@ func (s *Server) readyNodesHandler(w http.ResponseWriter, r *http.Request) {
 			// Snapshot the node (value copy) so the scheduler sees an
 			// immutable view even if the caller mutates later iterations.
 			nodeCopy := n
-			assignment, err := scheduler.Select(r.Context(), work, &nodeCopy, pool)
+			assignment, err := scheduler.Select(r.Context(), work, &nodeCopy, candidatePool)
 			if err != nil {
 				// No eligible runner for this node. Record it under
 				// unschedulable so operators see the failure cause,
@@ -882,8 +907,10 @@ func (s *Server) workLogsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	workID, nodeID := parts[0], parts[2]
 
-	// Verify the work exists.
-	if _, err := s.Store.GetWork(r.Context(), workID); err != nil {
+	// Verify the work exists and use its canonical artifact reference when
+	// the worker uploaded bytes from another host.
+	work, err := s.Store.GetWork(r.Context(), workID)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "work_not_found", workID)
 			return
@@ -892,14 +919,62 @@ func (s *Server) workLogsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logPath := filepath.Join(s.ArtifactsDir, workID, nodeID+".log")
-	if _, err := os.Stat(logPath); err != nil {
-		if os.IsNotExist(err) {
-			writeError(w, http.StatusNotFound, "logs_not_found", logPath)
+	var casArtifact *workgraph.Artifact
+	for i := len(work.Artifacts) - 1; i >= 0; i-- {
+		artifact := work.Artifacts[i]
+		if artifact.NodeID == nodeID && artifact.Path == artifactCASRelativePath(artifact.ID) {
+			copy := artifact
+			casArtifact = &copy
+			break
+		}
+	}
+	if casArtifact != nil {
+		artifactRoot, err := s.artifactRootHandle()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "artifact_store_failed", "artifact storage is unavailable")
+			return
+		}
+		content, err := readVerifiedCASArtifact(artifactRoot, *casArtifact)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				writeError(w, http.StatusNotFound, "logs_not_found", "logs not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "artifact_integrity_failed", "stored artifact content failed metadata or digest verification")
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Length", fmt.Sprint(len(content)))
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(content)
+		return
+	}
+	if !safeArtifactPathSegment(workID) || !safeArtifactPathSegment(nodeID) {
+		writeError(w, http.StatusNotFound, "logs_not_found", "logs not found")
+		return
+	}
+	artifactRoot, err := s.artifactRootHandle()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "stat_failed", err.Error())
+		return
+	}
+	logFile, err := artifactRoot.Open(filepath.Join(workID, nodeID+".log"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusNotFound, "logs_not_found", "logs not found")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "stat_failed", err.Error())
 		return
 	}
-	http.ServeFile(w, r, logPath)
+	defer logFile.Close()
+	info, err := logFile.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "stat_failed", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeContent(w, r, nodeID+".log", info.ModTime(), logFile)
 }
