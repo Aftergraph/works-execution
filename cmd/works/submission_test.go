@@ -316,7 +316,9 @@ func (t *stallFirstResponseTransport) RoundTrip(req *http.Request) (*http.Respon
 func TestSubmitWorkWithReconcile_HalfOpenAcceptedResponseTimesOutAndReconciles(t *testing.T) {
 	ts, st := submissionTestServer(t)
 	transport := &stallFirstResponseTransport{base: http.DefaultTransport}
-	client := &http.Client{Transport: transport, Timeout: 50 * time.Millisecond}
+	// The first response is deliberately stalled. Leave scheduling headroom for
+	// the replay request so a loaded CI runner does not turn it into a second timeout.
+	client := &http.Client{Transport: transport, Timeout: 500 * time.Millisecond}
 
 	start := time.Now()
 	result, err := submitWorkWithReconcile(
