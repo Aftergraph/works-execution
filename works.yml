@@ -66,3 +66,15 @@ work:
           console.log("CLOUDFLARE_CONTRACT_PASS");
           NODE
         timeout_s: 120
+
+
+      cloudflare_runtime_probe:
+        needs: [cloudflare_contract]
+        run: |
+          set -eu
+          cd ci/concord-rc2
+          if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then echo "CLOUDFLARE_API_TOKEN=present"; else echo "CLOUDFLARE_API_TOKEN=missing"; fi
+          if [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then echo "CLOUDFLARE_ACCOUNT_ID=present"; else echo "CLOUDFLARE_ACCOUNT_ID=missing"; fi
+          npm install --ignore-scripts --no-audit --no-fund
+          npm run cloudflare:check
+        timeout_s: 600
