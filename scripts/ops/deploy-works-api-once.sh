@@ -9,6 +9,7 @@ BASE_URL='http://127.0.0.1:18191'
 SMOKE_WORK_ID='wrk_3995b52a8e30d244dc83f6413bba0df2'
 RECEIPT_DIR='/var/lib/works/deployments'
 DEPLOY_LOCK='/run/lock/aftergraph-works-api-deploy.lock'
+LOCK_WAIT_SECONDS=180
 
 fail() {
   printf 'works-api-live-deploy: %s\n' "$*" >&2
@@ -17,18 +18,20 @@ fail() {
 
 # The native WORKS pipeline and an operator can observe the same marked main
 # commit. Serialize them before either can create a rollback copy or replace
-# the API binary. When invoked by a least-privilege operator, acquire the
-# root-owned lock while re-executing the guarded script under sudo.
+# the API binary. Wait briefly so duplicate exact-head jobs reconcile through
+# the idempotent path after the first deployment completes. When invoked by a
+# least-privilege operator, acquire the root-owned lock while re-executing the
+# guarded script under sudo.
 if [[ "${WORKS_API_DEPLOY_LOCKED:-}" != "1" ]]; then
   command -v flock >/dev/null 2>&1 || fail "flock_unavailable"
   if [[ "$(id -u)" -ne 0 ]]; then
-    if sudo -n env WORKS_API_DEPLOY_LOCKED=1 flock -n "$DEPLOY_LOCK" "$0" "$@"; then
+    if sudo -n env WORKS_API_DEPLOY_LOCKED=1 flock -w "$LOCK_WAIT_SECONDS" "$DEPLOY_LOCK" "$0" "$@"; then
       exit 0
     fi
-    fail "deployment_lock_held_or_operator_authority_unavailable"
+    fail "deployment_lock_timeout_or_operator_authority_unavailable"
   fi
   exec 9>"$DEPLOY_LOCK"
-  flock -n 9 || fail "deployment_lock_held"
+  flock -w "$LOCK_WAIT_SECONDS" 9 || fail "deployment_lock_timeout"
 fi
 
 json_skip() {
@@ -113,6 +116,57 @@ PY
   grep -Fq '"algorithm":"sha256"' <<<"$out" || return 1
   grep -Fq '"algorithm":"blake3"' <<<"$out" || return 1
   grep -Fq '"algorithm":"hmac-sha256-v1"' <<<"$out" || return 1
+}
+
+verify_live_candidate() {
+  local installed_revision installed_hash pid runtime_hash
+  installed_revision="$(revision_of "$TARGET" || true)"
+  installed_hash="$(sudo sha256sum "$TARGET" | awk '{print $1}')" || return 1
+  pid="$(sudo systemctl show "$SERVICE" -p MainPID --value)" || return 1
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  runtime_hash="$(sudo sha256sum "/proc/$pid/exe" | awk '{print $1}')" || return 1
+  [[ "$installed_revision" == "$sha" && "$installed_hash" == "$candidate_hash" &&
+    "$runtime_hash" == "$candidate_hash" ]] || return 1
+  health_ok || return 1
+  printf '%s' "$pid"
+}
+
+write_receipt() {
+  local changed="$1" pid="$2" verified_at deployed_at receipt_local receipt_path receipt_tmp nonce
+  [[ "$changed" == "true" || "$changed" == "false" ]] || return 1
+  verified_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  nonce="$(date -u +%Y%m%dT%H%M%SZ).$$" || return 1
+  if [[ "$changed" == "true" ]]; then
+    deployed_at="\"$verified_at\""
+  else
+    deployed_at="null"
+  fi
+
+  receipt_local="$tmpdir/receipt-$changed.json"
+  receipt_path="$RECEIPT_DIR/works-api-$sha.json"
+  receipt_tmp="$RECEIPT_DIR/.works-api-$sha.$nonce.tmp"
+  cat >"$receipt_local" <<EOF
+{
+  "schema": "aftergraph.works-api-deployment/2",
+  "service": "works-api.service",
+  "source_sha": "$sha",
+  "binary_sha256": "$candidate_hash",
+  "main_pid": $pid,
+  "deployed_at": $deployed_at,
+  "verified_at": "$verified_at",
+  "changed": $changed,
+  "healthz": true,
+  "integrity_fabric_smoke": true,
+  "smoke_work_id": "$SMOKE_WORK_ID"
+}
+EOF
+  sudo install -d -m 0750 "$RECEIPT_DIR" || return 1
+  sudo install -m 0640 "$receipt_local" "$receipt_tmp" || return 1
+  if ! sudo mv -f "$receipt_tmp" "$receipt_path" || ! sudo cmp -s "$receipt_local" "$receipt_path"; then
+    sudo rm -f "$receipt_tmp" >/dev/null 2>&1 || true
+    return 1
+  fi
+  printf '%s' "$receipt_path"
 }
 
 sha="$(git rev-parse HEAD)"
@@ -201,9 +255,13 @@ if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
   running_hash="$(sudo sha256sum "/proc/$pid/exe" | awk '{print $1}')"
 fi
 if [[ "$installed_revision" == "$sha" && "$installed_hash" == "$candidate_hash" &&
-  "$running_hash" == "$candidate_hash" ]] && health_ok && integrity_smoke; then
-  printf '{"deployment":"verified","changed":false,"sha":"%s","binary_sha256":"%s","integrity_smoke":true}\n' \
-    "$sha" "$candidate_hash"
+  "$running_hash" == "$candidate_hash" ]]; then
+  health_ok || fail "idempotent_health_failed"
+  integrity_smoke || fail "idempotent_integrity_fabric_live_smoke_failed"
+  pid="$(verify_live_candidate)" || fail "idempotent_live_candidate_mismatch_after_smoke"
+  receipt_path="$(write_receipt false "$pid")" || fail "idempotent_deployment_receipt_write_failed"
+  printf '{"deployment":"verified","changed":false,"sha":"%s","binary_sha256":"%s","pid":%s,"integrity_smoke":true,"receipt":"%s"}\n' \
+    "$sha" "$candidate_hash" "$pid" "$receipt_path"
   exit 0
 fi
 
@@ -240,25 +298,10 @@ installed_revision="$(revision_of "$TARGET")"
 
 integrity_smoke || fail "integrity_fabric_live_smoke_failed"
 
-deployed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-receipt_local="$tmpdir/receipt.json"
-cat >"$receipt_local" <<EOF
-{
-  "schema": "aftergraph.works-api-deployment/1",
-  "service": "works-api.service",
-  "source_sha": "$sha",
-  "binary_sha256": "$candidate_hash",
-  "main_pid": $pid,
-  "deployed_at": "$deployed_at",
-  "healthz": true,
-  "integrity_fabric_smoke": true,
-  "smoke_work_id": "$SMOKE_WORK_ID"
-}
-EOF
-sudo install -d -m 0750 "$RECEIPT_DIR"
-sudo install -m 0640 "$receipt_local" "$RECEIPT_DIR/works-api-$sha.json"
+pid="$(verify_live_candidate)" || fail "live_candidate_mismatch_after_smoke"
+receipt_path="$(write_receipt true "$pid")" || fail "deployment_receipt_write_failed"
 
 mutated=false
 
 printf '{"deployment":"verified","changed":true,"sha":"%s","binary_sha256":"%s","pid":%s,"integrity_smoke":true,"receipt":"%s"}\n' \
-  "$sha" "$candidate_hash" "$pid" "$RECEIPT_DIR/works-api-$sha.json"
+  "$sha" "$candidate_hash" "$pid" "$receipt_path"
