@@ -90,6 +90,11 @@ type Server struct {
 	// requireBearer middleware is a no-op. Default false; production
 	// cmd/works-api sets it true. Tests can leave it false.
 	AuthEnabled bool
+	// RequireWorkerMTLS binds worker enrollment and all worker execution
+	// endpoints to a verified client certificate carrying one canonical
+	// Aftergraph SPIFFE worker identity. cmd/works-api enables this only when
+	// its dedicated mTLS listener and worker CA are configured.
+	RequireWorkerMTLS bool
 	// WebhookConfig configures the GitHub webhook receiver
 	// (M1 / k-impl-018). When nil, POST /v1/webhook/github
 	// returns 503 (webhook not enabled). The webhook endpoint
@@ -201,7 +206,8 @@ type ProvenanceConfig struct {
 // Routes returns an http.Handler with the public API mounted under /v1.
 //
 // Authentication model (slice 4 / k-impl-003):
-//   - /v1/workers/enroll  — public; issues a short-lived HS256 JWT.
+//   - /v1/workers/enroll  — mTLS identity-bound when worker mTLS is configured;
+//     otherwise requires the legacy shared enrollment challenge.
 //   - /v1/leases/*        — requires Authorization: Bearer <enrollment-token>.
 //   - /v1/workers/*       — requires Authorization: Bearer <enrollment-token>.
 //     (Everything under that prefix except /enroll; currently /ready only.)
@@ -220,15 +226,15 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /v2/works/{id}/acceptances/{execution}/verification-subject", http.HandlerFunc(s.bindDispatchVerificationSubjectV2)) // post-effect exact-subject binding
 	mux.Handle("POST /v1/works/{id}/verification", http.HandlerFunc(s.workVerificationIngestHandler))                                     // Sentinel-owned semantic verifier ingest
 	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)                                                              // GET immutable execution context
-	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler)                                                                                 // unauthenticated; issues tokens
+	mux.Handle("/v1/workers/enroll", s.requireWorkerMTLS(http.HandlerFunc(s.enrollHandler)))                                              // mTLS identity when worker mTLS is enabled
 	// /v1/workers/ and /v1/leases/ are mounted through auth middleware.
 	// We can't wrap an http.Handler with a HandleFunc, so we register the
 	// mux's path under a small dispatcher that runs requireBearer first.
-	mux.Handle("/v1/workers/", s.requireBearer(http.HandlerFunc(s.workersAuthHandler)))
-	mux.Handle("/v1/leases", s.requireBearer(http.HandlerFunc(s.leasesPathHandler)))
-	mux.Handle("/v1/leases/", s.requireBearer(http.HandlerFunc(s.leaseItemHandler)))
-	mux.Handle("/v1/runners/register", s.requireBearer(http.HandlerFunc(s.registerRunner))) // POST runner identity (k-061)
-	mux.HandleFunc("/v1/runners/", s.runnerPathHandler)                                     // GET /v1/runners/{id}
+	mux.Handle("/v1/workers/", s.workerEndpoint(http.HandlerFunc(s.workersAuthHandler)))
+	mux.Handle("/v1/leases", s.workerEndpoint(http.HandlerFunc(s.leasesPathHandler)))
+	mux.Handle("/v1/leases/", s.workerEndpoint(http.HandlerFunc(s.leaseItemHandler)))
+	mux.Handle("/v1/runners/register", s.workerEndpoint(http.HandlerFunc(s.registerRunner))) // POST runner identity (k-061)
+	mux.HandleFunc("/v1/runners/", s.runnerPathHandler)                                      // GET /v1/runners/{id}
 	// k-053 (ADR-0012/0014): rab/1.0 runtime capability advertisement.
 	// Additive wildcard routes on the runner surface; the handlers enforce
 	// the integration-order law (RAB requires a registered identity, else
@@ -239,12 +245,12 @@ func (s *Server) Routes() http.Handler {
 	// capability info is operationally sensitive (identity reads stay
 	// public) - and the mutating paths enforce worker_id == runner_id
 	// ownership (runner_authz.go).
-	mux.Handle("POST /v1/runners/{id}/abi", s.requireBearer(http.HandlerFunc(s.postRunnerABI)))                // publish/overwrite RAB (k-059 bearer + k-061 ownership)
-	mux.Handle("GET /v1/runners/{id}/abi", s.requireBearer(http.HandlerFunc(s.getRunnerABI)))                  // read stored RAB (k-061 bearer read)
-	mux.Handle("POST /v1/runners/{id}/abi/negotiate", s.requireBearer(http.HandlerFunc(s.negotiateRunnerABI))) // negotiate caps (k-061 bearer read, fail-closed)
-	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler)))                    // GET = CloudEvents audit stream
-	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                                   // GET = DORA metrics
-	mux.Handle("/v1/reliability", s.requireBearer(http.HandlerFunc(s.reliabilityHandler)))                     // GET = durable replay reliability report
+	mux.Handle("POST /v1/runners/{id}/abi", s.workerEndpoint(http.HandlerFunc(s.postRunnerABI)))                // publish/overwrite RAB (k-059 bearer + k-061 ownership)
+	mux.Handle("GET /v1/runners/{id}/abi", s.workerEndpoint(http.HandlerFunc(s.getRunnerABI)))                  // read stored RAB (k-061 bearer read)
+	mux.Handle("POST /v1/runners/{id}/abi/negotiate", s.workerEndpoint(http.HandlerFunc(s.negotiateRunnerABI))) // negotiate caps (k-061 bearer read, fail-closed)
+	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler)))                     // GET = CloudEvents audit stream
+	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                                    // GET = DORA metrics
+	mux.Handle("/v1/reliability", s.requireBearer(http.HandlerFunc(s.reliabilityHandler)))                      // GET = durable replay reliability report
 	mux.HandleFunc("/healthz", s.healthz)
 	// M1 (k-impl-018): GitHub webhook receiver. Unauthenticated by
 	// design — HMAC signature is the security boundary. Operators
@@ -253,7 +259,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/webhook/github", s.githubWebhookHandler)
 	// RFC-0005: content-addressed cache. Behind Bearer auth like the
 	// worker surface — a cache write is a state mutation.
-	mux.Handle("/v1/cache/", s.requireBearer(http.HandlerFunc(s.cacheHandler)))
+	mux.Handle("/v1/cache/", s.workerEndpoint(http.HandlerFunc(s.cacheHandler)))
 	// RFC-0007: read-only execution view (HTML). Auth per WebUIConfig.
 	if s.WebUI != nil {
 		s.RegisterUI(mux)

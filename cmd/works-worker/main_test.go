@@ -36,6 +36,22 @@ func TestValidateEnrollmentConfiguration(t *testing.T) {
 	}
 }
 
+func TestValidateWorkerAuthenticationWithMTLS(t *testing.T) {
+	complete := []string{"ca.pem", "worker.pem", "worker-key.pem", "works-mtls.aftergraph.org"}
+	if err := validateWorkerAuthentication("", "https://127.0.0.1:18080", false, true, complete[0], complete[1], complete[2], complete[3]); err != nil {
+		t.Fatalf("complete loopback HTTPS mTLS configuration rejected: %v", err)
+	}
+	if err := validateWorkerAuthentication("", "http://127.0.0.1:18080", false, true, complete[0], complete[1], complete[2], complete[3]); err == nil {
+		t.Fatal("mTLS accepted plaintext HTTP")
+	}
+	if err := validateWorkerAuthentication("", "https://works-mtls.aftergraph.org", false, true, complete[0], complete[1], complete[2], ""); err == nil {
+		t.Fatal("mTLS accepted a missing server name")
+	}
+	if err := validateWorkerAuthentication("", "https://127.0.0.1:18080", true, true, complete[0], complete[1], complete[2], complete[3]); err == nil {
+		t.Fatal("mTLS accepted unauthenticated development mode")
+	}
+}
+
 func TestAllowUnauthenticatedFallbackRequiresExplicitLoopbackDevMode(t *testing.T) {
 	tests := []struct {
 		name     string

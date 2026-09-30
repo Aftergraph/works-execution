@@ -1,19 +1,17 @@
 // Package api — POST /v1/workers/enroll (k-impl-003).
 //
-// This endpoint is the ONLY public route that does not require a Bearer
-// token. Workers POST their self-chosen ID + a one-time enrollment
-// challenge (the freshly-generated random hex string the operator
-// provisions into the worker, e.g. via `works-bootstrap`) and receive a
-// short-lived signed JWT to use on every subsequent request.
+// This endpoint is the ONLY worker route that does not require a Bearer
+// token. Legacy workers POST an ID and a shared enrollment challenge. When
+// RequireWorkerMTLS is enabled, a verified client certificate with a
+// matching canonical worker URI SAN is the enrollment authority instead.
 //
-// In V1 the "challenge" is a static shared secret loaded from
+// In legacy V1 the "challenge" is a static shared secret loaded from
 // WORKS_ENROLL_SECRET at server startup. If the env var is unset the
-// enrollment endpoint refuses to issue tokens — there is no default
-// challenge and no way to enroll without one. This matches the
-// Zero-Secret Standard: a worker cannot self-register; an operator must
-// pre-provision the shared secret out-of-band.
+// enrollment endpoint refuses to issue tokens unless worker mTLS is enabled.
+// In worker mTLS mode the listener verifies the certificate and the claimed
+// worker ID must exactly match its SPIFFE URI SAN.
 //
-// Future OIDC flow (NOT V1):
+// Future OIDC flow (not implemented):
 //  1. Operator runs the worker with `--oidc-token=<jwt-from-provider>`.
 //  2. Worker POSTs to /enroll with the OIDC JWT.
 //  3. API verifies with the OIDC provider's public key, mints a worker
@@ -65,7 +63,7 @@ func (s *Server) enrollHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", r.Method)
 		return
 	}
-	if s.EnrollSecret == "" {
+	if s.EnrollSecret == "" && !s.RequireWorkerMTLS {
 		// Fail closed — no shared secret provisioned means no enrollment.
 		writeError(w, http.StatusServiceUnavailable, "enrollment_disabled",
 			"server has no enrollment secret configured (set WORKS_ENROLL_SECRET)")
@@ -87,7 +85,13 @@ func (s *Server) enrollHandler(w http.ResponseWriter, r *http.Request) {
 			"worker_id must match "+runner.RunnerIDPatternSource+" (the registry pattern; k-066)")
 		return
 	}
-	if !enrollEqual(req.Challenge, s.EnrollSecret) {
+	if s.RequireWorkerMTLS {
+		certWorkerID := workerIdentityFrom(r.Context())
+		if certWorkerID == "" || req.WorkerID != certWorkerID {
+			writeError(w, http.StatusForbidden, "worker_identity_mismatch", "worker_id must match the verified client certificate")
+			return
+		}
+	} else if !enrollEqual(req.Challenge, s.EnrollSecret) {
 		writeError(w, http.StatusUnauthorized, "bad_challenge", "enrollment challenge rejected")
 		return
 	}

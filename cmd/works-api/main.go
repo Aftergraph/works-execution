@@ -40,6 +40,10 @@ func main() {
 		evidenceHMACKey   = flag.String("evidence-hmac-key", envOr("WORKS_EVIDENCE_HMAC_KEY", ""), "HMAC key for evidence-bundle production (GET /v1/works/{id}/evidence); empty keeps the endpoint 503 fail-closed")
 		evidenceKeyID     = flag.String("evidence-key-id", envOr("WORKS_EVIDENCE_KEY_ID", "works-api-evidence-v1"), "key id recorded in evidence-bundle signatures")
 		evidenceRunnerID  = flag.String("evidence-runner-id", envOr("WORKS_EVIDENCE_RUNNER_ID", "works-api"), "runner id recorded in evidence bundles")
+		mtlsAddr          = flag.String("mtls-addr", envOr("WORKS_MTLS_ADDR", ""), "optional dedicated HTTPS listener for worker mTLS; enabling it makes worker routes require verified client certificates")
+		mtlsCert          = flag.String("mtls-cert", envOr("WORKS_MTLS_CERT", ""), "server certificate for the worker mTLS listener")
+		mtlsKey           = flag.String("mtls-key", envOr("WORKS_MTLS_KEY", ""), "server private key for the worker mTLS listener")
+		mtlsClientCA      = flag.String("mtls-client-ca", envOr("WORKS_MTLS_CLIENT_CA", ""), "CA bundle that issues WORKS worker certificates")
 	)
 	flag.Parse()
 
@@ -94,6 +98,10 @@ func main() {
 			Metrics: reliabilityMetrics,
 			Audit:   reliabilityAudit,
 		},
+	}
+	mtlsRequested := strings.TrimSpace(*mtlsAddr) != "" || strings.TrimSpace(*mtlsCert) != "" || strings.TrimSpace(*mtlsKey) != "" || strings.TrimSpace(*mtlsClientCA) != ""
+	if mtlsRequested {
+		srv.RequireWorkerMTLS = true
 	}
 	if err := srv.InitializeArtifacts(); err != nil {
 		logger.Fatalf("initialize artifact storage %s: %v", srv.ArtifactsDir, err)
@@ -211,10 +219,19 @@ func main() {
 		// CurrentEpoch intentionally nil — see the comment above.
 	}
 	logger.Printf("dispatch acceptance surface mounted but unavailable (no authority-epoch resolver; POST /v1/works/{id}/accept → 503 until authority integration)")
+	handler := srv.Routes()
 	httpSrv := &http.Server{
 		Addr:              *addr,
-		Handler:           srv.Routes(),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+	var mtlsSrv *http.Server
+	if mtlsRequested {
+		mtlsSrv, err = newWorkerMTLSServer(*mtlsAddr, handler, *mtlsCert, *mtlsKey, *mtlsClientCA)
+		if err != nil {
+			logger.Fatalf("configure worker mTLS listener: %v", err)
+		}
+		logger.Printf("worker mTLS required for enrollment, leases, runner management, and cache APIs")
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -237,9 +254,21 @@ func main() {
 		<-ctx.Done()
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancelShutdown()
-		shutdownErr := httpSrv.Shutdown(shutdownCtx)
-		if shutdownErr != nil {
-			logger.Printf("HTTP shutdown did not drain cleanly: %v", shutdownErr)
+		var shutdownErr error
+		servers := []struct {
+			name   string
+			server *http.Server
+		}{{name: "HTTP", server: httpSrv}, {name: "worker mTLS", server: mtlsSrv}}
+		for _, item := range servers {
+			if item.server == nil {
+				continue
+			}
+			if err := item.server.Shutdown(shutdownCtx); err != nil {
+				logger.Printf("%s shutdown did not drain cleanly: %v", item.name, err)
+				if shutdownErr == nil {
+					shutdownErr = err
+				}
+			}
 		}
 		// k-068: drain in-flight publisher goroutines after the HTTP
 		// server has stopped accepting new state transitions. Bounded
@@ -263,12 +292,27 @@ func main() {
 		logger.Printf("platform bridge resume endpoint unavailable (no WORKS_PLATFORM_BRIDGE_SECRET)")
 	}
 
+	mtlsServeErr := make(chan error, 1)
+	if mtlsSrv != nil {
+		go func() {
+			if err := mtlsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				mtlsServeErr <- err
+				cancel()
+			}
+		}()
+		logger.Printf("works-api worker mTLS listener starting on %s", mtlsSrv.Addr)
+	}
 	logger.Printf("works-api listening on %s (db=%s)", *addr, *dbPath)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Fatalf("listen: %v", err)
 	}
 	if ctx.Err() != nil {
 		<-shutdownDone
+		select {
+		case err := <-mtlsServeErr:
+			logger.Fatalf("worker mTLS listener: %v", err)
+		default:
+		}
 	} else if err := srv.CloseArtifactRoot(); err != nil {
 		logger.Printf("close artifact storage: %v", err)
 	}
