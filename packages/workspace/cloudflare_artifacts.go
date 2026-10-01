@@ -187,7 +187,7 @@ func (p *CloudflareArtifactsProvider) Create(ctx context.Context, spec Spec) (Wo
 
 	now := time.Now().UTC()
 	ws := Workspace{
-		ID:             created.ID,
+		ID:             workspaceHandleID(p.ID(), spec.Org, spec.WorkID, created.Name, created.DefaultBranch),
 		ProviderID:     p.ID(),
 		Org:            spec.Org,
 		WorkID:         spec.WorkID,
@@ -224,7 +224,6 @@ func (p *CloudflareArtifactsProvider) Get(ctx context.Context, handle Workspace)
 		return Workspace{}, err
 	}
 	out := handle
-	out.ID = env.Result.ID
 	out.Name = env.Result.Name
 	out.RemoteURL = env.Result.Remote
 	out.DefaultBranch = env.Result.DefaultBranch
@@ -308,11 +307,11 @@ func (p *CloudflareArtifactsProvider) Destroy(ctx context.Context, ws Workspace)
 }
 
 func (p *CloudflareArtifactsProvider) assertOwned(ws Workspace) error {
-	if ws.ProviderID != p.ID() {
-		return ErrForeignWorkspace
-	}
-	if ws.Org == "" || ws.WorkID == "" || ws.Name == "" || ws.ID == "" {
+	if ws.Org == "" || ws.WorkID == "" || ws.Name == "" || ws.DefaultBranch == "" {
 		return fmt.Errorf("%w: incomplete cloudflare workspace", ErrMalformed)
+	}
+	if !workspaceHandleOwnedBy(ws, p.ID()) {
+		return ErrForeignWorkspace
 	}
 	return nil
 }
