@@ -133,7 +133,7 @@ type Candidate struct {
 type Provider interface {
 	ID() string
 	Create(ctx context.Context, spec Spec) (Workspace, error)
-	Get(ctx context.Context, id string) (Workspace, error)
+	Get(ctx context.Context, handle Workspace) (Workspace, error)
 	Candidate(ctx context.Context, ws Workspace) (Candidate, error)
 	RevokeCredential(ctx context.Context, ws Workspace) error
 	Destroy(ctx context.Context, ws Workspace) error
