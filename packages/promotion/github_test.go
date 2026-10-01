@@ -404,3 +404,57 @@ func TestGitHubBackendGetRejectsStagingRefDrift(t *testing.T) {
 	}
 	if refReads!=1 { t.Fatalf("staging ref reads=%d want 1",refReads) }
 }
+
+
+func TestGitHubBackendReconcilesClosedProposalPR(t *testing.T) {
+	req := validRequest()
+	auth := authorizedRequestForTest(t, req)
+	branchName := "works/promotion/" + auth.KeyHash() + "-" + auth.Fingerprint()
+	marker := promotionMarker("prp_"+auth.KeyHash()+"-"+auth.Fingerprint(), req)
+	var postedPR bool
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rejectDangerousGitHubPath(t, r, req.Target.Branch)
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/commits/"+req.Candidate.SHA):
+			writePromotionJSON(w, map[string]any{"sha": req.Candidate.SHA})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/matching-refs/heads/works/promotion/"):
+			writePromotionJSON(w, []any{map[string]any{
+				"ref": "refs/heads/" + branchName,
+				"object": map[string]any{"sha": req.Candidate.SHA, "type": "commit"},
+			}})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
+			if got := r.URL.Query().Get("state"); got != "all" {
+				t.Fatalf("state=%q want all so closed/merged proposal PRs remain idempotent", got)
+			}
+			writePromotionJSON(w, []any{map[string]any{
+				"number": 17,
+				"html_url": "https://github.com/Aftergraph/runtime/pull/17",
+				"body": marker,
+				"created_at": "2026-10-01T18:00:00Z",
+				"head": map[string]any{"ref": branchName},
+				"base": map[string]any{"ref": "main"},
+				"state": "closed",
+			}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
+			postedPR = true
+			t.Fatal("exact closed proposal PR must be reconciled, not duplicated")
+		default:
+			t.Fatalf("unexpected GitHub request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer ts.Close()
+
+	b, err := NewGitHubBackend(GitHubConfig{
+		ControlTokenRef: secrets.Must("secret://github/control"),
+		APIBase: ts.URL, BranchPrefix: "works/promotion",
+	}, promotionResolver{value: "control-secret"}, ts.Client())
+	if err != nil { t.Fatal(err) }
+
+	p, err := newPromotionServiceForBackend(t, b).Propose(context.Background(), req)
+	if err != nil { t.Fatal(err) }
+	if postedPR { t.Fatal("duplicate PR was created") }
+	if p.PullRequestNumber != 17 {
+		t.Fatalf("pull request=%d want 17", p.PullRequestNumber)
+	}
+}
