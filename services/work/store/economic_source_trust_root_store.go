@@ -282,6 +282,9 @@ func (s *SQLiteStore) advanceEconomicSourceTrustRoot(
 		if err != nil {
 			return nil, fmt.Errorf("economic trust root insert: %w", err)
 		}
+		if _, err := appendEconomicTrustRootEventTx(ctx, tx, next, "ADVANCED", ""); err != nil {
+			return nil, err
+		}
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("economic trust root commit: %w", err)
 		}
@@ -355,6 +358,13 @@ func (s *SQLiteStore) advanceEconomicSourceTrustRoot(
 	}
 	if rows != 1 {
 		return nil, ErrEconomicTrustRootConcurrentAdvance
+	}
+	authorizationDigest := ""
+	if decision == "ROTATED" && auth != nil {
+		authorizationDigest = auth.AuthorizationDigest
+	}
+	if _, err := appendEconomicTrustRootEventTx(ctx, tx, next, decision, authorizationDigest); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("economic trust root commit advance: %w", err)
