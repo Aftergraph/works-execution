@@ -7,7 +7,9 @@ permissions:
   contents: read
   copilot-requests: write
 
-engine: copilot
+engine:
+  id: copilot
+  model: gpt-5
 
 timeout-minutes: 15
 
