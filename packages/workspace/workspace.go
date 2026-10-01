@@ -22,6 +22,16 @@ import (
 
 const ABI = "workspace/1.0"
 
+// CredentialStore is the shared handoff boundary for provider-issued Git
+// credentials. Plaintext may exist only inside Put/Resolve call scope; durable
+// WORKS state carries only secret:// refs and non-secret correlation ids.
+type CredentialStore interface {
+	Put(ctx context.Context, workID, provider, name, value string, expiresAt time.Time) (*secrets.Ref, error)
+	Resolve(ctx context.Context, ref *secrets.Ref, workID string) (string, error)
+	Delete(ctx context.Context, ref *secrets.Ref) error
+}
+
+
 type Mode string
 
 const (
