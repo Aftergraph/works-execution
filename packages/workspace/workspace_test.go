@@ -55,7 +55,7 @@ func TestReferenceProviderConformance(t *testing.T) {
 	}
 
 	if err := p.RevokeCredential(ctx, ws); err != nil { t.Fatal(err) }
-	got, err := p.Get(ctx, ws.ID)
+	got, err := p.Get(ctx, ws)
 	if err != nil { t.Fatal(err) }
 	if got.CredentialRef != nil {
 		t.Fatal("credential ref remained after revocation")
