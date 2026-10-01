@@ -61,7 +61,7 @@ func TestGitHubBackendCreatesDeterministicStagingPRWithoutTargetMutation(t *test
 			if body["sha"]!=req.Candidate.SHA{t.Fatalf("staging sha=%v want %s",body["sha"],req.Candidate.SHA)}
 			writePromotionJSON(w,map[string]any{"ref":createdBranch,"object":map[string]any{"sha":req.Candidate.SHA,"type":"commit"}})
 		case r.Method==http.MethodGet && strings.HasSuffix(r.URL.Path,"/pulls"):
-			if r.URL.Query().Get("state")!="open" || r.URL.Query().Get("base")!="main"{
+			if r.URL.Query().Get("state")!="all" || r.URL.Query().Get("base")!="main"{
 				t.Fatalf("bad PR query: %s",r.URL.RawQuery)
 			}
 			writePromotionJSON(w,[]any{})
