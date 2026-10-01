@@ -49,7 +49,9 @@ import (
 // admission-default snapshot and original queue decision.
 // v15: durable economic source generation/cursor state for replay,
 // equivocation, time-regression and rollback detection.
-const SchemaVersion = 15
+// v16: durable economic source trust-root continuity for key rotation,
+// revocation floors, equivocation and anti-revival enforcement.
+const SchemaVersion = 16
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -508,6 +510,12 @@ func (s *SQLiteStore) migrate() error {
 	// immutable inputs; WORKS owns monotonic persistence.
 	if err := s.migrateEconomicSourceGenerations(); err != nil {
 		return fmt.Errorf("migrate economic source generations: %w", err)
+	}
+	// Migration v15 -> v16: durable source trust-root continuity.
+	// Net-new table, no backfill. Governance owns root policy; WORKS owns
+	// monotonic durable state and rejects silent rollback/equivocation.
+	if err := s.migrateEconomicSourceTrustRoots(); err != nil {
+		return fmt.Errorf("migrate economic source trust roots: %w", err)
 	}
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
