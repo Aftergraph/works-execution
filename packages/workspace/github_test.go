@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -145,5 +146,99 @@ func writeGitJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type","application/json")
 	if w.Header().Get("Content-Type") != "" {
 		_ = json.NewEncoder(w).Encode(v)
+	}
+}
+
+
+func TestGitHubWorkspaceRestartSafeIdempotentReplay(t *testing.T) {
+	spec := validSpec()
+	spec.Name = "agent replay"
+	keyHash, specHash, err := workspaceIdentity(spec)
+	if err != nil { t.Fatal(err) }
+	prefix := "works/" + keyHash + "-"
+	branch := prefix + specHash + "-agent-replay"
+	const existingSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	var createdRef, deletedRef bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/matching-refs/heads/works/"+keyHash+"-"):
+			writeGitJSON(w, []any{map[string]any{
+				"ref": "refs/heads/" + branch,
+				"object": map[string]any{"sha": existingSHA, "type": "commit"},
+			}})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/Aftergraph/runtime":
+			writeGitJSON(w, map[string]any{"full_name":"Aftergraph/runtime","clone_url":"https://github.com/Aftergraph/runtime.git","default_branch":"main"})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+			createdRef = true
+			t.Fatalf("idempotent replay attempted to create a second branch")
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/git/refs/heads/"):
+			deletedRef = true
+			t.Fatalf("idempotent replay attempted to delete existing branch")
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer ts.Close()
+
+	issuer := &fakeGitIssuer{}
+	p, err := NewGitHubWorkspaceProvider(GitHubWorkspaceConfig{
+		ControlTokenRef: secrets.Must("secret://github/control"),
+		APIBase: ts.URL, TokenTTL: time.Hour,
+	}, fakeResolver{value:"control-secret"}, issuer, &fakeCredentialStore{}, ts.Client())
+	if err != nil { t.Fatal(err) }
+
+	ws, err := p.Create(context.Background(), spec)
+	if err != nil { t.Fatal(err) }
+	if ws.DefaultBranch != branch {
+		t.Fatalf("replay branch=%q want %q", ws.DefaultBranch, branch)
+	}
+	if createdRef || deletedRef {
+		t.Fatal("existing workspace was mutated during replay")
+	}
+	if len(issuer.issued) != 1 {
+		t.Fatalf("expected fresh short-lived credential, issued=%#v", issuer.issued)
+	}
+}
+
+func TestGitHubWorkspaceIdempotencyConflictFailsClosed(t *testing.T) {
+	original := validSpec()
+	original.Name = "original"
+	keyHash, originalHash, err := workspaceIdentity(original)
+	if err != nil { t.Fatal(err) }
+	existing := "works/" + keyHash + "-" + originalHash + "-original"
+
+	changed := original
+	changed.Name = "changed"
+	_, changedHash, err := workspaceIdentity(changed)
+	if err != nil { t.Fatal(err) }
+	if changedHash == originalHash {
+		t.Fatal("fixture did not change spec fingerprint")
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/matching-refs/heads/works/"+keyHash+"-") {
+			writeGitJSON(w, []any{map[string]any{
+				"ref": "refs/heads/" + existing,
+				"object": map[string]any{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","type":"commit"},
+			}})
+			return
+		}
+		t.Fatalf("conflicting replay reached unexpected provider operation: %s %s", r.Method, r.URL.String())
+	}))
+	defer ts.Close()
+
+	issuer := &fakeGitIssuer{}
+	p, err := NewGitHubWorkspaceProvider(GitHubWorkspaceConfig{
+		ControlTokenRef: secrets.Must("secret://github/control"),
+		APIBase: ts.URL, TokenTTL: time.Hour,
+	}, fakeResolver{value:"control-secret"}, issuer, &fakeCredentialStore{}, ts.Client())
+	if err != nil { t.Fatal(err) }
+
+	if _, err := p.Create(context.Background(), changed); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("got %v want ErrIdempotencyConflict", err)
+	}
+	if len(issuer.issued) != 0 {
+		t.Fatalf("credential issued for conflicting replay: %#v", issuer.issued)
 	}
 }
