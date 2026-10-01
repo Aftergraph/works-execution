@@ -103,7 +103,11 @@ func (b *GitHubBackend) Get(ctx context.Context, proposal Proposal)(Proposal,err
 	if err:=b.doJSON(ctx,token,http.MethodGet,fmt.Sprintf("/repos/%s/pulls/%d",proposal.Target.Repository,proposal.PullRequestNumber),nil,&pr);err!=nil{
 		return Proposal{},err
 	}
-	if pr.Number!=proposal.PullRequestNumber || pr.Head.Ref!=strings.TrimPrefix(proposal.StagingRef,"refs/heads/") || pr.Base.Ref!=proposal.Target.Branch {
+	if pr.Number!=proposal.PullRequestNumber ||
+		pr.HTMLURL!=proposal.PullRequestURL ||
+		!pr.CreatedAt.UTC().Equal(proposal.CreatedAt.UTC()) ||
+		pr.Head.Ref!=strings.TrimPrefix(proposal.StagingRef,"refs/heads/") ||
+		pr.Base.Ref!=proposal.Target.Branch {
 		return Proposal{},ErrIdempotencyConflict
 	}
 	if !strings.Contains(pr.Body, proposalMarker(proposal)) {
