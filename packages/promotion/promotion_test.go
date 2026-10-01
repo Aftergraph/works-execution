@@ -44,17 +44,18 @@ func (f *fakeBackend) Propose(_ context.Context, req AuthorizedRequest) (Proposa
 	f.req = req
 	if f.err != nil { return Proposal{}, f.err }
 	if f.out.ID == "" {
+		r := req.Request()
 		f.out = Proposal{
 			ID: "prp_test",
-			Org: req.Org, WorkID: req.WorkID,
-			CandidateSHA: req.Candidate.SHA,
-			Target: req.Target,
+			Org: r.Org, WorkID: r.WorkID,
+			CandidateSHA: r.Candidate.SHA,
+			Target: r.Target,
 			StagingRef: "refs/heads/works/promotion/test",
 			PullRequestURL: "https://github.com/Aftergraph/runtime/pull/1",
 			PullRequestNumber: 1,
-			EvidenceBundleID: req.EvidenceBundleID,
-			DecisionRef: req.DecisionRef,
-			PolicyDecisionID: req.PolicyDecisionID,
+			EvidenceBundleID: r.EvidenceBundleID,
+			DecisionRef: r.DecisionRef,
+			PolicyDecisionID: r.PolicyDecisionID,
 			CreatedAt: time.Date(2026,10,1,18,0,0,0,time.UTC),
 		}
 	}
