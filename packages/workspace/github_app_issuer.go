@@ -159,16 +159,42 @@ func (g *GitHubAppIssuer) Issue(ctx context.Context, repository, workID string, 
 	}, nil
 }
 
-// Revoke is intentionally best-effort/no-op for installation tokens because
-// GitHub App installation access tokens are self-expiring and GitHub does not
-// expose per-token revocation by synthetic correlation id. Repository branch
-// deletion is the hard teardown boundary. The credential store value is still
-// deleted by the provider.
-func (g *GitHubAppIssuer) Revoke(_ context.Context, id string) error {
-	if !strings.HasPrefix(id, "ghinst_") {
-		return fmt.Errorf("%w: unknown github installation credential id", ErrMalformed)
+// Revoke invalidates one installation access token server-side. GitHub's
+// endpoint authenticates with the token being revoked, so the caller resolves
+// the secret ref only for this boundary call and never persists plaintext.
+func (g *GitHubAppIssuer) Revoke(ctx context.Context, id, plaintext string) error {
+	if !strings.HasPrefix(id, "ghinst_") || plaintext == "" {
+		return fmt.Errorf("%w: invalid github installation credential", ErrMalformed)
 	}
-	return nil
+	sum := sha256.Sum256([]byte(plaintext))
+	want := "ghinst_" + base64.RawURLEncoding.EncodeToString(sum[:12])
+	if id != want {
+		return fmt.Errorf("%w: github installation credential correlation mismatch", ErrMalformed)
+	}
+	endpoint := strings.TrimRight(g.cfg.APIBase, "/") + "/installation/token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: revoke github installation token: %v", ErrProviderUnavailable, err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusNotFound {
+		return nil // already expired/revoked is idempotent teardown
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return fmt.Errorf("%w: github revoke status %d", ErrProviderUnavailable, resp.StatusCode)
+	}
+	return fmt.Errorf("%w: github revoke status %d", ErrMalformed, resp.StatusCode)
 }
 
 func (g *GitHubAppIssuer) signAppJWT(key *rsa.PrivateKey) (string, error) {
