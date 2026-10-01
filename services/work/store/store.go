@@ -51,7 +51,9 @@ import (
 // equivocation, time-regression and rollback detection.
 // v16: durable economic source trust-root continuity for key rotation,
 // revocation floors, equivocation and anti-revival enforcement.
-const SchemaVersion = 16
+// v17: append-only hash-chained trust-root transition history with
+// authorization digest binding for rotations.
+const SchemaVersion = 17
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -516,6 +518,9 @@ func (s *SQLiteStore) migrate() error {
 	// monotonic durable state and rejects silent rollback/equivocation.
 	if err := s.migrateEconomicSourceTrustRoots(); err != nil {
 		return fmt.Errorf("migrate economic source trust roots: %w", err)
+	}
+	if err := s.migrateEconomicSourceTrustRootHistory(); err != nil {
+		return fmt.Errorf("migrate economic source trust root history: %w", err)
 	}
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
