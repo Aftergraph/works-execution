@@ -71,7 +71,8 @@ func TestGitHubBackendCreatesDeterministicStagingPRWithoutTargetMutation(t *test
 			if body["base"]!="main"{t.Fatalf("PR base=%v",body["base"])}
 			if !strings.Contains(createdPR,req.Candidate.SHA) ||
 				!strings.Contains(createdPR,req.EvidenceBundleID) ||
-				!strings.Contains(createdPR,req.DecisionRef) {
+				!strings.Contains(createdPR,req.DecisionRef) ||
+				!strings.Contains(createdPR,"Source workspace: "+req.Workspace.ProviderID+":"+req.Workspace.ID) {
 				t.Fatalf("PR body missing provenance: %s",createdPR)
 			}
 			writePromotionJSON(w,map[string]any{
@@ -457,5 +458,65 @@ func TestGitHubBackendReconcilesClosedProposalPR(t *testing.T) {
 	if postedPR { t.Fatal("duplicate PR was created") }
 	if p.PullRequestNumber != 17 {
 		t.Fatalf("pull request=%d want 17", p.PullRequestNumber)
+	}
+}
+
+
+func TestGitHubBackendGetRejectsDurableProvenanceTamper(t *testing.T) {
+	original := Proposal{
+		ID:"prp_test",
+		Org:"aftergraph",
+		WorkID:"wrk_0123456789abcdef0123456789abcdef",
+		WorkspaceID:"wsp_1",
+		CandidateSHA:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Target:Target{Provider:"github",Repository:"Aftergraph/runtime",Branch:"main"},
+		StagingRef:"refs/heads/works/promotion/key-fingerprint",
+		PullRequestURL:"https://github.com/Aftergraph/runtime/pull/17",
+		PullRequestNumber:17,
+		EvidenceBundleID:"evb_0123456789abcdef0123456789abcdef",
+		DecisionRef:"/org/deadbeef/decisions/promote-1",
+		PolicyDecisionID:"pdr_99999999999999999999999999999999",
+		CreatedAt:time.Date(2026,10,1,18,0,0,0,time.UTC),
+	}
+	marker := proposalMarker(original)
+	tests := []struct{
+		name string
+		mutate func(*Proposal)
+	}{
+		{"org",func(p *Proposal){p.Org="other"}},
+		{"work",func(p *Proposal){p.WorkID="wrk_other"}},
+		{"workspace",func(p *Proposal){p.WorkspaceID="wsp_other"}},
+		{"policy",func(p *Proposal){p.PolicyDecisionID="pdr_other"}},
+	}
+	for _,tc := range tests {
+		t.Run(tc.name,func(t *testing.T){
+			ts:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+				switch {
+				case r.Method==http.MethodGet && strings.HasSuffix(r.URL.Path,"/pulls/17"):
+					writePromotionJSON(w,map[string]any{
+						"number":17,"html_url":original.PullRequestURL,"created_at":"2026-10-01T18:00:00Z",
+						"body":marker,"head":map[string]any{"ref":"works/promotion/key-fingerprint"},
+						"base":map[string]any{"ref":"main"},
+					})
+				case r.Method==http.MethodGet && strings.Contains(r.URL.Path,"/git/ref/heads/works/promotion/key-fingerprint"):
+					writePromotionJSON(w,map[string]any{
+						"ref":original.StagingRef,
+						"object":map[string]any{"sha":original.CandidateSHA,"type":"commit"},
+					})
+				default:
+					t.Fatalf("unexpected: %s %s",r.Method,r.URL.String())
+				}
+			}))
+			defer ts.Close()
+			b,_:=NewGitHubBackend(GitHubConfig{
+				ControlTokenRef:secrets.Must("secret://github/control"),APIBase:ts.URL,
+			},promotionResolver{value:"control-secret"},ts.Client())
+			tampered:=original
+			tc.mutate(&tampered)
+			_,err:=b.Get(context.Background(),tampered)
+			if !errors.Is(err,ErrIdempotencyConflict){
+				t.Fatalf("got %v want ErrIdempotencyConflict",err)
+			}
+		})
 	}
 }
