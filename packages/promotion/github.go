@@ -200,7 +200,7 @@ func (b *GitHubBackend) ensurePullRequest(ctx context.Context,token,repository,b
 func (b *GitHubBackend) listPulls(ctx context.Context,token,repository,branch,base string)([]promotionPull,error){
 	owner:=strings.SplitN(repository,"/",2)[0]
 	q:=url.Values{}
-	q.Set("state","open")
+	q.Set("state","all")
 	q.Set("head",owner+":"+branch)
 	q.Set("base",base)
 	var out []promotionPull
