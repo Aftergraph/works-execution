@@ -170,7 +170,7 @@ func TestGitHubBackendRejectsExistingPRWithWrongMarker(t *testing.T){
 	}))
 	defer ts.Close()
 	b,_:=NewGitHubBackend(GitHubConfig{ControlTokenRef:secrets.Must("secret://github/control"),APIBase:ts.URL},promotionResolver{value:"control-secret"},ts.Client())
-	_,err=newPromotionServiceForBackend(t,b).Propose(context.Background(),req)
+	_,err:=newPromotionServiceForBackend(t,b).Propose(context.Background(),req)
 	if !errors.Is(err,ErrIdempotencyConflict){t.Fatalf("got %v",err)}
 }
 
