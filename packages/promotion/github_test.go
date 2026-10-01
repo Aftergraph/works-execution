@@ -115,6 +115,7 @@ func TestGitHubBackendExactReplayReusesStagingBranchAndPR(t *testing.T){
 		case r.Method==http.MethodGet && strings.HasSuffix(r.URL.Path,"/pulls"):
 			writePromotionJSON(w,[]any{map[string]any{
 				"number":17,"html_url":"https://github.com/Aftergraph/runtime/pull/17",
+				"created_at":"2026-10-01T18:00:00Z",
 				"body":marker,"head":map[string]any{"ref":branch},"base":map[string]any{"ref":"main"},
 			}})
 		case r.Method==http.MethodPost:
@@ -129,7 +130,14 @@ func TestGitHubBackendExactReplayReusesStagingBranchAndPR(t *testing.T){
 		BranchPrefix:"works/promotion",
 	},promotionResolver{value:"control-secret"},ts.Client()); if err!=nil{t.Fatal(err)}
 	p,err:=newPromotionServiceForBackend(t,b).Propose(context.Background(),req); if err!=nil{t.Fatal(err)}
+	again,err:=newPromotionServiceForBackend(t,b).Propose(context.Background(),req); if err!=nil{t.Fatal(err)}
 	if creates!=0 || p.PullRequestNumber!=17{t.Fatalf("replay created resource or bad proposal: creates=%d %#v",creates,p)}
+	if p != again {
+		t.Fatalf("exact replay changed durable proposal: first=%#v again=%#v",p,again)
+	}
+	if p.CreatedAt.IsZero() {
+		t.Fatal("proposal lost GitHub PR creation time")
+	}
 }
 
 func TestGitHubBackendRejectsConflictingDeterministicRef(t *testing.T){
