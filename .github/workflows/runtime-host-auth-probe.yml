@@ -1,0 +1,72 @@
+name: WORKS Production Auth Probe
+
+on:
+  push:
+    branches:
+      - deploy/runtime-host-auth-probe
+    paths:
+      - ".github/workflows/runtime-host-auth-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, linux, x64, aftergraph-ci]
+    timeout-minutes: 5
+    env:
+      WORKS_API: http://127.0.0.1:18191
+      WORKS_ENROLL_SECRET: ${{ secrets.WORKS_ENROLL_SECRET }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Verify scoped WORKS enrollment path
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "vmi3517816"
+          curl --fail --silent --max-time 3 "$WORKS_API/healthz" >/dev/null
+          echo "works_health=PASS"
+
+          if [[ -z "${WORKS_ENROLL_SECRET:-}" ]]; then
+            echo "works_enroll_secret=missing"
+            exit 41
+          fi
+          echo "works_enroll_secret=present"
+
+          WORKER_ID="wrkr_deploy_probe_${GITHUB_RUN_ID}"
+          PAYLOAD="$(node -e '
+            process.stdout.write(JSON.stringify({
+              worker_id: process.argv[1],
+              challenge: process.env.WORKS_ENROLL_SECRET,
+              scope: "worker",
+              ttl_seconds: 300
+            }))
+          ' "$WORKER_ID")"
+
+          RESPONSE="$(curl --fail --silent --max-time 5             -H 'Content-Type: application/json'             -d "$PAYLOAD"             "$WORKS_API/v1/workers/enroll")"
+
+          TOKEN="$(node -e '
+            const body = JSON.parse(process.argv[1]);
+            if (!body.token) process.exit(2);
+            process.stdout.write(body.token);
+          ' "$RESPONSE")"
+          echo "::add-mask::$TOKEN"
+          echo "works_enrollment=PASS"
+
+          for RUNNER in wrkr_prod_1 wrkr_prod_2 wrkr_prod_3; do
+            BODY="$(curl --fail --silent --max-time 5 "$WORKS_API/v1/runners/$RUNNER")"
+            node -e '
+              const r = JSON.parse(process.argv[1]);
+              console.log(JSON.stringify({
+                runner_id: r.runner_id ?? r.id,
+                trust_class: r.trust_class,
+                lifecycle_state: r.lifecycle_state,
+                labels: r.capabilities?.labels ?? r.labels ?? [],
+                last_heartbeat_at: r.last_heartbeat_at ?? null
+              }));
+            ' "$BODY"
+          done
