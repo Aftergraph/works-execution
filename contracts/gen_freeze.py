@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Contract Freeze Slice 0 — schema materializer + manifest generator.
 
-Emits the 20 frozen contracts (ADR-0008..0027 + final-freeze-review) as
+Emits the frozen contracts (ADR-0008..0027 + final-freeze-review) as
 draft-07 JSON Schemas and a machine-readable Contract Freeze Manifest with
 per-file sha256 digests. Deterministic: re-running rewrites identical bytes
 unless a schema genuinely changed (then hashes change = drift, by design).
@@ -413,6 +413,47 @@ SCHEMAS = {
                 "beta_soak_hours": {"const": 48},
                 "kill_switch": {"type": "array", "items": {"type": "string"}},
                 "no_ring_skips": {"const": True}
+            }
+        }
+    },
+    "workspace": {
+        "version": "1.0", "adr": "ADR-0030", "owner": "works-execution",
+        "schema": {
+            "$id": "contract:workspace/1.0",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "title": "Aftergraph WORKS durable source workspace handle",
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["id", "provider_id", "org", "work_id", "name", "remote_url", "baseline", "mode", "credential_ref", "created_at"],
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "provider_id": {"type": "string", "minLength": 1},
+                "org": {"type": "string", "minLength": 1},
+                "work_id": {"type": "string", "minLength": 1},
+                "name": {"type": "string", "minLength": 1},
+                "remote_url": {"type": "string", "pattern": "^https://"},
+                "default_branch": {"type": "string", "minLength": 1},
+                "baseline": {"$ref": "#/definitions/source_ref"},
+                "mode": {"enum": ["read", "write"]},
+                "credential_ref": {"type": "string", "pattern": "^secret://[a-z0-9-]+/[A-Za-z0-9_-]+$"},
+                "credential_id": {"type": "string", "minLength": 1},
+                "created_at": {"type": "string", "format": "date-time"},
+                "expires_at": {"type": "string", "format": "date-time"}
+            },
+            "definitions": {
+                "source_ref": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["provider", "repository"],
+                    "properties": {
+                        "provider": {"type": "string", "minLength": 1},
+                        "repository": {"type": "string", "minLength": 1},
+                        "ref": {"type": "string", "minLength": 1},
+                        "sha": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+                        "remote_url": {"type": "string", "pattern": "^https://"}
+                    },
+                    "anyOf": [{"required": ["ref"]}, {"required": ["sha"]}]
+                }
             }
         }
     },
