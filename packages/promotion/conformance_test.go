@@ -50,9 +50,9 @@ func ConformanceSuite(t *testing.T, backend Backend) {
 	t.Run("valid-proposal-preserves-provenance",func(t *testing.T){
 		r:=validRequest()
 		p,err:=s.Propose(ctx,r); if err!=nil{t.Fatal(err)}
-		if p.Org!=r.Org || p.WorkID!=r.WorkID || p.CandidateSHA!=r.Candidate.SHA ||
-			p.EvidenceBundleID!=r.EvidenceBundleID || p.DecisionRef!=r.DecisionRef ||
-			p.Target!=r.Target {
+		if p.Org!=r.Org || p.WorkID!=r.WorkID || p.WorkspaceID!=r.Workspace.ID ||
+			p.CandidateSHA!=r.Candidate.SHA || p.EvidenceBundleID!=r.EvidenceBundleID ||
+			p.DecisionRef!=r.DecisionRef || p.Target!=r.Target {
 			t.Fatalf("proposal lost provenance: %#v",p)
 		}
 	})
