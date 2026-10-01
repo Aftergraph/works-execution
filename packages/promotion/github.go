@@ -109,6 +109,14 @@ func (b *GitHubBackend) Get(ctx context.Context, proposal Proposal)(Proposal,err
 	if !strings.Contains(pr.Body, proposalMarker(proposal)) {
 		return Proposal{},ErrIdempotencyConflict
 	}
+	var ref promotionGitRef
+	refPath := strings.TrimPrefix(proposal.StagingRef, "refs/heads/")
+	if err:=b.doJSON(ctx,token,http.MethodGet,"/repos/"+proposal.Target.Repository+"/git/ref/heads/"+promotionRefPath(refPath),nil,&ref);err!=nil{
+		return Proposal{},err
+	}
+	if ref.Ref!=proposal.StagingRef || ref.Object.SHA!=proposal.CandidateSHA {
+		return Proposal{},ErrIdempotencyConflict
+	}
 	return proposal,nil
 }
 
