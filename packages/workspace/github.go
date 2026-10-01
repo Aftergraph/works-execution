@@ -334,7 +334,7 @@ func (p *GitHubWorkspaceProvider) getRepo(ctx context.Context, token, repository
 }
 
 func (p *GitHubWorkspaceProvider) deleteBranch(ctx context.Context, token, repository, branch string) error {
-	return p.doJSON(ctx, token, http.MethodDelete, "/repos/"+repository+"/git/refs/heads/"+url.PathEscape(branch), nil, nil)
+	return p.doJSON(ctx, token, http.MethodDelete, "/repos/"+repository+"/git/refs/heads/"+gitRefPath(branch), nil, nil)
 }
 
 func (p *GitHubWorkspaceProvider) controlToken(ctx context.Context) (string, error) {
@@ -712,7 +712,7 @@ func (p *GitHubWorkspaceProvider) getRepo(ctx context.Context, token, repository
 }
 
 func (p *GitHubWorkspaceProvider) deleteBranch(ctx context.Context, token, repository, branch string) error {
-	return p.doJSON(ctx, token, http.MethodDelete, "/repos/"+repository+"/git/refs/heads/"+url.PathEscape(branch), nil, nil)
+	return p.doJSON(ctx, token, http.MethodDelete, "/repos/"+repository+"/git/refs/heads/"+gitRefPath(branch), nil, nil)
 }
 
 func (p *GitHubWorkspaceProvider) controlToken(ctx context.Context) (string, error) {
