@@ -92,6 +92,7 @@ type Proposal struct {
 	ID                string    `json:"id"`
 	Org               string    `json:"org"`
 	WorkID            string    `json:"work_id"`
+	WorkspaceID       string    `json:"workspace_id"`
 	CandidateSHA      string    `json:"candidate_sha"`
 	Target            Target    `json:"target"`
 	StagingRef        string    `json:"staging_ref"`
