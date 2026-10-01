@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"sort"
 )
 
 var (
@@ -19,6 +20,8 @@ var (
 	ErrEconomicTrustRootFloorRegression      = errors.New("economic trust root revocation floor regression")
 	ErrEconomicTrustRootRevivalForbidden     = errors.New("economic trust root revival forbidden")
 	ErrEconomicTrustRootConcurrentAdvance    = errors.New("economic trust root concurrent advance")
+	ErrEconomicTrustRootAuthorizationRequired = errors.New("economic trust root rotation authorization required")
+	ErrEconomicTrustRootAuthorizationInvalid  = errors.New("economic trust root rotation authorization invalid")
 )
 
 const economicSourceTrustRootSchema =
@@ -51,6 +54,105 @@ type EconomicSourceTrustRootState struct {
 	ValidUntilUnix           int64
 	Revision                 int64
 	StateDigest              string
+}
+
+
+type EconomicTrustRootRotationAuthorizationPayload struct {
+	SourceClass                   string
+	SourceID                      string
+	PriorTrustRootID              string
+	NewTrustRootID                string
+	PriorPublicKeyFingerprint     string
+	NewPublicKeyFingerprint       string
+	PriorGeneration               int64
+	NewGeneration                 int64
+	PriorMinAttestationGeneration int64
+	NewMinAttestationGeneration   int64
+	AuthorityLeaseID              string
+	ApprovalProofIDs              []string
+	RotationNonce                 string
+	Reason                        string
+	ExpiresAtMillis               int64
+}
+
+type EconomicTrustRootRotationAuthorization struct {
+	Schema                      string
+	Decision                    string
+	Authorized                  bool
+	TrustRootMutationAuthorized bool
+	AuthorizationDigest         string
+	Payload                     EconomicTrustRootRotationAuthorizationPayload
+	ApprovalsVerified           bool
+	AuthorityVerified           bool
+	ExecutionAuthority          bool
+	LiveValueEnabled            bool
+	Final                       bool
+	PromotionAuthority          bool
+	ExternalEffects             int
+}
+
+func economicTrustRootAuthorizationDigest(p EconomicTrustRootRotationAuthorizationPayload) string {
+	approvals := append([]string(nil), p.ApprovalProofIDs...)
+	sort.Strings(approvals)
+	parts := []string{
+		"aftergraph/economic-trust-root-rotation/v1",
+		"GOVERNED_TRUST_ROOT_ROTATION",
+		p.SourceClass, p.SourceID,
+		p.PriorTrustRootID, p.NewTrustRootID,
+		p.PriorPublicKeyFingerprint, p.NewPublicKeyFingerprint,
+		strconv.FormatInt(p.PriorGeneration, 10), strconv.FormatInt(p.NewGeneration, 10),
+		strconv.FormatInt(p.PriorMinAttestationGeneration, 10), strconv.FormatInt(p.NewMinAttestationGeneration, 10),
+		p.AuthorityLeaseID, strings.Join(approvals, ","),
+		p.RotationNonce, p.Reason, strconv.FormatInt(p.ExpiresAtMillis, 10),
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func validateEconomicTrustRootRotationAuthorization(
+	current EconomicSourceTrustRootState,
+	next EconomicSourceTrustRootState,
+	auth *EconomicTrustRootRotationAuthorization,
+) error {
+	if auth == nil {
+		return ErrEconomicTrustRootAuthorizationRequired
+	}
+	if auth.Schema != "aftergraph.economic-trust-root-rotation-authorization/v1" ||
+		auth.Decision != "AUTHORIZED_PREPARE_ONLY" ||
+		!auth.Authorized || !auth.TrustRootMutationAuthorized ||
+		!auth.ApprovalsVerified || !auth.AuthorityVerified ||
+		auth.ExecutionAuthority || auth.LiveValueEnabled || auth.Final ||
+		auth.PromotionAuthority || auth.ExternalEffects != 0 {
+		return ErrEconomicTrustRootAuthorizationInvalid
+	}
+	p := auth.Payload
+	if p.SourceClass != current.SourceClass || p.SourceID != current.SourceID ||
+		p.PriorTrustRootID != current.TrustRootID || p.NewTrustRootID != next.TrustRootID ||
+		p.PriorPublicKeyFingerprint != current.PublicKeyFingerprint ||
+		p.NewPublicKeyFingerprint != next.PublicKeyFingerprint ||
+		p.PriorGeneration != current.Generation || p.NewGeneration != next.Generation ||
+		p.PriorMinAttestationGeneration != current.MinAttestationGeneration ||
+		p.NewMinAttestationGeneration != next.MinAttestationGeneration {
+		return ErrEconomicTrustRootAuthorizationInvalid
+	}
+	if len(p.ApprovalProofIDs) < 2 || strings.TrimSpace(p.AuthorityLeaseID) == "" ||
+		strings.TrimSpace(p.RotationNonce) == "" || p.ExpiresAtMillis <= time.Now().UnixMilli() {
+		return ErrEconomicTrustRootAuthorizationInvalid
+	}
+	seen := map[string]struct{}{}
+	for _, id := range p.ApprovalProofIDs {
+		if strings.TrimSpace(id) == "" {
+			return ErrEconomicTrustRootAuthorizationInvalid
+		}
+		if _, ok := seen[id]; ok {
+			return ErrEconomicTrustRootAuthorizationInvalid
+		}
+		seen[id] = struct{}{}
+	}
+	if auth.AuthorizationDigest != economicTrustRootAuthorizationDigest(p) {
+		return ErrEconomicTrustRootAuthorizationInvalid
+	}
+	return nil
 }
 
 type EconomicSourceTrustRootTransition struct {
@@ -133,6 +235,22 @@ func (s *SQLiteStore) AdvanceEconomicSourceTrustRoot(
 	ctx context.Context,
 	next EconomicSourceTrustRootState,
 ) (*EconomicSourceTrustRootTransition, error) {
+	return s.advanceEconomicSourceTrustRoot(ctx, next, nil)
+}
+
+func (s *SQLiteStore) AdvanceEconomicSourceTrustRootAuthorized(
+	ctx context.Context,
+	next EconomicSourceTrustRootState,
+	auth EconomicTrustRootRotationAuthorization,
+) (*EconomicSourceTrustRootTransition, error) {
+	return s.advanceEconomicSourceTrustRoot(ctx, next, &auth)
+}
+
+func (s *SQLiteStore) advanceEconomicSourceTrustRoot(
+	ctx context.Context,
+	next EconomicSourceTrustRootState,
+	auth *EconomicTrustRootRotationAuthorization,
+) (*EconomicSourceTrustRootTransition, error) {
 	if err := validateEconomicSourceTrustRoot(next); err != nil {
 		return nil, err
 	}
@@ -211,6 +329,9 @@ func (s *SQLiteStore) AdvanceEconomicSourceTrustRoot(
 
 	decision := "ADVANCED_POLICY"
 	if !sameKey {
+		if err := validateEconomicTrustRootRotationAuthorization(*current, next, auth); err != nil {
+			return nil, err
+		}
 		decision = "ROTATED"
 	}
 
