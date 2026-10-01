@@ -129,12 +129,14 @@ type ProvenanceConfig struct {
 //   - /v1/leases/*        — requires Authorization: Bearer <enrollment-token>.
 //   - /v1/workers/*       — requires Authorization: Bearer <enrollment-token>.
 //     (Everything under that prefix except /enroll; currently /ready only.)
-//   - /v1/works/* and /healthz remain unauthenticated (operator surface).
+//   - /v1/works/*       — requires Authorization: Bearer <enrol...en>.
+//     (Everything under that prefix except /enroll; currently /ready only.)
+//   - /healthz remains unauthenticated (liveness probe).
 func (s *Server) Routes() http.Handler {
 	s.ensureIssuer()
 	mux := http.NewServeMux()
 	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))           // POST = create, GET = list
-	mux.HandleFunc("/v1/works/", s.workPathHandler)       // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
+	mux.Handle("/v1/works/", s.requireBearer(http.HandlerFunc(s.workPathHandler))) // GET, POST .../cancel|queue, GET .../nodes/{n}/logs, GET .../evidence
 	mux.HandleFunc("/v1/workers/enroll", s.enrollHandler) // unauthenticated; issues tokens
 	// /v1/workers/ and /v1/leases/ are mounted through auth middleware.
 	// We can't wrap an http.Handler with a HandleFunc, so we register the
@@ -142,8 +144,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("/v1/workers/", s.requireBearer(http.HandlerFunc(s.workersAuthHandler)))
 	mux.Handle("/v1/leases", s.requireBearer(http.HandlerFunc(s.leasesPathHandler)))
 	mux.Handle("/v1/leases/", s.requireBearer(http.HandlerFunc(s.leaseItemHandler)))
-	mux.HandleFunc("/v1/runners/register", s.registerRunner) // POST runner identity
-	mux.HandleFunc("/v1/runners/", s.runnerPathHandler)      // GET /v1/runners/{id}
+	mux.Handle("/v1/runners/register", s.requireBearer(http.HandlerFunc(s.registerRunner))) // POST runner identity
+	mux.Handle("/v1/runners/", s.requireBearer(http.HandlerFunc(s.runnerPathHandler)))      // GET /v1/runners/{id}
 	mux.Handle("/v1/audit-events", s.requireBearer(http.HandlerFunc(s.auditEventsHandler))) // GET = CloudEvents audit stream
 	mux.Handle("/v1/dora", s.requireBearer(http.HandlerFunc(s.doraHandler)))                // GET = DORA metrics
 	mux.HandleFunc("/healthz", s.healthz)
