@@ -1,0 +1,93 @@
+{
+  "$id": "contract:promotion/1.0",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "candidate_sha": {
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "decision_ref": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "evidence_bundle_id": {
+      "pattern": "^evb_[a-f0-9]{32}$",
+      "type": "string"
+    },
+    "id": {
+      "pattern": "^prp_[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "org": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "policy_decision_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "pull_request_number": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "pull_request_url": {
+      "pattern": "^https://",
+      "type": "string"
+    },
+    "staging_ref": {
+      "pattern": "^refs/heads/.+",
+      "type": "string"
+    },
+    "target": {
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "provider": {
+          "const": "github"
+        },
+        "repository": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "repository",
+        "branch"
+      ],
+      "type": "object"
+    },
+    "work_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "workspace_id": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "org",
+    "work_id",
+    "workspace_id",
+    "candidate_sha",
+    "target",
+    "staging_ref",
+    "pull_request_url",
+    "pull_request_number",
+    "evidence_bundle_id",
+    "decision_ref",
+    "created_at"
+  ],
+  "title": "Aftergraph WORKS governed source promotion proposal",
+  "type": "object"
+}
