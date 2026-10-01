@@ -38,7 +38,7 @@ func TestGitHubAppIssuerMintsRepoScopedToken(t *testing.T) {
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			sawRepo = len(body.Repositories)==1 && body.Repositories[0]=="runtime"
-			sawWrite = body.Permissions["contents"]=="write" && body.Permissions["metadata"]=="read"
+			sawWrite = body.Permissions["contents"]=="write" && len(body.Permissions)==1
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"token":"installation-secret-token",
 				"expires_at":"2026-10-01T19:00:00Z",
