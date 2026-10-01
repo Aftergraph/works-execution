@@ -27,6 +27,8 @@ var (
 	ErrUnsupportedTarget          = errors.New("promotion: unsupported target")
 	ErrNotFound                   = errors.New("promotion: proposal not found")
 	ErrProviderUnavailable        = errors.New("promotion: provider unavailable")
+	ErrMaterializationFailed      = errors.New("promotion: materialization failed")
+	ErrMaterializationMismatch    = errors.New("promotion: materialization lineage mismatch")
 )
 
 type Target struct {
