@@ -27,6 +27,10 @@ func (f *fakeCredentialStore) Put(_ context.Context, workID, provider, name, val
 	f.values[ref.String()] = value
 	return ref, nil
 }
+func (f *fakeCredentialStore) Resolve(_ context.Context, ref *secrets.Ref, _ string) (string, error) {
+	f.mu.Lock(); defer f.mu.Unlock()
+	return f.values[ref.String()], nil
+}
 func (f *fakeCredentialStore) Delete(_ context.Context, ref *secrets.Ref) error {
 	f.mu.Lock(); defer f.mu.Unlock()
 	delete(f.values, ref.String())
