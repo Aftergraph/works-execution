@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -266,10 +267,11 @@ func (p *GitHubWorkspaceProvider) resolveBaselineSHA(ctx context.Context, token 
 		if err := p.doJSON(ctx, token, http.MethodGet, path, nil, &out); err != nil {
 			return "", fmt.Errorf("workspace: verify github baseline sha: %w", err)
 		}
-		if sha, _ := out["sha"].(string); sha != "" && sha != src.SHA {
+		sha, _ := out["sha"].(string)
+		if sha == "" || sha != src.SHA {
 			return "", fmt.Errorf("%w: github baseline sha mismatch", ErrMalformed)
 		}
-		return src.SHA, nil
+		return sha, nil
 	}
 	refName := strings.TrimPrefix(src.Ref, "refs/")
 	var out githubRefObject
@@ -289,7 +291,7 @@ func (p *GitHubWorkspaceProvider) ensureBranch(ctx context.Context, token, repos
 	if err == nil {
 		return nil
 	}
-	if !errorsIs(err, ErrProviderUnavailable) {
+	if !errors.Is(err, ErrProviderUnavailable) {
 		return err
 	}
 	// GitHub returns 422 when the deterministic idempotent ref already exists.
@@ -401,11 +403,6 @@ func (p *GitHubWorkspaceProvider) doJSON(ctx context.Context, bearer, method, pa
 		return fmt.Errorf("%w: decode github response: %v", ErrMalformed, err)
 	}
 	return nil
-}
-
-// errorsIs exists to keep the provider error taxonomy local and obvious.
-func errorsIs(err, target error) bool {
-	return err != nil && (err == target || strings.Contains(err.Error(), target.Error()))
 }
 
 var _ Provider = (*GitHubWorkspaceProvider)(nil)
