@@ -7,9 +7,11 @@ on:
       - .github/workflows/copilot-permission-probe.yml
 permissions:
   contents: read
-  copilot-requests: write
 jobs:
   probe:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      copilot-requests: write
     steps:
-      - run: echo "copilot permission accepted"
+      - run: echo "job-level copilot permission accepted"
