@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,7 +50,9 @@ func TestCloudflareArtifactsCreateImportsAndMintsRevocableToken(t *testing.T) {
 			authLeak = true
 		}
 		switch {
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/repos/agent-1/import"):
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/repos") && r.URL.Query().Get("search") != "":
+			writeJSON(w, map[string]any{"success":true,"result":[]any{}})
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/import"):
 			sawImport = true
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -59,8 +62,8 @@ func TestCloudflareArtifactsCreateImportsAndMintsRevocableToken(t *testing.T) {
 			writeJSON(w, map[string]any{
 				"success": true,
 				"result": map[string]any{
-					"id": "repo_123", "name": "agent-1", "default_branch": "main",
-					"remote": "https://acct.artifacts.cloudflare.net/git/default/agent-1.git",
+					"id": "repo_123", "name": strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/accounts/acct/artifacts/namespaces/default/repos/"), "/import"), "default_branch": "main",
+					"remote": "https://acct.artifacts.cloudflare.net/git/default/workspace.git",
 					"token": "initial-token-must-not-be-persisted",
 				},
 			})
@@ -124,10 +127,15 @@ func TestCloudflareArtifactsForkAndRevoke(t *testing.T) {
 	var revoked string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/repos") && r.URL.Query().Get("search") != "":
+			writeJSON(w, map[string]any{"success":true,"result":[]any{}})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/repos/baseline/fork"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			name, _ := body["name"].(string)
 			writeJSON(w, map[string]any{"success":true,"result":map[string]any{
-				"id":"repo_fork","name":"agent-2","default_branch":"main",
-				"remote":"https://acct.artifacts.cloudflare.net/git/default/agent-2.git",
+				"id":"repo_fork","name":name,"default_branch":"main",
+				"remote":"https://acct.artifacts.cloudflare.net/git/default/"+name+".git",
 				"token":"ignored-initial",
 			}})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tokens"):
@@ -200,4 +208,88 @@ func TestCloudflareArtifactsCandidateUsesImmutableSHA(t *testing.T) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+
+func TestCloudflareArtifactsRestartSafeIdempotentReplay(t *testing.T) {
+	spec := validSpec()
+	spec.Name = "CF Replay"
+	name, prefix, err := cloudflareWorkspaceName(spec)
+	if err != nil { t.Fatal(err) }
+
+	var importedOrForked bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/repos") && r.URL.Query().Get("search") == prefix:
+			writeJSON(w, map[string]any{"success":true,"result":[]any{map[string]any{
+				"id":"repo_existing","name":name,"default_branch":"main",
+				"remote":"https://acct.artifacts.cloudflare.net/git/default/"+name+".git",
+			}}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tokens"):
+			writeJSON(w, map[string]any{"success":true,"result":map[string]any{
+				"id":"tok_replay","plaintext":"replay-token","scope":"write","expires_at":"2026-10-01T19:00:00Z",
+			}})
+		case r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/import") || strings.HasSuffix(r.URL.Path, "/fork")):
+			importedOrForked = true
+			t.Fatalf("idempotent replay attempted repository creation: %s", r.URL.Path)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer ts.Close()
+
+	p, err := NewCloudflareArtifactsProvider(CloudflareArtifactsConfig{
+		AccountID:"acct", Namespace:"default",
+		ControlTokenRef:secrets.Must("secret://cloudflare/control"),
+		TokenTTL:time.Hour, BaseURL:ts.URL,
+	}, fakeResolver{value:"control-secret"}, &fakeCredentialStore{}, ts.Client())
+	if err != nil { t.Fatal(err) }
+
+	ws, err := p.Create(context.Background(), spec)
+	if err != nil { t.Fatal(err) }
+	if importedOrForked { t.Fatal("replay mutated repository set") }
+	if ws.Name != name || ws.ID != "repo_existing" {
+		t.Fatalf("bad replay workspace: %#v", ws)
+	}
+}
+
+func TestCloudflareArtifactsIdempotencyConflictFailsClosed(t *testing.T) {
+	original := validSpec()
+	original.Name = "original"
+	_, prefix, err := cloudflareWorkspaceName(original)
+	if err != nil { t.Fatal(err) }
+
+	changed := original
+	changed.Name = "changed"
+	changedName, _, err := cloudflareWorkspaceName(changed)
+	if err != nil { t.Fatal(err) }
+
+	var minted bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/repos") && r.URL.Query().Get("search") == prefix:
+			writeJSON(w, map[string]any{"success":true,"result":[]any{map[string]any{
+				"id":"repo_original","name":prefix+"different-fingerprint-original","default_branch":"main",
+				"remote":"https://acct.artifacts.cloudflare.net/git/default/original.git",
+			}}})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tokens"):
+			minted = true
+			t.Fatal("credential minted for conflicting replay")
+		default:
+			t.Fatalf("conflict reached unexpected operation for %q: %s %s", changedName, r.Method, r.URL.String())
+		}
+	}))
+	defer ts.Close()
+
+	p, err := NewCloudflareArtifactsProvider(CloudflareArtifactsConfig{
+		AccountID:"acct", Namespace:"default",
+		ControlTokenRef:secrets.Must("secret://cloudflare/control"),
+		TokenTTL:time.Hour, BaseURL:ts.URL,
+	}, fakeResolver{value:"control-secret"}, &fakeCredentialStore{}, ts.Client())
+	if err != nil { t.Fatal(err) }
+
+	if _, err := p.Create(context.Background(), changed); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("got %v want ErrIdempotencyConflict", err)
+	}
+	if minted { t.Fatal("minted credential on conflict") }
 }
