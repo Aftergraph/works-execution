@@ -45,6 +45,7 @@ var (
 	ErrProviderUnavailable   = errors.New("workspace: provider unavailable")
 	ErrNotFound              = errors.New("workspace: not found")
 	ErrForeignWorkspace      = errors.New("workspace: foreign workspace")
+	ErrIdempotencyConflict    = errors.New("workspace: idempotency key conflicts with original creation intent")
 	ErrCredentialRefRequired = errors.New("workspace: credential must be a secret ref")
 	ErrPromotionUnsupported  = errors.New("workspace: provider does not implement promotion")
 )
