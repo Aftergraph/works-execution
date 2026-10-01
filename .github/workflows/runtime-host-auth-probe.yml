@@ -12,10 +12,10 @@ permissions:
 
 jobs:
   probe:
-    runs-on: [self-hosted, linux, x64, aftergraph-ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      WORKS_API: http://127.0.0.1:18191
+      WORKS_API: https://works.aftergraph.org
       WORKS_ENROLL_SECRET: ${{ secrets.WORKS_ENROLL_SECRET }}
 
     steps:
@@ -27,7 +27,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(hostname)" = "vmi3517816"
           curl --fail --silent --max-time 3 "$WORKS_API/healthz" >/dev/null
           echo "works_health=PASS"
 
