@@ -1,0 +1,56 @@
+name: Compile agentic review
+
+on:
+  push:
+    branches:
+      - frontier/agentic-workflows-track
+    paths:
+      - .github/workflows/agentic-review.md
+      - .github/workflows/compile-agentic-review.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compile-agentic-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned gh-aw compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/gh-aw https://github.com/github/gh-aw/releases/download/v0.89.21/linux-amd64
+          curl -fsSL -o /tmp/checksums.txt https://github.com/github/gh-aw/releases/download/v0.89.21/checksums.txt
+          (cd /tmp && grep ' linux-amd64$' checksums.txt | sha256sum --check --strict)
+          chmod +x /tmp/gh-aw
+          /tmp/gh-aw --version
+
+      - name: Compile agentic review
+        shell: bash
+        run: |
+          set -euo pipefail
+          /tmp/gh-aw compile agentic-review --strict
+
+      - name: Commit generated lock file
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add .github/workflows/agentic-review.lock.yml
+          if git diff --cached --quiet; then
+            echo "No generated changes."
+            exit 0
+          fi
+          git config user.name "aftergraph-ci"
+          git config user.email "ci@aftergraph.org"
+          git commit -m "fix(ci): compile Copilot org-billing review workflow"
+          git push
