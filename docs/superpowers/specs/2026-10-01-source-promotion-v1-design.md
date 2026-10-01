@@ -291,32 +291,19 @@ It may not:
 - self-approve the PR;
 - convert successful CI into human authority.
 
-### Candidate materialization
+### Candidate materialization in v1
 
-There are two source cases.
+V1 supports a GitHub workspace candidate whose immutable commit object is already reachable in the canonical GitHub repository.
 
-#### GitHub workspace candidate
+The adapter:
 
-If the candidate already belongs to the target Git repository and commit object is reachable:
+1. verifies the candidate commit exists;
+2. creates or reconciles the deterministic staging ref pointing to that exact candidate SHA;
+3. creates or reconciles the PR from the staging ref to the explicit target branch.
 
-1. verify candidate commit exists;
-2. create deterministic staging ref pointing to candidate SHA;
-3. create/reconcile PR from staging ref to target branch.
+No cherry-pick, content rewrite, merge, or direct target-branch update is permitted.
 
-No cherry-pick or content rewrite is required.
-
-#### External workspace candidate
-
-For Cloudflare Artifacts or future external Git-compatible providers:
-
-1. a separate materializer fetches the immutable candidate SHA from the source remote;
-2. it imports/pushes the Git object to the canonical repository's deterministic staging ref;
-3. it verifies the canonical staging ref resolves to the expected materialized SHA/content lineage;
-4. the promoter opens/reconciles the PR.
-
-The materializer is mechanics only. It receives no authority to select, approve, or merge.
-
-Private-source credential handling remains behind typed secret refs and short-lived resolution scope. Credentials must never be embedded in remote URLs.
+Cloudflare Artifacts and other external Git-compatible candidates require a separate materializer and are explicitly outside this v1 implementation plan. That follow-up may fetch/import immutable Git objects, but it must consume the same promotion authority boundary rather than expanding it.
 
 ## 10. Pull request evidence surface
 
@@ -494,25 +481,14 @@ Where the connected Aftergraph/Sentinel GitHub App provides repository reads, ch
 - race recovery;
 - negative tests proving no merge/target update.
 
-### Slice C — external Git materialization
-
-- Cloudflare/public Git candidate fetch path;
-- typed source credential boundary for private source later;
-- lineage verification.
-
-### Slice D — freeze
+### Slice C — freeze
 
 - `promotion/1.0` proposal schema;
 - adversarial contract tests;
 - generator entry;
 - manifest/hash attestation.
 
-### Slice E — integration
-
-- WORKS orchestration hook;
-- evidence + decision adapters;
-- event/provenance emission;
-- Home OS read model later, after backend lifecycle is stable.
+The implementation plan ends here. WORKS orchestration, external Git materialization, and Home OS read models are follow-up projects that consume the frozen boundary rather than enlarging this plan.
 
 ## 17. Acceptance criteria
 
@@ -538,7 +514,9 @@ The following remain separate future work:
 
 - candidate ranking / multi-agent winner selection;
 - FIHIM Eval Lab adapter;
-- Cloudflare private-repo materialization credentials;
+- Cloudflare/external Git candidate materialization;
+- private-source materialization credentials;
+- WORKS orchestration hook and event/provenance integration;
 - expiration/reaper for abandoned staging refs/PRs;
 - Home OS promotion graph;
 - merge-authority workflow;
