@@ -357,3 +357,50 @@ func TestGitHubBackendGetRejectsWrongPromotionMarker(t *testing.T) {
 		t.Fatalf("got %v want ErrIdempotencyConflict",err)
 	}
 }
+
+
+func TestGitHubBackendGetRejectsStagingRefDrift(t *testing.T) {
+	p := Proposal{
+		ID:"prp_test",
+		Org:"aftergraph",
+		WorkID:"wrk_0123456789abcdef0123456789abcdef",
+		CandidateSHA:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Target:Target{Provider:"github",Repository:"Aftergraph/runtime",Branch:"main"},
+		StagingRef:"refs/heads/works/promotion/key-fingerprint",
+		PullRequestURL:"https://github.com/Aftergraph/runtime/pull/17",
+		PullRequestNumber:17,
+		EvidenceBundleID:"evb_0123456789abcdef0123456789abcdef",
+		DecisionRef:"/org/deadbeef/decisions/promote-1",
+		PolicyDecisionID:"pdr_99999999999999999999999999999999",
+		CreatedAt:time.Date(2026,10,1,18,0,0,0,time.UTC),
+	}
+	marker := proposalMarker(p)
+	refReads := 0
+	ts:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		switch {
+		case r.Method==http.MethodGet && strings.HasSuffix(r.URL.Path,"/pulls/17"):
+			writePromotionJSON(w,map[string]any{
+				"number":17,"html_url":p.PullRequestURL,"created_at":"2026-10-01T18:00:00Z",
+				"body":marker,"head":map[string]any{"ref":"works/promotion/key-fingerprint"},
+				"base":map[string]any{"ref":"main"},
+			})
+		case r.Method==http.MethodGet && strings.Contains(r.URL.Path,"/git/ref/heads/works/promotion/key-fingerprint"):
+			refReads++
+			writePromotionJSON(w,map[string]any{
+				"ref":"refs/heads/works/promotion/key-fingerprint",
+				"object":map[string]any{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","type":"commit"},
+			})
+		default:
+			t.Fatalf("unexpected: %s %s",r.Method,r.URL.String())
+		}
+	}))
+	defer ts.Close()
+	b,_:=NewGitHubBackend(GitHubConfig{
+		ControlTokenRef:secrets.Must("secret://github/control"),APIBase:ts.URL,
+	},promotionResolver{value:"control-secret"},ts.Client())
+	_,err:=b.Get(context.Background(),p)
+	if !errors.Is(err,ErrIdempotencyConflict){
+		t.Fatalf("got %v want ErrIdempotencyConflict",err)
+	}
+	if refReads!=1 { t.Fatalf("staging ref reads=%d want 1",refReads) }
+}
