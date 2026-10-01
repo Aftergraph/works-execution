@@ -31,7 +31,7 @@ func openEconomicSourceStore(t *testing.T) (*SQLiteStore, string) {
 	return st, path
 }
 
-func TestEconomicSourceGenerationSchemaV15(t *testing.T) {
+func TestEconomicSourceGenerationSchemaV16(t *testing.T) {
 	st, _ := openEconomicSourceStore(t)
 	defer st.Close()
 
@@ -39,8 +39,8 @@ func TestEconomicSourceGenerationSchemaV15(t *testing.T) {
 	if err := st.db.QueryRow("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").Scan(&got); err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	if got != 15 || SchemaVersion != 15 {
-		t.Fatalf("expected schema v15, got ledger=%d const=%d", got, SchemaVersion)
+	if got != 16 || SchemaVersion != 16 {
+		t.Fatalf("expected schema v16, got ledger=%d const=%d", got, SchemaVersion)
 	}
 	var table string
 	if err := st.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='economic_source_generations'").Scan(&table); err != nil {
