@@ -168,8 +168,25 @@ func (p *CloudflareArtifactsProvider) Create(ctx context.Context, spec Spec) (Wo
 	return ws, nil
 }
 
-func (p *CloudflareArtifactsProvider) Get(ctx context.Context, id string) (Workspace, error) {
-	return Workspace{}, fmt.Errorf("%w: Cloudflare Artifacts lookup requires persisted WORKS workspace coordinates, not opaque provider id %q", ErrNotFound, id)
+func (p *CloudflareArtifactsProvider) Get(ctx context.Context, handle Workspace) (Workspace, error) {
+	if err := p.assertOwned(handle); err != nil {
+		return Workspace{}, err
+	}
+	token, err := p.controlToken(ctx)
+	if err != nil {
+		return Workspace{}, err
+	}
+	var env cfEnvelope[cfRepoInfo]
+	path := p.repoBase() + "/repos/" + url.PathEscape(handle.Name)
+	if err := p.doJSON(ctx, token, http.MethodGet, path, nil, &env); err != nil {
+		return Workspace{}, err
+	}
+	out := handle
+	out.ID = env.Result.ID
+	out.Name = env.Result.Name
+	out.RemoteURL = env.Result.Remote
+	out.DefaultBranch = env.Result.DefaultBranch
+	return out, nil
 }
 
 func (p *CloudflareArtifactsProvider) Candidate(ctx context.Context, ws Workspace) (Candidate, error) {
