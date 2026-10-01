@@ -41,6 +41,8 @@ func TestGitHubWorkspaceCreateCandidateDestroy(t *testing.T) {
 			t.Fatalf("unexpected auth %q", r.Header.Get("Authorization"))
 		}
 		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/matching-refs/heads/works/"):
+			writeGitJSON(w, []any{})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/git/commits/"+baseline):
 			writeGitJSON(w, map[string]any{"sha":baseline})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
@@ -96,21 +98,30 @@ func TestGitHubWorkspaceCreateCandidateDestroy(t *testing.T) {
 	}
 }
 
-func TestGitHubWorkspaceIdempotentExistingBranchMustMatchBaseline(t *testing.T) {
+func TestGitHubWorkspaceCreateRaceRecoversExactBranch(t *testing.T) {
 	const baseline = "0123456789012345678901234567890123456789"
-	var branch string
+	spec := validSpec()
+	branchWant, _, err := (&GitHubWorkspaceProvider{cfg:GitHubWorkspaceConfig{BranchPrefix:"works"}}).workspaceBranch(spec)
+	if err != nil { t.Fatal(err) }
+
+	matchingCalls := 0
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/matching-refs/heads/works/"):
+			matchingCalls++
+			if matchingCalls == 1 {
+				writeGitJSON(w, []any{})
+				return
+			}
+			writeGitJSON(w, []any{map[string]any{
+				"ref":"refs/heads/"+branchWant,
+				"object":map[string]any{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","type":"commit"},
+			}})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/git/commits/"+baseline):
 			writeGitJSON(w, map[string]any{"sha":baseline})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			branch = strings.TrimPrefix(body["ref"].(string),"refs/heads/")
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			writeGitJSON(w, map[string]any{"message":"Reference already exists"})
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/ref/heads/"):
-			writeGitJSON(w, map[string]any{"ref":"refs/heads/"+branch,"object":map[string]any{"sha":baseline,"type":"commit"}})
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/Aftergraph/runtime":
 			writeGitJSON(w, map[string]any{"clone_url":"https://github.com/Aftergraph/runtime.git"})
 		default:
@@ -124,8 +135,15 @@ func TestGitHubWorkspaceIdempotentExistingBranchMustMatchBaseline(t *testing.T) 
 		APIBase:ts.URL, TokenTTL:time.Hour,
 	}, fakeResolver{value:"control-secret"}, &fakeGitIssuer{}, &fakeCredentialStore{}, ts.Client())
 	if err != nil { t.Fatal(err) }
-	if _, err := p.Create(context.Background(), validSpec()); err != nil {
-		t.Fatalf("idempotent existing branch rejected: %v", err)
+	ws, err := p.Create(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("create race should reconcile exact branch: %v", err)
+	}
+	if ws.DefaultBranch != branchWant {
+		t.Fatalf("branch=%q want %q", ws.DefaultBranch, branchWant)
+	}
+	if matchingCalls != 2 {
+		t.Fatalf("matching refs calls=%d want 2", matchingCalls)
 	}
 }
 
