@@ -408,9 +408,10 @@ func TestGitHubBackendGetRejectsStagingRefDrift(t *testing.T) {
 
 func TestGitHubBackendReconcilesClosedProposalPR(t *testing.T) {
 	req := validRequest()
-	auth := authorizedRequestForTest(t, req)
-	branchName := "works/promotion/" + auth.KeyHash() + "-" + auth.Fingerprint()
-	marker := promotionMarker("prp_"+auth.KeyHash()+"-"+auth.Fingerprint(), req)
+	keyHash, fp, err := promotionIdentity(req)
+	if err != nil { t.Fatal(err) }
+	branchName := "works/promotion/" + keyHash + "-" + fp
+	marker := promotionMarker("prp_"+keyHash+"-"+fp, req)
 	var postedPR bool
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
