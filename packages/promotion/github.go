@@ -249,7 +249,7 @@ func promotionPRBody(id string,req Request,marker string)string{
 
 func proposalFromPull(id string,req Request,branch string,pr promotionPull)Proposal{
 	return Proposal{
-		ID:id,Org:req.Org,WorkID:req.WorkID,CandidateSHA:req.Candidate.SHA,Target:req.Target,
+		ID:id,Org:req.Org,WorkID:req.WorkID,WorkspaceID:req.Workspace.ID,CandidateSHA:req.Candidate.SHA,Target:req.Target,
 		StagingRef:"refs/heads/"+branch,PullRequestURL:pr.HTMLURL,PullRequestNumber:pr.Number,
 		EvidenceBundleID:req.EvidenceBundleID,DecisionRef:req.DecisionRef,PolicyDecisionID:req.PolicyDecisionID,
 		CreatedAt:pr.CreatedAt.UTC(),
