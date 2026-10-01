@@ -26,7 +26,7 @@ func (b *referenceBackend) Propose(_ context.Context, a AuthorizedRequest) (Prop
 	}
 	r:=a.Request()
 	p:=Proposal{
-		ID:"prp_"+a.KeyHash(),Org:r.Org,WorkID:r.WorkID,CandidateSHA:r.Candidate.SHA,
+		ID:"prp_"+a.KeyHash(),Org:r.Org,WorkID:r.WorkID,WorkspaceID:r.Workspace.ID,CandidateSHA:r.Candidate.SHA,
 		Target:r.Target,StagingRef:"refs/heads/works/promotion/"+a.KeyHash()+"-"+a.Fingerprint(),
 		PullRequestURL:"https://github.com/"+r.Target.Repository+"/pull/1",PullRequestNumber:1,
 		EvidenceBundleID:r.EvidenceBundleID,DecisionRef:r.DecisionRef,PolicyDecisionID:r.PolicyDecisionID,
