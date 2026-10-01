@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/JonasAbde/works-execution/packages/secrets"
 )
@@ -316,4 +317,43 @@ func TestGitHubBackendDoesNotDeletePreexistingStagingRefOnPRFailure(t *testing.T
 		t.Fatalf("got %v want ErrProviderUnavailable",err)
 	}
 	if deletes!=0 { t.Fatalf("delete calls=%d",deletes) }
+}
+
+
+func TestGitHubBackendGetRejectsWrongPromotionMarker(t *testing.T) {
+	p := Proposal{
+		ID:"prp_test",
+		Org:"aftergraph",
+		WorkID:"wrk_0123456789abcdef0123456789abcdef",
+		CandidateSHA:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Target:Target{Provider:"github",Repository:"Aftergraph/runtime",Branch:"main"},
+		StagingRef:"refs/heads/works/promotion/key-fingerprint",
+		PullRequestURL:"https://github.com/Aftergraph/runtime/pull/17",
+		PullRequestNumber:17,
+		EvidenceBundleID:"evb_0123456789abcdef0123456789abcdef",
+		DecisionRef:"/org/deadbeef/decisions/promote-1",
+		PolicyDecisionID:"pdr_99999999999999999999999999999999",
+		CreatedAt:time.Date(2026,10,1,18,0,0,0,time.UTC),
+	}
+	ts:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		if r.Method!=http.MethodGet || !strings.HasSuffix(r.URL.Path,"/pulls/17"){
+			t.Fatalf("unexpected: %s %s",r.Method,r.URL.String())
+		}
+		writePromotionJSON(w,map[string]any{
+			"number":17,
+			"html_url":p.PullRequestURL,
+			"created_at":"2026-10-01T18:00:00Z",
+			"body":"foreign PR without Aftergraph promotion marker",
+			"head":map[string]any{"ref":"works/promotion/key-fingerprint"},
+			"base":map[string]any{"ref":"main"},
+		})
+	}))
+	defer ts.Close()
+	b,_:=NewGitHubBackend(GitHubConfig{
+		ControlTokenRef:secrets.Must("secret://github/control"),APIBase:ts.URL,
+	},promotionResolver{value:"control-secret"},ts.Client())
+	_,err:=b.Get(context.Background(),p)
+	if !errors.Is(err,ErrIdempotencyConflict){
+		t.Fatalf("got %v want ErrIdempotencyConflict",err)
+	}
 }
