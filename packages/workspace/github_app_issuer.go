@@ -94,7 +94,6 @@ func (g *GitHubAppIssuer) Issue(ctx context.Context, repository, workID string, 
 		"repositories": []string{repoName},
 		"permissions": map[string]string{
 			"contents": permission,
-			"metadata": "read",
 		},
 	}
 	payload, err := json.Marshal(body)
