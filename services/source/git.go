@@ -18,6 +18,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/JonasAbde/works-execution/internal/fsutil"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -200,7 +202,7 @@ func Checkout(ctx context.Context, opts Options) (*Source, error) {
 				"esac\n"
 			// Write the script under parent so workdir is fresh
 			// for the clone.
-			if err := os.WriteFile(helperPath, []byte(credScript), 0o700); err != nil {
+			if err := fsutil.AtomicWriteFile(helperPath, []byte(credScript), 0o700); err != nil {
 				_ = os.RemoveAll(workdir)
 				return nil, fmt.Errorf("write cred helper: %w", err)
 			}
