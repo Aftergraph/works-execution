@@ -106,6 +106,9 @@ func (b *GitHubBackend) Get(ctx context.Context, proposal Proposal)(Proposal,err
 	if pr.Number!=proposal.PullRequestNumber || pr.Head.Ref!=strings.TrimPrefix(proposal.StagingRef,"refs/heads/") || pr.Base.Ref!=proposal.Target.Branch {
 		return Proposal{},ErrIdempotencyConflict
 	}
+	if !strings.Contains(pr.Body, proposalMarker(proposal)) {
+		return Proposal{},ErrIdempotencyConflict
+	}
 	return proposal,nil
 }
 
@@ -204,6 +207,14 @@ func classifyPromotionPulls(prs []promotionPull,branch,base,marker string)(promo
 		return pr,true,false
 	}
 	return promotionPull{},false,false
+}
+
+func proposalMarker(p Proposal) string {
+	return "<!-- aftergraph-promotion:v1\n"+
+		"id="+p.ID+"\n"+
+		"candidate="+p.CandidateSHA+"\n"+
+		"evidence="+p.EvidenceBundleID+"\n"+
+		"decision="+p.DecisionRef+"\n-->"
 }
 
 func promotionMarker(id string,req Request)string{
