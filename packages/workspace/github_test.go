@@ -23,9 +23,9 @@ func (f *fakeGitIssuer) Issue(_ context.Context, repository, workID string, mode
 	f.issued = append(f.issued, repository+"|"+workID+"|"+string(mode))
 	return IssuedCredential{ID:"gh_tok_1", Plaintext:"short-lived-git-token", ExpiresAt:time.Now().Add(ttl).UTC()}, nil
 }
-func (f *fakeGitIssuer) Revoke(_ context.Context, id string) error {
+func (f *fakeGitIssuer) Revoke(_ context.Context, id, plaintext string) error {
 	f.mu.Lock(); defer f.mu.Unlock()
-	f.revoked = append(f.revoked,id)
+	f.revoked = append(f.revoked,id+"|"+plaintext)
 	return nil
 }
 
@@ -90,7 +90,7 @@ func TestGitHubWorkspaceCreateCandidateDestroy(t *testing.T) {
 
 	if err := p.Destroy(context.Background(), ws); err != nil { t.Fatal(err) }
 	if !deleted { t.Fatal("workspace branch not deleted") }
-	if len(issuer.revoked) != 1 || issuer.revoked[0] != "gh_tok_1" {
+	if len(issuer.revoked) != 1 || issuer.revoked[0] != "gh_tok_1|short-lived-git-token" {
 		t.Fatalf("credential not revoked: %#v", issuer.revoked)
 	}
 }
