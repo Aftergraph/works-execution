@@ -26,6 +26,12 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./... -count=1
+      - name: Merge queue negative canary
+        if: github.event_name == 'merge_group' && hashFiles('.github/MERGE_QUEUE_NEGATIVE_CANARY') != ''
+        shell: bash
+        run: |
+          echo "intentional fail-closed canary: required test context must block merge queue"
+          exit 1
       - name: Integrity before/after benchmark
         shell: bash
         run: |
