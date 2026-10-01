@@ -62,7 +62,7 @@ func TestReferenceProviderConformance(t *testing.T) {
 	}
 
 	if err := p.Destroy(ctx, ws); err != nil { t.Fatal(err) }
-	if _, err := p.Get(ctx, ws.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := p.Get(ctx, ws); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("destroy did not remove workspace: %v", err)
 	}
 }
