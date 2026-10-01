@@ -96,6 +96,7 @@ type Workspace struct {
 	Baseline      SourceRef   `json:"baseline"`
 	Mode          Mode        `json:"mode"`
 	CredentialRef *secrets.Ref `json:"credential_ref"`
+	CredentialID  string       `json:"credential_id,omitempty"` // provider token id; non-secret, used for deterministic revocation
 	CreatedAt     time.Time   `json:"created_at"`
 	ExpiresAt     time.Time   `json:"expires_at,omitempty"`
 }
