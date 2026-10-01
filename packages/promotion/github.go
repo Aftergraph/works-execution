@@ -220,17 +220,27 @@ func classifyPromotionPulls(prs []promotionPull,branch,base,marker string)(promo
 func proposalMarker(p Proposal) string {
 	return "<!-- aftergraph-promotion:v1\n"+
 		"id="+p.ID+"\n"+
+		"org="+p.Org+"\n"+
+		"work="+p.WorkID+"\n"+
+		"workspace="+p.WorkspaceID+"\n"+
 		"candidate="+p.CandidateSHA+"\n"+
 		"evidence="+p.EvidenceBundleID+"\n"+
-		"decision="+p.DecisionRef+"\n-->"
+		"decision="+p.DecisionRef+"\n"+
+		"policy="+p.PolicyDecisionID+"\n"+
+		"target="+p.Target.Repository+"#"+p.Target.Branch+"\n-->"
 }
 
 func promotionMarker(id string,req Request)string{
 	return "<!-- aftergraph-promotion:v1\n"+
 		"id="+id+"\n"+
+		"org="+req.Org+"\n"+
+		"work="+req.WorkID+"\n"+
+		"workspace="+req.Workspace.ID+"\n"+
 		"candidate="+req.Candidate.SHA+"\n"+
 		"evidence="+req.EvidenceBundleID+"\n"+
-		"decision="+req.DecisionRef+"\n-->"
+		"decision="+req.DecisionRef+"\n"+
+		"policy="+req.PolicyDecisionID+"\n"+
+		"target="+req.Target.Repository+"#"+req.Target.Branch+"\n-->"
 }
 
 func promotionPRBody(id string,req Request,marker string)string{
@@ -238,6 +248,7 @@ func promotionPRBody(id string,req Request,marker string)string{
 	if policy==""{policy="(none)"}
 	return "Aftergraph WORKS source-promotion proposal\n\n"+
 		"Work: "+req.WorkID+"\n"+
+		"Source workspace: "+req.Workspace.ProviderID+":"+req.Workspace.ID+"\n"+
 		"Candidate: "+req.Candidate.SHA+"\n"+
 		"Evidence: "+req.EvidenceBundleID+"\n"+
 		"Decision: "+req.DecisionRef+"\n"+
