@@ -34,6 +34,7 @@ type CloudflareArtifactsConfig struct {
 	ControlTokenRef *secrets.Ref
 	ControlScope    string
 	TokenTTL        time.Duration
+	ReadyTimeout    time.Duration
 	BaseURL         string // test override; defaults to api.cloudflare.com/client/v4
 }
 
@@ -56,6 +57,12 @@ func NewCloudflareArtifactsProvider(cfg CloudflareArtifactsConfig, resolver secr
 	}
 	if cfg.TokenTTL < time.Minute || cfg.TokenTTL > 365*24*time.Hour {
 		return nil, fmt.Errorf("%w: token ttl must be between 1 minute and 1 year", ErrMalformed)
+	}
+	if cfg.ReadyTimeout == 0 {
+		cfg.ReadyTimeout = 15 * time.Second
+	}
+	if cfg.ReadyTimeout < 0 {
+		return nil, fmt.Errorf("%w: ready timeout must be non-negative", ErrMalformed)
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.cloudflare.com/client/v4"
@@ -318,14 +325,34 @@ func (p *CloudflareArtifactsProvider) importRepo(ctx context.Context, token stri
 	// If the caller supplied an immutable baseline SHA, prove the imported
 	// repository contains it before handing the workspace to an agent.
 	if spec.Baseline.SHA != "" {
-		verifyPath := p.repoBase() + "/repos/" + url.PathEscape(spec.Name) + "/commit/" + url.PathEscape(spec.Baseline.SHA)
-		var verify map[string]any
-		if err := p.doJSON(ctx, token, http.MethodGet, verifyPath, nil, &verify); err != nil {
+		if err := p.waitForCommit(ctx, token, spec.Name, spec.Baseline.SHA); err != nil {
 			_ = p.deleteRepo(ctx, token, spec.Name)
 			return cfRepoResult{}, fmt.Errorf("workspace: imported baseline SHA unavailable: %w", err)
 		}
 	}
 	return env.Result, nil
+}
+
+func (p *CloudflareArtifactsProvider) waitForCommit(ctx context.Context, controlToken, repo, sha string) error {
+	deadline := time.Now().Add(p.cfg.ReadyTimeout)
+	path := p.repoBase() + "/repos/" + url.PathEscape(repo) + "/commit/" + url.PathEscape(sha)
+	for {
+		var verify map[string]any
+		err := p.doJSON(ctx, controlToken, http.MethodGet, path, nil, &verify)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrProviderUnavailable) || time.Now().After(deadline) {
+			return err
+		}
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func (p *CloudflareArtifactsProvider) mintToken(ctx context.Context, controlToken, repo string, mode Mode, ttl time.Duration) (cfTokenResult, error) {
@@ -481,4 +508,3 @@ func isSHA1(s string) bool {
 }
 
 var _ Provider = (*CloudflareArtifactsProvider)(nil)
-var _ = errors.Is
