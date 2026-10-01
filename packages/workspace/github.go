@@ -139,7 +139,7 @@ func (p *GitHubWorkspaceProvider) Create(ctx context.Context, spec Spec) (Worksp
 	repoMeta, err := p.getRepo(ctx, control, repository)
 	if err != nil {
 		_ = p.credentials.Delete(ctx, ref)
-		_ = p.issuer.Revoke(ctx, issued.ID)
+		_ = p.issuer.Revoke(ctx, issued.ID, issued.Plaintext)
 		_ = p.deleteBranch(ctx, control, repository, branch)
 		return Workspace{}, err
 	}
@@ -162,7 +162,7 @@ func (p *GitHubWorkspaceProvider) Create(ctx context.Context, spec Spec) (Worksp
 	}
 	if err := ws.Validate(); err != nil {
 		_ = p.credentials.Delete(ctx, ref)
-		_ = p.issuer.Revoke(ctx, issued.ID)
+		_ = p.issuer.Revoke(ctx, issued.ID, issued.Plaintext)
 		_ = p.deleteBranch(ctx, control, repository, branch)
 		return Workspace{}, err
 	}
@@ -219,13 +219,18 @@ func (p *GitHubWorkspaceProvider) RevokeCredential(ctx context.Context, ws Works
 	if ws.CredentialID == "" {
 		return fmt.Errorf("%w: missing github credential id", ErrMalformed)
 	}
-	if err := p.issuer.Revoke(ctx, ws.CredentialID); err != nil {
+	if ws.CredentialRef == nil {
+		return ErrCredentialRefRequired
+	}
+	plaintext, err := p.credentials.Resolve(ctx, ws.CredentialRef, ws.WorkID)
+	if err != nil {
+		return fmt.Errorf("workspace: resolve github credential for revoke: %w", err)
+	}
+	if err := p.issuer.Revoke(ctx, ws.CredentialID, plaintext); err != nil {
 		return fmt.Errorf("workspace: revoke github credential: %w", err)
 	}
-	if ws.CredentialRef != nil {
-		if err := p.credentials.Delete(ctx, ws.CredentialRef); err != nil {
-			return fmt.Errorf("workspace: delete credential ref: %w", err)
-		}
+	if err := p.credentials.Delete(ctx, ws.CredentialRef); err != nil {
+		return fmt.Errorf("workspace: delete credential ref: %w", err)
 	}
 	return nil
 }
