@@ -15,7 +15,7 @@ concurrency:
 jobs:
   review:
     name: sentinel/review
-    runs-on: [self-hosted, linux, x64, aftergraph-ci]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Fetch canonical Sentinel
