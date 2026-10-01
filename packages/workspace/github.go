@@ -34,7 +34,7 @@ type IssuedCredential struct {
 // issuer; WORKS depends only on this boundary, never on app private keys.
 type GitCredentialIssuer interface {
 	Issue(ctx context.Context, repository, workID string, mode Mode, ttl time.Duration) (IssuedCredential, error)
-	Revoke(ctx context.Context, id string) error
+	Revoke(ctx context.Context, id, plaintext string) error
 }
 
 type GitHubWorkspaceConfig struct {
@@ -131,7 +131,7 @@ func (p *GitHubWorkspaceProvider) Create(ctx context.Context, spec Spec) (Worksp
 	}
 	ref, err := p.credentials.Put(ctx, spec.WorkID, p.ID(), issued.ID, issued.Plaintext, issued.ExpiresAt)
 	if err != nil {
-		_ = p.issuer.Revoke(ctx, issued.ID)
+		_ = p.issuer.Revoke(ctx, issued.ID, issued.Plaintext)
 		_ = p.deleteBranch(ctx, control, repository, branch)
 		return Workspace{}, fmt.Errorf("workspace: persist github credential ref: %w", err)
 	}
@@ -238,8 +238,10 @@ func (p *GitHubWorkspaceProvider) Destroy(ctx context.Context, ws Workspace) err
 	if err != nil {
 		return err
 	}
-	if ws.CredentialID != "" {
-		_ = p.issuer.Revoke(ctx, ws.CredentialID)
+	if ws.CredentialID != "" && ws.CredentialRef != nil {
+		if plaintext, resolveErr := p.credentials.Resolve(ctx, ws.CredentialRef, ws.WorkID); resolveErr == nil {
+			_ = p.issuer.Revoke(ctx, ws.CredentialID, plaintext)
+		}
 	}
 	if err := p.deleteBranch(ctx, control, ws.Name, ws.DefaultBranch); err != nil {
 		return err
