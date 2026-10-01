@@ -66,6 +66,14 @@ func ConformanceSuite(t *testing.T, p Provider) {
 		}
 	})
 
+	t.Run("create/replay-different-spec-fails-closed", func(t *testing.T) {
+		changed := base
+		changed.Name = "conflicting-intent"
+		if _, err := p.Create(ctx, changed); !errors.Is(err, ErrIdempotencyConflict) {
+			t.Fatalf("changed intent with same idempotency key: got %v want ErrIdempotencyConflict", err)
+		}
+	})
+
 	ws, err := p.Create(ctx, Spec{
 		IdempotencyKey: "conf-2",
 		WorkID:         base.WorkID,
