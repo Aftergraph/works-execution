@@ -194,10 +194,11 @@ func TestCloudflareArtifactsCandidateUsesImmutableSHA(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 
 	ws := Workspace{
-		ID:"repo_3", ProviderID:CloudflareArtifactsProviderID, Org:"aftergraph",
+		ProviderID:CloudflareArtifactsProviderID, Org:"aftergraph",
 		WorkID:"wrk_0123456789abcdef0123456789abcdef", Name:"agent-3",
 		DefaultBranch:"main",
 	}
+	ws.ID = workspaceHandleID(ws.ProviderID, ws.Org, ws.WorkID, ws.Name, ws.DefaultBranch)
 	c, err := p.Candidate(context.Background(), ws)
 	if err != nil { t.Fatal(err) }
 	if c.SHA != sha || c.Ref != "refs/heads/main" {
@@ -248,8 +249,9 @@ func TestCloudflareArtifactsRestartSafeIdempotentReplay(t *testing.T) {
 	ws, err := p.Create(context.Background(), spec)
 	if err != nil { t.Fatal(err) }
 	if importedOrForked { t.Fatal("replay mutated repository set") }
-	if ws.Name != name || ws.ID != "repo_existing" {
-		t.Fatalf("bad replay workspace: %#v", ws)
+	wantID := workspaceHandleID(CloudflareArtifactsProviderID, spec.Org, spec.WorkID, name, "main")
+	if ws.Name != name || ws.ID != wantID {
+		t.Fatalf("bad replay workspace: %#v wantID=%q", ws, wantID)
 	}
 }
 

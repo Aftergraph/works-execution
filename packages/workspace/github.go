@@ -144,7 +144,7 @@ func (p *GitHubWorkspaceProvider) Create(ctx context.Context, spec Spec) (Worksp
 
 	now := time.Now().UTC()
 	ws := Workspace{
-		ID:            repository + "#" + branch,
+		ID:            workspaceHandleID(p.ID(), spec.Org, spec.WorkID, repository, branch),
 		ProviderID:    p.ID(),
 		Org:           spec.Org,
 		WorkID:        spec.WorkID,
@@ -256,11 +256,11 @@ func (p *GitHubWorkspaceProvider) Destroy(ctx context.Context, ws Workspace) err
 }
 
 func (p *GitHubWorkspaceProvider) assertOwned(ws Workspace) error {
-	if ws.ProviderID != p.ID() {
-		return ErrForeignWorkspace
-	}
-	if ws.ID == "" || ws.Org == "" || ws.WorkID == "" || !validGitHubRepository(ws.Name) || ws.DefaultBranch == "" {
+	if ws.Org == "" || ws.WorkID == "" || !validGitHubRepository(ws.Name) || ws.DefaultBranch == "" {
 		return fmt.Errorf("%w: incomplete github workspace handle", ErrMalformed)
+	}
+	if !workspaceHandleOwnedBy(ws, p.ID()) {
+		return ErrForeignWorkspace
 	}
 	return nil
 }
