@@ -457,6 +457,45 @@ SCHEMAS = {
             }
         }
     },
+    "promotion": {
+        "version": "1.0", "adr": "ADR-0031", "owner": "works-execution",
+        "schema": {
+            "$id": "contract:promotion/1.0",
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "title": "Aftergraph WORKS governed source promotion proposal",
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "id", "org", "work_id", "workspace_id", "candidate_sha", "target",
+                "staging_ref", "pull_request_url", "pull_request_number",
+                "evidence_bundle_id", "decision_ref", "created_at"
+            ],
+            "properties": {
+                "id": {"type": "string", "pattern": "^prp_[A-Za-z0-9_-]+$"},
+                "org": {"type": "string", "minLength": 1},
+                "work_id": {"type": "string", "minLength": 1},
+                "workspace_id": {"type": "string", "minLength": 1},
+                "candidate_sha": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+                "target": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["provider", "repository", "branch"],
+                    "properties": {
+                        "provider": {"const": "github"},
+                        "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
+                        "branch": {"type": "string", "minLength": 1}
+                    }
+                },
+                "staging_ref": {"type": "string", "pattern": "^refs/heads/.+"},
+                "pull_request_url": {"type": "string", "pattern": "^https://"},
+                "pull_request_number": {"type": "integer", "minimum": 1},
+                "evidence_bundle_id": {"type": "string", "pattern": "^evb_[a-f0-9]{32}$"},
+                "decision_ref": {"type": "string", "minLength": 1},
+                "policy_decision_id": {"type": "string", "minLength": 1},
+                "created_at": {"type": "string", "format": "date-time"}
+            }
+        }
+    },
 }
 
 

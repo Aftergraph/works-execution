@@ -547,3 +547,58 @@ func TestWorkspaceV1SchemaConformance(t *testing.T) {
 		})
 	}
 }
+
+
+func TestPromotionV1SchemaConformance(t *testing.T) {
+	sch := compile(t, "promotion")
+	valid := fixture(`{
+		"id":"prp_4d2aa94968a9e74726b5ad92-e7b757f959344988ef015e0d",
+		"org":"aftergraph",
+		"work_id":"wrk_0123456789abcdef0123456789abcdef",
+		"workspace_id":"wsp_1",
+		"candidate_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"target":{"provider":"github","repository":"Aftergraph/runtime","branch":"main"},
+		"staging_ref":"refs/heads/works/promotion/4d2aa94968a9e74726b5ad92-e7b757f959344988ef015e0d",
+		"pull_request_url":"https://github.com/Aftergraph/runtime/pull/17",
+		"pull_request_number":17,
+		"evidence_bundle_id":"evb_0123456789abcdef0123456789abcdef",
+		"decision_ref":"/org/deadbeef/decisions/promote-1",
+		"policy_decision_id":"pdr_99999999999999999999999999999999",
+		"created_at":"2026-10-01T18:00:00Z"
+	}`)
+	mustPass(t, sch, "promotion-v1-valid", valid)
+
+	base := func() map[string]any {
+		return fixture(`{
+			"id":"prp_4d2aa94968a9e74726b5ad92-e7b757f959344988ef015e0d",
+			"org":"aftergraph","work_id":"wrk_0123456789abcdef0123456789abcdef",
+			"workspace_id":"wsp_1","candidate_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"target":{"provider":"github","repository":"Aftergraph/runtime","branch":"main"},
+			"staging_ref":"refs/heads/works/promotion/4d2aa94968a9e74726b5ad92-e7b757f959344988ef015e0d",
+			"pull_request_url":"https://github.com/Aftergraph/runtime/pull/17","pull_request_number":17,
+			"evidence_bundle_id":"evb_0123456789abcdef0123456789abcdef",
+			"decision_ref":"/org/deadbeef/decisions/promote-1",
+			"created_at":"2026-10-01T18:00:00Z"
+		}`)
+	}
+	cases := map[string]func(map[string]any){
+		"non_git_candidate": func(d map[string]any){ d["candidate_sha"]="branch-head" },
+		"missing_evidence": func(d map[string]any){ delete(d,"evidence_bundle_id") },
+		"missing_decision": func(d map[string]any){ delete(d,"decision_ref") },
+		"empty_target": func(d map[string]any){ d["target"]=map[string]any{} },
+		"raw_token": func(d map[string]any){ d["raw_token"]="ghs_secret" },
+		"credential_ref": func(d map[string]any){ d["credential_ref"]="secret://github/token" },
+		"merged_state": func(d map[string]any){ d["merged"]=true },
+		"released_state": func(d map[string]any){ d["released"]=true },
+		"auto_merge_state": func(d map[string]any){ d["auto_merge"]=true },
+		"approved_state": func(d map[string]any){ d["approved"]=true },
+		"unknown_field": func(d map[string]any){ d["future_authority"]="must-not-be-here" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T){
+			doc:=base()
+			mutate(doc)
+			mustFail(t,sch,name,doc)
+		})
+	}
+}
