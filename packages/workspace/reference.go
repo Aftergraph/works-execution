@@ -66,12 +66,18 @@ func (p *ReferenceProvider) Create(_ context.Context, spec Spec) (Workspace, err
 	return ws, nil
 }
 
-func (p *ReferenceProvider) Get(_ context.Context, id string) (Workspace, error) {
+func (p *ReferenceProvider) Get(_ context.Context, handle Workspace) (Workspace, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	ws, ok := p.byID[id]
+	ws, ok := p.byID[handle.ID]
 	if !ok {
 		return Workspace{}, ErrNotFound
+	}
+	if handle.Org != "" && ws.Org != handle.Org {
+		return Workspace{}, ErrForeignWorkspace
+	}
+	if handle.WorkID != "" && ws.WorkID != handle.WorkID {
+		return Workspace{}, ErrForeignWorkspace
 	}
 	return ws, nil
 }
