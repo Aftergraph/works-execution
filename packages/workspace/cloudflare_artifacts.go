@@ -23,6 +23,7 @@ const CloudflareArtifactsProviderID = "cloudflare-artifacts"
 // must persist it outside WORKS state and return an inert secret:// ref.
 type CredentialStore interface {
 	Put(ctx context.Context, workID, provider, name, value string, expiresAt time.Time) (*secrets.Ref, error)
+	Resolve(ctx context.Context, ref *secrets.Ref, workID string) (string, error)
 	Delete(ctx context.Context, ref *secrets.Ref) error
 }
 
