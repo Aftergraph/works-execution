@@ -29,9 +29,31 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          curl -fsSL -o /tmp/gh-aw https://github.com/github/gh-aw/releases/download/v0.89.21/linux-amd64
+          curl -fsSL -o /tmp/linux-amd64 https://github.com/github/gh-aw/releases/download/v0.89.21/linux-amd64
           curl -fsSL -o /tmp/checksums.txt https://github.com/github/gh-aw/releases/download/v0.89.21/checksums.txt
-          (cd /tmp && grep ' linux-amd64$' checksums.txt | sha256sum --check --strict)
+          (cd /tmp && grep ' linux-amd64
+
+      - name: Compile agentic review
+        shell: bash
+        run: |
+          set -euo pipefail
+          /tmp/gh-aw compile agentic-review --strict
+
+      - name: Commit generated lock file
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add .github/workflows/agentic-review.lock.yml
+          if git diff --cached --quiet; then
+            echo "No generated changes."
+            exit 0
+          fi
+          git config user.name "aftergraph-ci"
+          git config user.email "ci@aftergraph.org"
+          git commit -m "fix(ci): compile Copilot org-billing review workflow"
+          git push
+ checksums.txt | sha256sum --check --strict)
+          mv /tmp/linux-amd64 /tmp/gh-aw
           chmod +x /tmp/gh-aw
           /tmp/gh-aw --version
 
