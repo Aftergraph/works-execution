@@ -1,0 +1,118 @@
+{
+  "$id": "contract:workspace/1.0",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "source_ref": {
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "ref"
+          ]
+        },
+        {
+          "required": [
+            "sha"
+          ]
+        }
+      ],
+      "properties": {
+        "provider": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "ref": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "remote_url": {
+          "pattern": "^https://",
+          "type": "string"
+        },
+        "repository": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha": {
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "repository"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "baseline": {
+      "$ref": "#/definitions/source_ref"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "credential_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "credential_ref": {
+      "pattern": "^secret://[a-z0-9-]+/[A-Za-z0-9_-]+$",
+      "type": "string"
+    },
+    "default_branch": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "mode": {
+      "enum": [
+        "read",
+        "write"
+      ]
+    },
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "org": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "provider_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "remote_url": {
+      "pattern": "^https://",
+      "type": "string"
+    },
+    "work_id": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "provider_id",
+    "org",
+    "work_id",
+    "name",
+    "remote_url",
+    "baseline",
+    "mode",
+    "credential_ref",
+    "created_at"
+  ],
+  "title": "Aftergraph WORKS durable source workspace handle",
+  "type": "object"
+}

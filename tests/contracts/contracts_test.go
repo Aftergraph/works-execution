@@ -475,3 +475,75 @@ func TestExecutionContextV21SchemaConformance(t *testing.T) {
 	bad := fixture(`{"schema":"execution-context/1.0","execution_context_id":"ctx_11111111111111111111111111111111","organization_id":"org_22222222222222222222222222222222","tenant_id":"ten_33333333333333333333333333333333","principal_id":"prn_44444444444444444444444444444444","mission_id":"mis_example","authority_lease_id":"lse_55555555555555555555555555555555","work_id":"wrk_66666666666666666666666666666666","worker_id":"wrkr_77777777777777777777777777777777","worker_lease_id":"auth_88888888888888888888888888888888","admission_decision_id":"pdr_99999999999999999999999999999999","trace_id":"trc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)
 	mustFail(t, sch, "execution-context-swapped-leases", bad)
 }
+
+
+func TestWorkspaceV1SchemaConformance(t *testing.T) {
+	sch := compile(t, "workspace")
+
+	valid := fixture(`{
+		"id":"wsp_1",
+		"provider_id":"github",
+		"org":"aftergraph",
+		"work_id":"wrk_0123456789abcdef0123456789abcdef",
+		"name":"Aftergraph/runtime",
+		"remote_url":"https://github.com/Aftergraph/runtime.git",
+		"default_branch":"works/example",
+		"baseline":{
+			"provider":"github",
+			"repository":"Aftergraph/runtime",
+			"ref":"refs/heads/main",
+			"sha":"0123456789012345678901234567890123456789"
+		},
+		"mode":"write",
+		"credential_ref":"secret://workspace/token_1",
+		"credential_id":"tok_1",
+		"created_at":"2026-10-01T18:00:00Z",
+		"expires_at":"2026-10-01T19:00:00Z"
+	}`)
+	mustPass(t, sch, "workspace-v1-valid", valid)
+
+	cases := map[string]map[string]any{
+		"credential_ref_object": {
+			"id":"wsp_1","provider_id":"github","org":"aftergraph","work_id":"wrk_0123456789abcdef0123456789abcdef",
+			"name":"Aftergraph/runtime","remote_url":"https://github.com/Aftergraph/runtime.git",
+			"baseline":map[string]any{"provider":"github","repository":"Aftergraph/runtime","ref":"refs/heads/main"},
+			"mode":"write","credential_ref":map[string]any{"Value":"secret://workspace/token_1"},
+			"created_at":"2026-10-01T18:00:00Z",
+		},
+		"plaintext_credential": {
+			"id":"wsp_1","provider_id":"github","org":"aftergraph","work_id":"wrk_0123456789abcdef0123456789abcdef",
+			"name":"Aftergraph/runtime","remote_url":"https://github.com/Aftergraph/runtime.git",
+			"baseline":map[string]any{"provider":"github","repository":"Aftergraph/runtime","ref":"refs/heads/main"},
+			"mode":"write","credential_ref":"ghs_plaintext_secret",
+			"created_at":"2026-10-01T18:00:00Z",
+		},
+		"invalid_mode": {
+			"id":"wsp_1","provider_id":"github","org":"aftergraph","work_id":"wrk_0123456789abcdef0123456789abcdef",
+			"name":"Aftergraph/runtime","remote_url":"https://github.com/Aftergraph/runtime.git",
+			"baseline":map[string]any{"provider":"github","repository":"Aftergraph/runtime","ref":"refs/heads/main"},
+			"mode":"owner","credential_ref":"secret://workspace/token_1",
+			"created_at":"2026-10-01T18:00:00Z",
+		},
+		"baseline_without_ref_or_sha": {
+			"id":"wsp_1","provider_id":"github","org":"aftergraph","work_id":"wrk_0123456789abcdef0123456789abcdef",
+			"name":"Aftergraph/runtime","remote_url":"https://github.com/Aftergraph/runtime.git",
+			"baseline":map[string]any{"provider":"github","repository":"Aftergraph/runtime"},
+			"mode":"write","credential_ref":"secret://workspace/token_1",
+			"created_at":"2026-10-01T18:00:00Z",
+		},
+		"raw_token_unknown_field": {
+			"id":"wsp_1","provider_id":"github","org":"aftergraph","work_id":"wrk_0123456789abcdef0123456789abcdef",
+			"name":"Aftergraph/runtime","remote_url":"https://github.com/Aftergraph/runtime.git",
+			"baseline":map[string]any{"provider":"github","repository":"Aftergraph/runtime","ref":"refs/heads/main"},
+			"mode":"write","credential_ref":"secret://workspace/token_1",
+			"created_at":"2026-10-01T18:00:00Z","raw_token":"must-never-serialize",
+		},
+	}
+	for name, doc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := sch.Validate(doc); err == nil {
+				t.Fatalf("adversarial workspace fixture accepted: %s", name)
+			}
+		})
+	}
+}

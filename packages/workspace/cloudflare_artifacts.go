@@ -68,10 +68,15 @@ func NewCloudflareArtifactsProvider(cfg CloudflareArtifactsConfig, resolver secr
 func (p *CloudflareArtifactsProvider) ID() string { return CloudflareArtifactsProviderID }
 
 type cfEnvelope[T any] struct {
-	Result   T         `json:"result"`
-	Success  bool      `json:"success"`
-	Errors   []cfError `json:"errors"`
-	Messages []cfError `json:"messages"`
+	Result     T             `json:"result"`
+	Success    bool          `json:"success"`
+	Errors     []cfError     `json:"errors"`
+	Messages   []cfError     `json:"messages"`
+	ResultInfo *cfResultInfo `json:"result_info,omitempty"`
+}
+
+type cfResultInfo struct {
+	Cursor string `json:"cursor"`
 }
 
 type cfError struct {
@@ -110,15 +115,53 @@ func (p *CloudflareArtifactsProvider) Create(ctx context.Context, spec Spec) (Wo
 		return Workspace{}, err
 	}
 
-	var created cfRepoResult
-	switch spec.Baseline.Provider {
-	case CloudflareArtifactsProviderID:
-		created, err = p.fork(ctx, token, spec)
-	default:
-		created, err = p.importRepo(ctx, token, spec)
-	}
+	repoName, keyPrefix, err := cloudflareWorkspaceName(spec)
 	if err != nil {
 		return Workspace{}, err
+	}
+	existing, exact, conflict, err := p.findWorkspaceRepo(ctx, token, keyPrefix, repoName)
+	if err != nil {
+		return Workspace{}, err
+	}
+	if conflict {
+		return Workspace{}, ErrIdempotencyConflict
+	}
+
+	createdNow := false
+	var created cfRepoResult
+	if exact {
+		created = cfRepoResult{
+			ID: existing.ID, Name: existing.Name,
+			DefaultBranch: existing.DefaultBranch, Remote: existing.Remote,
+		}
+	} else {
+		createSpec := spec
+		createSpec.Name = repoName
+		switch createSpec.Baseline.Provider {
+		case CloudflareArtifactsProviderID:
+			created, err = p.fork(ctx, token, createSpec)
+		default:
+			created, err = p.importRepo(ctx, token, createSpec)
+		}
+		if err == nil {
+			createdNow = true
+		} else if errors.Is(err, ErrProviderUnavailable) {
+			// Recover create races (Cloudflare commonly reports 409 while another
+			// actor completed the deterministic create).
+			existing, exact, conflict, readErr := p.findWorkspaceRepo(ctx, token, keyPrefix, repoName)
+			if readErr == nil && exact {
+				created = cfRepoResult{
+					ID: existing.ID, Name: existing.Name,
+					DefaultBranch: existing.DefaultBranch, Remote: existing.Remote,
+				}
+				err = nil
+			} else if readErr == nil && conflict {
+				return Workspace{}, ErrIdempotencyConflict
+			}
+		}
+		if err != nil {
+			return Workspace{}, err
+		}
 	}
 
 	// The initial token returned by create/import/fork is intentionally never
@@ -126,19 +169,19 @@ func (p *CloudflareArtifactsProvider) Create(ctx context.Context, spec Spec) (Wo
 	// that can later be revoked deterministically through the REST API.
 	minted, err := p.mintToken(ctx, token, created.Name, spec.Mode, p.cfg.TokenTTL)
 	if err != nil {
-		_ = p.deleteRepo(ctx, token, created.Name)
+		if createdNow { _ = p.deleteRepo(ctx, token, created.Name) }
 		return Workspace{}, err
 	}
 	expiresAt, err := time.Parse(time.RFC3339, minted.ExpiresAt)
 	if err != nil {
 		_ = p.revokeToken(ctx, token, minted.ID)
-		_ = p.deleteRepo(ctx, token, created.Name)
+		if createdNow { _ = p.deleteRepo(ctx, token, created.Name) }
 		return Workspace{}, fmt.Errorf("workspace: parse cloudflare token expiry: %w", err)
 	}
 	credRef, err := p.credentials.Put(ctx, spec.WorkID, p.ID(), minted.ID, minted.Plaintext, expiresAt)
 	if err != nil {
 		_ = p.revokeToken(ctx, token, minted.ID)
-		_ = p.deleteRepo(ctx, token, created.Name)
+		if createdNow { _ = p.deleteRepo(ctx, token, created.Name) }
 		return Workspace{}, fmt.Errorf("workspace: persist cloudflare credential ref: %w", err)
 	}
 
@@ -161,7 +204,7 @@ func (p *CloudflareArtifactsProvider) Create(ctx context.Context, spec Spec) (Wo
 	if err := ws.Validate(); err != nil {
 		_ = p.credentials.Delete(ctx, credRef)
 		_ = p.revokeToken(ctx, token, minted.ID)
-		_ = p.deleteRepo(ctx, token, created.Name)
+		if createdNow { _ = p.deleteRepo(ctx, token, created.Name) }
 		return Workspace{}, err
 	}
 	return ws, nil
@@ -272,6 +315,61 @@ func (p *CloudflareArtifactsProvider) assertOwned(ws Workspace) error {
 		return fmt.Errorf("%w: incomplete cloudflare workspace", ErrMalformed)
 	}
 	return nil
+}
+
+func cloudflareWorkspaceName(spec Spec) (name, keyPrefix string, err error) {
+	keyHash, specHash, err := workspaceIdentity(spec)
+	if err != nil {
+		return "", "", err
+	}
+	slug := strings.ToLower(sanitizeBranchSegment(spec.Name))
+	if slug == "" {
+		slug = "workspace"
+	}
+	keyPrefix = "wsp-" + keyHash + "-"
+	return keyPrefix + specHash + "-" + slug, keyPrefix, nil
+}
+
+func (p *CloudflareArtifactsProvider) findWorkspaceRepo(ctx context.Context, token, keyPrefix, exactName string) (cfRepoInfo, bool, bool, error) {
+	repos, err := p.listWorkspaceRepos(ctx, token, keyPrefix)
+	if err != nil {
+		return cfRepoInfo{}, false, false, err
+	}
+	conflict := false
+	for _, repo := range repos {
+		if !strings.HasPrefix(repo.Name, keyPrefix) {
+			continue
+		}
+		if repo.Name == exactName {
+			return repo, true, false, nil
+		}
+		conflict = true
+	}
+	return cfRepoInfo{}, false, conflict, nil
+}
+
+func (p *CloudflareArtifactsProvider) listWorkspaceRepos(ctx context.Context, token, search string) ([]cfRepoInfo, error) {
+	var all []cfRepoInfo
+	cursor := ""
+	for {
+		q := url.Values{}
+		q.Set("limit", "200")
+		q.Set("search", search)
+		q.Set("sort", "name")
+		q.Set("direction", "asc")
+		if cursor != "" {
+			q.Set("cursor", cursor)
+		}
+		var env cfEnvelope[[]cfRepoInfo]
+		if err := p.doJSON(ctx, token, http.MethodGet, p.repoBase()+"/repos?"+q.Encode(), nil, &env); err != nil {
+			return nil, err
+		}
+		all = append(all, env.Result...)
+		if env.ResultInfo == nil || env.ResultInfo.Cursor == "" {
+			return all, nil
+		}
+		cursor = env.ResultInfo.Cursor
+	}
 }
 
 func (p *CloudflareArtifactsProvider) fork(ctx context.Context, token string, spec Spec) (cfRepoResult, error) {

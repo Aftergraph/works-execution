@@ -3,8 +3,6 @@ package workspace
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -111,28 +109,28 @@ func (p *GitHubWorkspaceProvider) Create(ctx context.Context, spec Spec) (Worksp
 		return Workspace{}, err
 	}
 
-	baselineSHA, err := p.resolveBaselineSHA(ctx, control, spec.Baseline)
+	branch, keyPrefix, err := p.workspaceBranch(spec)
 	if err != nil {
 		return Workspace{}, err
 	}
-	branch := p.branchName(spec)
-	if err := p.ensureBranch(ctx, control, repository, branch, baselineSHA); err != nil {
+	createdNow, err := p.ensureWorkspaceBranch(ctx, control, repository, branch, keyPrefix, spec.Baseline)
+	if err != nil {
 		return Workspace{}, err
 	}
 
 	issued, err := p.issuer.Issue(ctx, repository, spec.WorkID, spec.Mode, p.cfg.TokenTTL)
 	if err != nil {
-		_ = p.deleteBranch(ctx, control, repository, branch)
+		if createdNow { _ = p.deleteBranch(ctx, control, repository, branch) }
 		return Workspace{}, fmt.Errorf("workspace: issue github credential: %w", err)
 	}
 	if issued.ID == "" || issued.Plaintext == "" || issued.ExpiresAt.IsZero() {
-		_ = p.deleteBranch(ctx, control, repository, branch)
+		if createdNow { _ = p.deleteBranch(ctx, control, repository, branch) }
 		return Workspace{}, fmt.Errorf("%w: incomplete github credential", ErrMalformed)
 	}
 	ref, err := p.credentials.Put(ctx, spec.WorkID, p.ID(), issued.ID, issued.Plaintext, issued.ExpiresAt)
 	if err != nil {
 		_ = p.issuer.Revoke(ctx, issued.ID, issued.Plaintext)
-		_ = p.deleteBranch(ctx, control, repository, branch)
+		if createdNow { _ = p.deleteBranch(ctx, control, repository, branch) }
 		return Workspace{}, fmt.Errorf("workspace: persist github credential ref: %w", err)
 	}
 
@@ -140,7 +138,7 @@ func (p *GitHubWorkspaceProvider) Create(ctx context.Context, spec Spec) (Worksp
 	if err != nil {
 		_ = p.credentials.Delete(ctx, ref)
 		_ = p.issuer.Revoke(ctx, issued.ID, issued.Plaintext)
-		_ = p.deleteBranch(ctx, control, repository, branch)
+		if createdNow { _ = p.deleteBranch(ctx, control, repository, branch) }
 		return Workspace{}, err
 	}
 
@@ -163,7 +161,7 @@ func (p *GitHubWorkspaceProvider) Create(ctx context.Context, spec Spec) (Worksp
 	if err := ws.Validate(); err != nil {
 		_ = p.credentials.Delete(ctx, ref)
 		_ = p.issuer.Revoke(ctx, issued.ID, issued.Plaintext)
-		_ = p.deleteBranch(ctx, control, repository, branch)
+		if createdNow { _ = p.deleteBranch(ctx, control, repository, branch) }
 		return Workspace{}, err
 	}
 	return ws, nil
@@ -291,26 +289,64 @@ func (p *GitHubWorkspaceProvider) resolveBaselineSHA(ctx context.Context, token 
 	return out.Object.SHA, nil
 }
 
-func (p *GitHubWorkspaceProvider) ensureBranch(ctx context.Context, token, repository, branch, sha string) error {
-	body := map[string]any{"ref":"refs/heads/"+branch,"sha":sha}
+func (p *GitHubWorkspaceProvider) ensureWorkspaceBranch(ctx context.Context, token, repository, branch, keyPrefix string, baseline SourceRef) (bool, error) {
+	refs, err := p.matchingRefs(ctx, token, repository, keyPrefix)
+	if err != nil {
+		return false, err
+	}
+	if exact, conflict := classifyWorkspaceRefs(refs, branch, keyPrefix); exact {
+		return false, nil
+	} else if conflict {
+		return false, ErrIdempotencyConflict
+	}
+
+	sha, err := p.resolveBaselineSHA(ctx, token, baseline)
+	if err != nil {
+		return false, err
+	}
+	body := map[string]any{"ref": "refs/heads/" + branch, "sha": sha}
 	var out githubRefObject
-	err := p.doJSON(ctx, token, http.MethodPost, "/repos/"+repository+"/git/refs", body, &out)
+	err = p.doJSON(ctx, token, http.MethodPost, "/repos/"+repository+"/git/refs", body, &out)
 	if err == nil {
-		return nil
+		return true, nil
 	}
 	if !errors.Is(err, ErrProviderUnavailable) {
-		return err
+		return false, err
 	}
-	// GitHub returns 422 when the deterministic idempotent ref already exists.
-	// Verify it resolves to the exact requested baseline; otherwise fail closed.
-	existing, getErr := p.getRef(ctx, token, repository, branch)
-	if getErr != nil {
-		return err
+
+	// Recover create races (typically GitHub 422) by re-reading the key prefix.
+	refs, readErr := p.matchingRefs(ctx, token, repository, keyPrefix)
+	if readErr != nil {
+		return false, err
 	}
-	if existing.Object.SHA != sha {
-		return fmt.Errorf("%w: existing workspace branch points at different baseline", ErrMalformed)
+	if exact, conflict := classifyWorkspaceRefs(refs, branch, keyPrefix); exact {
+		return false, nil
+	} else if conflict {
+		return false, ErrIdempotencyConflict
 	}
-	return nil
+	return false, err
+}
+
+func (p *GitHubWorkspaceProvider) matchingRefs(ctx context.Context, token, repository, keyPrefix string) ([]githubRefObject, error) {
+	var out []githubRefObject
+	path := "/repos/" + repository + "/git/matching-refs/heads/" + gitRefPath(keyPrefix)
+	if err := p.doJSON(ctx, token, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func classifyWorkspaceRefs(refs []githubRefObject, exactBranch, keyPrefix string) (exact bool, conflict bool) {
+	for _, ref := range refs {
+		branch := strings.TrimPrefix(ref.Ref, "refs/heads/")
+		if branch == exactBranch {
+			return true, false
+		}
+		if strings.HasPrefix(branch, keyPrefix) {
+			conflict = true
+		}
+	}
+	return false, conflict
 }
 
 func (p *GitHubWorkspaceProvider) getRef(ctx context.Context, token, repository, branch string) (githubRefObject, error) {
@@ -334,7 +370,7 @@ func (p *GitHubWorkspaceProvider) getRepo(ctx context.Context, token, repository
 }
 
 func (p *GitHubWorkspaceProvider) deleteBranch(ctx context.Context, token, repository, branch string) error {
-	return p.doJSON(ctx, token, http.MethodDelete, "/repos/"+repository+"/git/refs/heads/"+url.PathEscape(branch), nil, nil)
+	return p.doJSON(ctx, token, http.MethodDelete, "/repos/"+repository+"/git/refs/heads/"+gitRefPath(branch), nil, nil)
 }
 
 func (p *GitHubWorkspaceProvider) controlToken(ctx context.Context) (string, error) {
@@ -348,14 +384,22 @@ func (p *GitHubWorkspaceProvider) controlToken(ctx context.Context) (string, err
 	return v, nil
 }
 
-func (p *GitHubWorkspaceProvider) branchName(spec Spec) string {
-	h := sha256.Sum256([]byte(spec.IdempotencyKey))
-	suffix := hex.EncodeToString(h[:6])
+func (p *GitHubWorkspaceProvider) workspaceBranch(spec Spec) (branch, keyPrefix string, err error) {
+	keyHash, specHash, err := workspaceIdentity(spec)
+	if err != nil {
+		return "", "", err
+	}
 	slug := sanitizeBranchSegment(spec.Name)
 	if slug == "" {
 		slug = "workspace"
 	}
-	return strings.Trim(p.cfg.BranchPrefix, "/") + "/" + slug + "-" + suffix
+	keyPrefix = strings.Trim(p.cfg.BranchPrefix, "/") + "/" + keyHash + "-"
+	return keyPrefix + specHash + "-" + slug, keyPrefix, nil
+}
+
+func (p *GitHubWorkspaceProvider) branchName(spec Spec) string {
+	branch, _, _ := p.workspaceBranch(spec)
+	return branch
 }
 
 var branchSegmentRE = regexp.MustCompile(`[^A-Za-z0-9._-]+`)

@@ -13,6 +13,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -44,6 +45,7 @@ var (
 	ErrProviderUnavailable   = errors.New("workspace: provider unavailable")
 	ErrNotFound              = errors.New("workspace: not found")
 	ErrForeignWorkspace      = errors.New("workspace: foreign workspace")
+	ErrIdempotencyConflict    = errors.New("workspace: idempotency key conflicts with original creation intent")
 	ErrCredentialRefRequired = errors.New("workspace: credential must be a secret ref")
 	ErrPromotionUnsupported  = errors.New("workspace: provider does not implement promotion")
 )
@@ -114,8 +116,14 @@ type Workspace struct {
 func (w Workspace) Validate() error {
 	if strings.TrimSpace(w.ID) == "" || strings.TrimSpace(w.ProviderID) == "" ||
 		strings.TrimSpace(w.Org) == "" || strings.TrimSpace(w.WorkID) == "" ||
-		strings.TrimSpace(w.RemoteURL) == "" {
+		strings.TrimSpace(w.Name) == "" || strings.TrimSpace(w.RemoteURL) == "" {
 		return fmt.Errorf("%w: incomplete workspace handle", ErrMalformed)
+	}
+	if w.Mode != ModeRead && w.Mode != ModeWrite {
+		return fmt.Errorf("%w: unsupported mode %q", ErrMalformed, w.Mode)
+	}
+	if err := w.Baseline.Validate(); err != nil {
+		return err
 	}
 	if w.CredentialRef == nil {
 		return ErrCredentialRefRequired
@@ -123,6 +131,43 @@ func (w Workspace) Validate() error {
 	if _, err := secrets.ParseRef(w.CredentialRef.String()); err != nil {
 		return fmt.Errorf("%w: %v", ErrCredentialRefRequired, err)
 	}
+	return nil
+}
+
+
+// MarshalJSON pins workspace/1.0 credential_ref to the inert secret:// string
+// form instead of leaking the Go implementation shape of secrets.Ref.
+func (w Workspace) MarshalJSON() ([]byte, error) {
+	type alias Workspace
+	return json.Marshal(&struct {
+		CredentialRef string `json:"credential_ref"`
+		*alias
+	}{
+		CredentialRef: w.CredentialRef.String(),
+		alias:         (*alias)(&w),
+	})
+}
+
+// UnmarshalJSON reconstructs the typed secret ref while keeping the wire form
+// provider-neutral and value-free.
+func (w *Workspace) UnmarshalJSON(data []byte) error {
+	type alias Workspace
+	aux := &struct {
+		CredentialRef string `json:"credential_ref"`
+		*alias
+	}{alias: (*alias)(w)}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.CredentialRef == "" {
+		w.CredentialRef = nil
+		return nil
+	}
+	ref, err := secrets.ParseRef(aux.CredentialRef)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrCredentialRefRequired, err)
+	}
+	w.CredentialRef = ref
 	return nil
 }
 
