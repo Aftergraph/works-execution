@@ -61,6 +61,7 @@ type promotionPull struct {
 	Number int `json:"number"`
 	HTMLURL string `json:"html_url"`
 	Body string `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
 	Head struct { Ref string `json:"ref"` } `json:"head"`
 	Base struct { Ref string `json:"ref"` } `json:"base"`
 }
@@ -232,7 +233,7 @@ func proposalFromPull(id string,req Request,branch string,pr promotionPull)Propo
 		ID:id,Org:req.Org,WorkID:req.WorkID,CandidateSHA:req.Candidate.SHA,Target:req.Target,
 		StagingRef:"refs/heads/"+branch,PullRequestURL:pr.HTMLURL,PullRequestNumber:pr.Number,
 		EvidenceBundleID:req.EvidenceBundleID,DecisionRef:req.DecisionRef,PolicyDecisionID:req.PolicyDecisionID,
-		CreatedAt:time.Now().UTC(),
+		CreatedAt:pr.CreatedAt.UTC(),
 	}
 }
 
