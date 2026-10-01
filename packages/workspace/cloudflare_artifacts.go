@@ -18,14 +18,6 @@ import (
 
 const CloudflareArtifactsProviderID = "cloudflare-artifacts"
 
-// CredentialStore is the handoff boundary for provider-issued Git credentials.
-// The raw token may exist only long enough to cross this call. Implementations
-// must persist it outside WORKS state and return an inert secret:// ref.
-type CredentialStore interface {
-	Put(ctx context.Context, workID, provider, name, value string, expiresAt time.Time) (*secrets.Ref, error)
-	Delete(ctx context.Context, ref *secrets.Ref) error
-}
-
 // CloudflareArtifactsConfig contains only non-secret provider coordinates plus
 // a secret ref for the Cloudflare control-plane token.
 type CloudflareArtifactsConfig struct {
