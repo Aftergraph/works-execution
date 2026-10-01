@@ -47,7 +47,9 @@ import (
 // state, including exactly-once effect identity and verification state.
 // v14: durable idempotent-submission metadata — pre-admission intent hash,
 // admission-default snapshot and original queue decision.
-const SchemaVersion = 14
+// v15: durable economic source generation/cursor state for replay,
+// equivocation, time-regression and rollback detection.
+const SchemaVersion = 15
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -500,6 +502,12 @@ func (s *SQLiteStore) migrate() error {
 	// use fail-closed legacy replay semantics.
 	if err := s.migrateCreationIntentMetadata(); err != nil {
 		return fmt.Errorf("migrate creation intent metadata: %w", err)
+	}
+	// Migration v14 -> v15: durable economic source generation/cursor
+	// state. Net-new table, no backfill. Runtime source captures remain
+	// immutable inputs; WORKS owns monotonic persistence.
+	if err := s.migrateEconomicSourceGenerations(); err != nil {
+		return fmt.Errorf("migrate economic source generations: %w", err)
 	}
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
