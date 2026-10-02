@@ -128,7 +128,9 @@
         "CANCELLED",
         "WAITING_HUMAN",
         "SUSPENDED",
-        "BUDGET_EXHAUSTED"
+        "BUDGET_EXHAUSTED",
+        "TIMED_OUT",
+        "UNKNOWN"
       ]
     },
     "updated_at": {
