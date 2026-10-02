@@ -1,0 +1,37 @@
+name: Aftergraph native Sentinel review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: sentinel-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: sentinel/review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch canonical Sentinel
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "${RUNNER_TEMP}/aftergraph-sentinel"
+          git clone --depth 1 https://github.com/Aftergraph/sentinel.git "${RUNNER_TEMP}/aftergraph-sentinel"
+      - name: Review exact PR HEAD
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NO_COLOR: "1"
+        run: |
+          set -euo pipefail
+          node "${RUNNER_TEMP}/aftergraph-sentinel/bin/sentinel.js" review \
+            --pr "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --format json

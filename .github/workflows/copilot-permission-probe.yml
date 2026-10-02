@@ -1,0 +1,17 @@
+name: Copilot permission probe
+on:
+  push:
+    branches:
+      - frontier/agentic-workflows-track
+    paths:
+      - .github/workflows/copilot-permission-probe.yml
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      copilot-requests: write
+    steps:
+      - run: echo "job-level copilot permission accepted"
