@@ -520,7 +520,7 @@ func TestOutbox_SurvivesAcrossLeaseCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	done, err := s.CompleteLease(ctx, lease.Ref(), 0, nil, nil)
+	done, err := s.CompleteLease(ctx, store.LeaseRefFor(lease), 0, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
