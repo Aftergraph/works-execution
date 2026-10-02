@@ -172,7 +172,7 @@ func TestCompleteWithStaleEpochIsRefused(t *testing.T) {
 	_, ts, s, w, stale := leaseFixture(t)
 	ctx := context.Background()
 
-	if err := s.ReleaseLease(ctx, stale.Ref(), "expired"); err != nil {
+	if err := s.ReleaseLease(ctx, store.LeaseRefFor(stale), "expired"); err != nil {
 		t.Fatal(err)
 	}
 	fresh, _, err := s.GrantLease(ctx, w.ID, "only", "wrkr_2", time.Minute)
