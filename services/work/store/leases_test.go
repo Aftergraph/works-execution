@@ -73,7 +73,7 @@ func TestRenewLease_ExtendsExpiry(t *testing.T) {
 	}
 	original := l.ExpiresAt
 	time.Sleep(50 * time.Millisecond)
-	renewed, err := s.RenewLease(ctx, l.Ref(), 5*time.Second)
+	renewed, err := s.RenewLease(ctx, store.LeaseRefFor(l), 5*time.Second)
 	if err != nil {
 		t.Fatalf("renew: %v", err)
 	}
@@ -96,10 +96,10 @@ func TestRenewLease_DeniedAfterRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReleaseLease(ctx, l.Ref(), "test"); err != nil {
+	if err := s.ReleaseLease(ctx, store.LeaseRefFor(l), "test"); err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.RenewLease(ctx, l.Ref(), 5*time.Second)
+	_, err = s.RenewLease(ctx, store.LeaseRefFor(l), 5*time.Second)
 	if err != store.ErrLeaseNotActive {
 		t.Errorf("got %v, want ErrLeaseNotActive", err)
 	}
@@ -132,7 +132,7 @@ func TestCompleteLease_FinalizesAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.CompleteLease(ctx, l.Ref(), 0, nil, nil)
+	got, err := s.CompleteLease(ctx, store.LeaseRefFor(l), 0, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestRevokeLease_MarksAttemptCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RevokeLease(ctx, l.Ref(), "test revoke"); err != nil {
+	if err := s.RevokeLease(ctx, store.LeaseRefFor(l), "test revoke"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetWork(ctx, w.ID)
