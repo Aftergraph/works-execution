@@ -570,7 +570,7 @@ func reapOnce(ctx context.Context, s store.Store, limit int) (int, error) {
 	n := 0
 	for _, l := range expired {
 		// Mark lease EXPIRED, cancel attempt. Both must be idempotent.
-		if err := s.RevokeLease(ctx, l.Ref(), "lease expired"); err != nil {
+		if err := s.RevokeLease(ctx, store.LeaseRefFor(l), "lease expired"); err != nil {
 			// Skip — probably already revoked by a concurrent reaper or
 			// worker, or the lease was re-granted since we listed it.
 			continue
