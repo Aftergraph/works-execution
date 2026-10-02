@@ -7,6 +7,7 @@ package harnesseval
 
 import (
 	"errors"
+	"regexp"
 	"fmt"
 	"sort"
 	"strings"
@@ -14,12 +15,34 @@ import (
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 )
 
+var sha256Hex = regexp.MustCompile(`^[a-f0-9]{64}// Package harnesseval builds deterministic WORKS graphs for shadow harness evaluation.
+//
+// It does not select, promote, or authorize a harness. It only materializes
+// branch-vs-branch evaluation work so existing WORKS scheduling, leases,
+// evidence, and verification semantics remain authoritative.
+package harnesseval
+
+import (
+	"errors"
+	"regexp"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/JonasAbde/works-execution/packages/workgraph"
+)
+
+)
+
 type Branch struct {
 	ID   string
 	Hash string
+	LineageHash string
 }
 
+
 type Spec struct {
+	RoutingDecisionHash string
 	TaskProfileHash string
 	TaskClass       string
 	Branches        []Branch
@@ -29,6 +52,9 @@ type Spec struct {
 }
 
 func Build(spec Spec) (*workgraph.Work, error) {
+	if !sha256Hex.MatchString(spec.RoutingDecisionHash) || !sha256Hex.MatchString(spec.TaskProfileHash) {
+		return nil, errors.New("harnesseval: routing decision hash and task profile hash must be sha256 hex")
+	}
 	if strings.TrimSpace(spec.TaskProfileHash) == "" || strings.TrimSpace(spec.TaskClass) == "" {
 		return nil, errors.New("harnesseval: task profile hash and task class are required")
 	}
@@ -46,8 +72,8 @@ func Build(spec Spec) (*workgraph.Work, error) {
 	seen := map[string]bool{}
 
 	for _, branch := range branches {
-		if strings.TrimSpace(branch.ID) == "" || strings.TrimSpace(branch.Hash) == "" {
-			return nil, errors.New("harnesseval: branch id and hash are required")
+		if strings.TrimSpace(branch.ID) == "" || !sha256Hex.MatchString(branch.Hash) || !sha256Hex.MatchString(branch.LineageHash) {
+			return nil, errors.New("harnesseval: branch id, branch hash, and lineage hash are required and hashes must be sha256 hex")
 		}
 		if seen[branch.ID] {
 			return nil, fmt.Errorf("harnesseval: duplicate branch %s", branch.ID)
@@ -61,6 +87,8 @@ func Build(spec Spec) (*workgraph.Work, error) {
 			Env: map[string]string{
 				"AFTERGRAPH_HARNESS_BRANCH_ID": branch.ID,
 				"AFTERGRAPH_HARNESS_BRANCH_HASH": branch.Hash,
+				"AFTERGRAPH_HARNESS_LINEAGE_HASH": branch.LineageHash,
+				"AFTERGRAPH_ROUTING_DECISION_HASH": spec.RoutingDecisionHash,
 				"AFTERGRAPH_TASK_PROFILE_HASH": spec.TaskProfileHash,
 				"AFTERGRAPH_TASK_CLASS": spec.TaskClass,
 			},
@@ -74,6 +102,11 @@ func Build(spec Spec) (*workgraph.Work, error) {
 	nodes["independent-evaluator"] = workgraph.Node{
 		ID: "independent-evaluator",
 		Run: spec.EvaluatorRun,
+		Env: map[string]string{
+			"AFTERGRAPH_ROUTING_DECISION_HASH": spec.RoutingDecisionHash,
+			"AFTERGRAPH_TASK_PROFILE_HASH": spec.TaskProfileHash,
+			"AFTERGRAPH_TASK_CLASS": spec.TaskClass,
+		},
 		Needs: needs,
 		TimeoutS: spec.TimeoutS,
 		Runtime: workgraph.RuntimeSpec{Image: spec.RuntimeImage},
@@ -89,6 +122,7 @@ func Build(spec Spec) (*workgraph.Work, error) {
 			Description: "shadow harness branch evaluation",
 			Constraints: map[string]any{
 				"harness_mode": "shadow",
+				"routing_decision_hash": spec.RoutingDecisionHash,
 				"task_profile_hash": spec.TaskProfileHash,
 				"task_class": spec.TaskClass,
 				"independent_evaluator": true,
