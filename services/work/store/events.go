@@ -30,6 +30,7 @@ const (
 	EventWorkerLeaseRenewed = "worker.lease.renewed"
 	EventWorkerLeaseRelease = "worker.lease.released"
 	EventWorkerLeaseRevoke  = "worker.lease.revoked"
+	EventWorkerLeaseExpire  = "worker.lease.expired"
 	EventWorkerLeaseDone    = "worker.lease.completed"
 	EventWorkWaitingHuman   = "work.waiting_human"
 	EventWorkSuspended      = "work.suspended"
