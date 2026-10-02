@@ -60,7 +60,7 @@ func TestGrantLease_IssuesPositiveMonotonicEpoch(t *testing.T) {
 
 	// Release and re-grant the same node: the epoch must advance, or a
 	// holder from the previous generation would still match.
-	if err := s.ReleaseLease(ctx, lease.Ref(), "regrant"); err != nil {
+	if err := s.ReleaseLease(ctx, store.LeaseRefFor(lease), "regrant"); err != nil {
 		t.Fatal(err)
 	}
 	next, _, err := s.GrantLease(ctx, w.ID, "only", "wrkr_2", time.Minute)
@@ -149,7 +149,7 @@ func TestFencedVerbs_RefuseWrongExecutor(t *testing.T) {
 func TestCompleteLease_RefusesStaleHolderAfterRegrant(t *testing.T) {
 	s, ctx, w, stale := fencingFixture(t)
 
-	if err := s.ReleaseLease(ctx, stale.Ref(), "expired"); err != nil {
+	if err := s.ReleaseLease(ctx, store.LeaseRefFor(stale), "expired"); err != nil {
 		t.Fatal(err)
 	}
 	fresh, _, err := s.GrantLease(ctx, w.ID, "only", "wrkr_2", time.Minute)
@@ -161,12 +161,12 @@ func TestCompleteLease_RefusesStaleHolderAfterRegrant(t *testing.T) {
 	}
 
 	// The zombie reports success. Refused.
-	if _, err := s.CompleteLease(ctx, stale.Ref(), 0, nil, nil); !errors.Is(err, store.ErrLeaseNotActive) {
+	if _, err := s.CompleteLease(ctx, store.LeaseRefFor(stale), 0, nil, nil); !errors.Is(err, store.ErrLeaseNotActive) {
 		t.Fatalf("stale CompleteLease: got %v, want ErrLeaseNotActive", err)
 	}
 
 	// The real holder's lease is untouched and still completable.
-	if _, err := s.CompleteLease(ctx, fresh.Ref(), 0, nil, nil); err != nil {
+	if _, err := s.CompleteLease(ctx, store.LeaseRefFor(fresh), 0, nil, nil); err != nil {
 		t.Fatalf("current holder CompleteLease: %v", err)
 	}
 	final, err := s.GetLease(ctx, fresh.ID)
@@ -230,7 +230,7 @@ func TestFencedVerbs_EpochMismatchOnActiveLeaseIsFenced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stale := lease.Ref() // correct id, correct worker, superseded epoch
+	stale := store.LeaseRefFor(lease) // correct id, correct worker, superseded epoch
 	if _, err := s.RenewLease(ctx, stale, time.Minute); !errors.Is(err, store.ErrLeaseFenced) {
 		t.Errorf("RenewLease with a superseded epoch: got %v, want ErrLeaseFenced", err)
 	}
@@ -261,13 +261,13 @@ func TestFencedVerbs_EpochMismatchOnActiveLeaseIsFenced(t *testing.T) {
 func TestFencedVerbs_ReportNotActiveBeforeFenced(t *testing.T) {
 	s, ctx, _, lease := fencingFixture(t)
 
-	if err := s.ReleaseLease(ctx, lease.Ref(), "done"); err != nil {
+	if err := s.ReleaseLease(ctx, store.LeaseRefFor(lease), "done"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Correct executor, stale-by-expiry epoch: the lease is RELEASED, so
 	// the honest answer is ErrLeaseNotActive.
-	if _, err := s.RenewLease(ctx, lease.Ref(), time.Minute); !errors.Is(err, store.ErrLeaseNotActive) {
+	if _, err := s.RenewLease(ctx, store.LeaseRefFor(lease), time.Minute); !errors.Is(err, store.ErrLeaseNotActive) {
 		t.Errorf("RenewLease on released lease: got %v, want ErrLeaseNotActive", err)
 	}
 	// Wrong executor AND released: still NotActive, because status is
@@ -317,12 +317,12 @@ func TestConcurrentCompleteLease_ExactlyOneWinner(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_, err := s.CompleteLease(ctx, lease.Ref(), 0, nil, nil)
+			_, err := s.CompleteLease(ctx, store.LeaseRefFor(lease), 0, nil, nil)
 			results[0] = err
 		}()
 		go func() {
 			defer wg.Done()
-			_, err := s.CompleteLease(ctx, lease.Ref(), 0, nil, nil)
+			_, err := s.CompleteLease(ctx, store.LeaseRefFor(lease), 0, nil, nil)
 			results[1] = err
 		}()
 		wg.Wait()
@@ -370,7 +370,7 @@ func TestConcurrentCompleteLease_StaleHolderNeverWins(t *testing.T) {
 	const rounds = 25
 	for round := 0; round < rounds; round++ {
 		s, ctx, w, stale := fencingFixture(t)
-		if err := s.ReleaseLease(ctx, stale.Ref(), "expired"); err != nil {
+		if err := s.ReleaseLease(ctx, store.LeaseRefFor(stale), "expired"); err != nil {
 			t.Fatal(err)
 		}
 		fresh, _, err := s.GrantLease(ctx, w.ID, "only", "wrkr_2", time.Minute)
@@ -384,12 +384,12 @@ func TestConcurrentCompleteLease_StaleHolderNeverWins(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_, err := s.CompleteLease(ctx, stale.Ref(), 0, nil, nil)
+			_, err := s.CompleteLease(ctx, store.LeaseRefFor(stale), 0, nil, nil)
 			staleErr <- err
 		}()
 		go func() {
 			defer wg.Done()
-			_, err := s.CompleteLease(ctx, fresh.Ref(), 0, nil, nil)
+			_, err := s.CompleteLease(ctx, store.LeaseRefFor(fresh), 0, nil, nil)
 			freshErr <- err
 		}()
 		wg.Wait()
