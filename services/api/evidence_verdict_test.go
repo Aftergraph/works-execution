@@ -35,7 +35,7 @@ func seedTerminalWork(t *testing.T, s store.Store) *workgraph.Work {
 		t.Fatalf("GrantLease: %v", err)
 	}
 	art := &workgraph.Artifact{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", NodeID: "a", MimeType: "text/plain", Size: 1, Path: "/tmp/o"}
-	if _, err := s.CompleteLease(ctx, lease.Ref(), 0, art, nil); err != nil {
+	if _, err := s.CompleteLease(ctx, store.LeaseRefFor(lease), 0, art, nil); err != nil {
 		t.Fatalf("CompleteLease: %v", err)
 	}
 	got, err := s.GetWork(ctx, w.ID)
