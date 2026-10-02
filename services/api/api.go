@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime/debug"
 	"os"
 	"path/filepath"
 	"strings"
@@ -362,7 +363,7 @@ func (s *Server) recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				s.logf("panic: %v", rec)
+				s.logf("panic: %v\n%s", rec, debug.Stack())
 				writeError(w, http.StatusInternalServerError, "internal_error", "internal error")
 			}
 		}()

@@ -29,6 +29,7 @@
 package deploy
 
 import (
+	"math"
 	"sort"
 	"time"
 
@@ -171,6 +172,9 @@ func Compute(works []*workgraph.Work, events []audit.AuditEvent, w Window) Repor
 	cfr := MetricRatio{SampleN: total}
 	if total > 0 {
 		cfr.Percent = 100.0 * float64(wc.Failed) / float64(total)
+		if math.IsNaN(cfr.Percent) || math.IsInf(cfr.Percent, 0) {
+			cfr.Percent = 0
+		}
 	}
 	// Band is always assigned: 0% (no observations) is still "Elite"
 	// per the DORA scale.

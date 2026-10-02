@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/JonasAbde/works-execution/internal/fsutil"
 	"strings"
 	"time"
 )
@@ -147,7 +149,7 @@ func (b *Board) Save(path string) error {
 			return err
 		}
 	}
-	return os.WriteFile(path, data, 0o644)
+	return fsutil.AtomicWriteFile(path, data, 0o644)
 }
 
 // Validate checks the board against its own schema invariants. Used by

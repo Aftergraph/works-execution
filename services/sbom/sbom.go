@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/JonasAbde/works-execution/internal/fsutil"
 )
 
 // Result is the bundle returned by Emit: both SBOM documents plus
@@ -61,10 +63,10 @@ func (r *Result) WriteToDir(dir string) (spdxPath, cdxPath string, err error) {
 	}
 	spdxPath = filepath.Join(dir, base+".spdx.json")
 	cdxPath = filepath.Join(dir, base+".cdx.json")
-	if err := os.WriteFile(spdxPath, r.SPDX, 0o644); err != nil {
+	if err := fsutil.AtomicWriteFile(spdxPath, r.SPDX, 0o644); err != nil {
 		return "", "", fmt.Errorf("write spdx: %w", err)
 	}
-	if err := os.WriteFile(cdxPath, r.CycloneDX, 0o644); err != nil {
+	if err := fsutil.AtomicWriteFile(cdxPath, r.CycloneDX, 0o644); err != nil {
 		return "", "", fmt.Errorf("write cyclonedx: %w", err)
 	}
 	return spdxPath, cdxPath, nil
