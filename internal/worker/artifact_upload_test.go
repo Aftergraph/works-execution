@@ -35,7 +35,7 @@ func TestCompleteLeaseSendsArtifactContent(t *testing.T) {
 
 	client := &Client{BaseURL: server.URL, HTTP: server.Client()}
 	artifact := &workgraph.Artifact{ID: "abcd", NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)), Path: `C:\worker\artifacts\node-1.log`}
-	if err := client.CompleteLease(context.Background(), "lease-1", 0, artifact, content, nil); err != nil {
+	if err := client.CompleteLease(context.Background(), "lease-1", 1, 0, artifact, content, nil); err != nil {
 		t.Fatalf("CompleteLease: %v", err)
 	}
 	if received.Artifact == nil || received.Artifact.ID != artifact.ID {

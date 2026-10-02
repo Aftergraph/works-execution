@@ -61,6 +61,7 @@ func TestCompleteLeaseUploadsAndServesArtifact(t *testing.T) {
 		Path:     `C:\worker\artifacts\node-1.log`,
 	}
 	body, err := json.Marshal(map[string]any{
+		"epoch": lease.Epoch,
 		"exit_code":        0,
 		"artifact":         artifact,
 		"artifact_content": content,
@@ -157,7 +158,7 @@ func TestCompleteLeaseRejectsSuccessfulResultWithoutArtifact(t *testing.T) {
 
 func TestCompleteLeaseRejectsArtifactForInactiveLeaseBeforePersisting(t *testing.T) {
 	ts, st, work, lease, artifactRoot := createArtifactLease(t)
-	if err := st.ReleaseLease(context.Background(), lease.ID, "test release"); err != nil {
+	if err := st.ReleaseLease(context.Background(), lease.Ref(), "test release"); err != nil {
 		t.Fatal(err)
 	}
 	content := []byte("stale worker output")
@@ -165,6 +166,7 @@ func TestCompleteLeaseRejectsArtifactForInactiveLeaseBeforePersisting(t *testing
 	digest := hex.EncodeToString(sum[:])
 	artifact := workgraph.Artifact{ID: digest, NodeID: "node-1", Size: int64(len(content))}
 	body, err := json.Marshal(map[string]any{
+		"epoch": lease.Epoch,
 		"exit_code":        0,
 		"artifact":         artifact,
 		"artifact_content": content,
@@ -198,6 +200,7 @@ func TestCompleteLeaseAcceptsLegacySharedLogArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, err := json.Marshal(map[string]any{
+		"epoch": lease.Epoch,
 		"exit_code": 0,
 		"artifact": workgraph.Artifact{
 			ID: digest, NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)), Path: "../../untrusted.log",
@@ -244,6 +247,7 @@ func TestCompleteLeaseRejectsCASParentSymlinkEscape(t *testing.T) {
 		t.Skipf("symlink creation unavailable: %v", err)
 	}
 	body, err := json.Marshal(map[string]any{
+		"epoch": lease.Epoch,
 		"exit_code": 0,
 		"artifact": workgraph.Artifact{
 			ID: digest, NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)),
@@ -279,6 +283,7 @@ func TestCompleteLeaseRejectsLegacyLogSymlinkEscape(t *testing.T) {
 		t.Skipf("symlink creation unavailable: %v", err)
 	}
 	body, err := json.Marshal(map[string]any{
+		"epoch": lease.Epoch,
 		"exit_code": 0,
 		"artifact": workgraph.Artifact{
 			ID: digest, NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)),
@@ -318,6 +323,7 @@ func TestCompleteLeaseRejectsLegacyLogFileSymlinkEscape(t *testing.T) {
 		t.Skipf("symlink creation unavailable: %v", err)
 	}
 	body, err := json.Marshal(map[string]any{
+		"epoch": lease.Epoch,
 		"exit_code": 0,
 		"artifact": workgraph.Artifact{
 			ID: digest, NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)),
@@ -345,6 +351,7 @@ func TestArtifactHandlersRejectCASSymlinkEscape(t *testing.T) {
 	sum := sha256.Sum256(content)
 	digest := hex.EncodeToString(sum[:])
 	body, err := json.Marshal(map[string]any{
+		"epoch": lease.Epoch,
 		"exit_code": 0,
 		"artifact": workgraph.Artifact{
 			ID: digest, NodeID: "node-1", MimeType: "text/plain", Size: int64(len(content)),

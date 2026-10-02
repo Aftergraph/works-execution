@@ -53,7 +53,11 @@ import (
 // revocation floors, equivocation and anti-revival enforcement.
 // v17: append-only hash-chained trust-root transition history with
 // authorization digest binding for rotations.
-const SchemaVersion = 17
+// v18 (ADR-0033): lease fencing epoch on work_leases, plus the
+// transactional outbox. Two coupled laws land together because the
+// outbox is written by the same code paths whose CAS writes the epoch —
+// splitting them would mean shipping the outbox against unfenced writes.
+const SchemaVersion = 18
 
 // ErrCorruptHandoff is returned when a stored checkpoint's re-derived hash
 // does not match its persisted payload hash (ADR-0010: corruption is
@@ -75,6 +79,45 @@ var ErrNotFound = errors.New("work not found")
 // attempted with the same key but a different payload.
 var ErrIdempotencyConflict = errors.New("idempotency key conflict")
 
+// LeaseRef is the fencing triple a caller must present to act on a lease:
+// (executorId, leaseId, leaseEpoch). ADR-0033.
+//
+// All three parts are load-bearing and none is derivable from the others:
+//
+//   - LeaseID selects the row.
+//   - WorkerID is the EXECUTOR identity. Without it, anyone holding the id
+//     could act as the lease holder. This matters because CompleteLease
+//     historically took no worker identity at all, so the HTTP-layer
+//     owner-bind in services/api/lease_owner_authz.go was the only check —
+//     and anything reaching the store directly bypassed it entirely.
+//   - Epoch proves RECENCY. A worker that lost its lease, hung past the
+//     TTL, and woke up after the node was re-granted holds a correct
+//     (leaseID, workerID) pair for a lease generation that no longer owns
+//     the node. Only the epoch distinguishes it.
+//
+// The triple is checked inside the store, in the same transaction as the
+// write, as a compare-and-swap on (id, status, epoch, worker_id). It is
+// deliberately NOT a read-then-write: the compare and the write must be one
+// statement or two concurrent callers can both pass the check.
+type LeaseRef struct {
+	// LeaseID is the work_leases.id being acted on.
+	LeaseID string
+	// WorkerID is the executor identity that must equal the lease's
+	// worker_id.
+	WorkerID string
+	// Epoch is the fencing token that must equal the lease's current epoch.
+	Epoch int64
+}
+
+// Ref builds the fencing triple for a lease the caller legitimately holds
+// (one it was just granted, or just read back from the store).
+func (l *workgraph.Lease) Ref() LeaseRef {
+	if l == nil {
+		return LeaseRef{}
+	}
+	return LeaseRef{LeaseID: l.ID, WorkerID: l.WorkerID, Epoch: l.Epoch}
+}
+
 // Store is the durable persistence interface. The API and worker depend on
 // this interface, not on the concrete SQLite implementation.
 type Store interface {
@@ -90,11 +133,18 @@ type Store interface {
 	AppendArtifact(ctx context.Context, workID string, art workgraph.Artifact) (*workgraph.Work, error)
 
 	// Lease operations (slice 2).
+	//
+	// ADR-0033: the four state-mutating verbs take a LeaseRef — the
+	// fencing triple (executorId, leaseId, leaseEpoch) — instead of a bare
+	// lease id. A bare id cannot be fenced: any caller that learns an id
+	// can act on it, and the epoch was the only missing piece. GrantLease
+	// keeps its plain signature because it is the verb that ESTABLISHES
+	// the epoch.
 	GrantLease(ctx context.Context, workID, nodeID, workerID string, ttl time.Duration) (*workgraph.Lease, *workgraph.Attempt, error)
-	RenewLease(ctx context.Context, leaseID string, ttl time.Duration) (*workgraph.Lease, error)
-	CompleteLease(ctx context.Context, leaseID string, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error)
-	ReleaseLease(ctx context.Context, leaseID, reason string) error
-	RevokeLease(ctx context.Context, leaseID, reason string) error
+	RenewLease(ctx context.Context, ref LeaseRef, ttl time.Duration) (*workgraph.Lease, error)
+	CompleteLease(ctx context.Context, ref LeaseRef, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error)
+	ReleaseLease(ctx context.Context, ref LeaseRef, reason string) error
+	RevokeLease(ctx context.Context, ref LeaseRef, reason string) error
 	GetLease(ctx context.Context, leaseID string) (*workgraph.Lease, error)
 	ListExpiredLeases(ctx context.Context, limit int) ([]*workgraph.Lease, error)
 	MarkAttemptCancelled(ctx context.Context, attemptID, reason string) error
@@ -130,6 +180,14 @@ type Store interface {
 	// ErrVerificationVerdictConflict on differing re-attestation.
 	SaveVerificationVerdict(ctx context.Context, v VerificationVerdict) error
 	GetVerificationVerdict(ctx context.Context, workID string) (*VerificationVerdict, error)
+
+	// Outbox delivery (ADR-0033). These three are the OutboxStore surface,
+	// embedded here so a Store can be handed straight to a dispatcher.
+	// ClaimOutbox is the CAS that makes concurrent dispatchers safe;
+	// Mark/FailOutboxAttempt settle only what the calling dispatcher owns.
+	ClaimOutbox(ctx context.Context, dispatcherID string, limit int, claimTTL time.Duration, now time.Time) ([]OutboxEntry, error)
+	MarkOutboxDelivered(ctx context.Context, id, dispatcherID string, now time.Time) error
+	FailOutboxAttempt(ctx context.Context, id, dispatcherID, reason string, now time.Time) error
 
 	Close() error
 }
@@ -304,6 +362,11 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_work_id ON work_artifacts(work_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_work_id ON work_evidence(work_id);
 
 -- slice 2: leases
+-- v18 (ADR-0033) adds `epoch`, the monotonic fencing token for this
+-- node's lease generations. It is NOT NULL DEFAULT 0 so a v17 database
+-- migrates in place without a table rebuild; pre-existing rows land on
+-- epoch 0 and are immediately unusable as a fencing token, which is the
+-- fail-closed direction (a caller must re-grant to obtain a real epoch).
 CREATE TABLE IF NOT EXISTS work_leases (
     id          TEXT PRIMARY KEY,
     work_id     TEXT NOT NULL REFERENCES works(id) ON DELETE CASCADE,
@@ -313,11 +376,45 @@ CREATE TABLE IF NOT EXISTS work_leases (
     granted_at  TEXT NOT NULL,
     expires_at  TEXT NOT NULL,
     last_beat_at TEXT NOT NULL,
-    status      TEXT NOT NULL
+    status      TEXT NOT NULL,
+    epoch       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_leases_status_expires ON work_leases(status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_leases_work_node ON work_leases(work_id, node_id);
 CREATE INDEX IF NOT EXISTS idx_leases_attempt ON work_leases(attempt_id);
+
+-- v18 (ADR-0033): transactional outbox. A side effect that must be
+-- atomic with a state change is recorded HERE, in the same transaction
+-- as the state change, and delivered afterwards by a dispatcher. An
+-- outbox written outside the state mutation's transaction cannot
+-- guarantee that pairing — a crash between commit and enqueue loses the
+-- side effect, and an enqueue before commit publishes a state that never
+-- happened.
+--
+-- idempotency_key is UNIQUE and deterministic per logical side effect, so
+-- retrying the mutation (or replaying a caller that retried) inserts
+-- exactly one row instead of delivering twice.
+CREATE TABLE IF NOT EXISTS outbox (
+    id               TEXT PRIMARY KEY,
+    topic            TEXT NOT NULL,
+    idempotency_key  TEXT NOT NULL UNIQUE,
+    work_id          TEXT,
+    payload_json     TEXT NOT NULL,
+    created_at       TEXT NOT NULL,
+    -- PENDING (drainable) | CLAIMED (owned by a dispatcher until
+    -- claim_expires_at) | DELIVERED (terminal) | DEAD (attempts
+    -- exhausted, terminal)
+    status           TEXT NOT NULL,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    max_attempts     INTEGER NOT NULL,
+    claimed_by       TEXT,
+    claimed_at       TEXT,
+    claim_expires_at TEXT,
+    delivered_at     TEXT,
+    last_error       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_drain ON outbox(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_outbox_work ON outbox(work_id);
 
 -- slice 2 v2 -> v3: add lease_id column to work_attempts (nullable).
 -- ALTER TABLE ADD COLUMN is idempotent in modernc/sqlite: it returns an error
@@ -522,10 +619,54 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateEconomicSourceTrustRootHistory(); err != nil {
 		return fmt.Errorf("migrate economic source trust root history: %w", err)
 	}
+	// Migration v17 -> v18 (ADR-0033): lease fencing epoch + transactional
+	// outbox. The outbox table is net-new and created idempotently by the
+	// schema const above; work_leases.epoch is a column add, so it needs
+	// the PRAGMA table_info introspection the other column adds use. No
+	// data backfill: pre-v18 leases land on epoch 0, which no holder can
+	// present (see the schema comment) — re-granting the node issues a
+	// real epoch.
+	if err := s.migrateLeaseFencingAndOutbox(); err != nil {
+		return fmt.Errorf("migrate lease fencing and outbox: %w", err)
+	}
 	if err := s.bumpSchemaVersion(SchemaVersion); err != nil {
 		return fmt.Errorf("bump schema version: %w", err)
 	}
 	return nil
+}
+
+// migrateLeaseFencingAndOutbox adds work_leases.epoch if it is missing.
+// The outbox table needs no explicit step: it is a net-new table emitted
+// by the schema const, exactly as dispatch_acceptances and the economic
+// source tables were.
+func (s *SQLiteStore) migrateLeaseFencingAndOutbox() error {
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('work_leases')`)
+	if err != nil {
+		return err
+	}
+	hasEpoch := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		if name == "epoch" {
+			hasEpoch = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if hasEpoch {
+		return nil
+	}
+	_, err = s.db.Exec(`ALTER TABLE work_leases ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (s *SQLiteStore) migrateCreationIntentMetadata() error {
@@ -1213,6 +1354,11 @@ func (s *SQLiteStore) ListWorkSummaries(ctx context.Context, limit int) ([]WorkS
 
 // UpdateState atomically transitions the Work to `to` if the transition is
 // permitted by the state machine. Returns ErrInvalidTransition otherwise.
+//
+// ADR-0033: when the target state is terminal, this also records a
+// work.terminal obligation in the outbox INSIDE this transaction. That is
+// the whole point — the state change and the "a side effect is owed"
+// decision commit together or not at all. See services/work/store/outbox.go.
 func (s *SQLiteStore) UpdateState(ctx context.Context, id string, to workgraph.State) (*workgraph.Work, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1231,9 +1377,15 @@ func (s *SQLiteStore) UpdateState(ctx context.Context, id string, to workgraph.S
 	if !workgraph.CanTransition(current, to) {
 		return nil, fmt.Errorf("%w: %s -> %s", workgraph.ErrInvalidTransition, current, to)
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	nowUTC := time.Now().UTC()
+	now := nowUTC.Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, `UPDATE works SET state = ?, updated_at = ? WHERE id = ?`, string(to), now, id); err != nil {
 		return nil, err
+	}
+	if to.IsTerminal() {
+		if err := enqueueWorkTerminal(ctx, tx, id, current, to, nowUTC); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

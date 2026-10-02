@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -247,6 +248,16 @@ func main() {
 			logger.Printf("reaper exited: %v", err)
 		}
 	}()
+
+	// ADR-0033: outbox dispatcher. Terminal state changes now record a
+	// work.terminal obligation inside their own transaction; this loop is
+	// what delivers it. Runs alongside the reaper and request handling —
+	// the claim CAS is what keeps two dispatchers from double-delivering.
+	hostname, _ := os.Hostname()
+	stopOutbox := srv.StartOutboxDispatcher(ctx, store.OutboxConfig{
+		DispatcherID: fmt.Sprintf("works-api-%s-%d", hostname, os.Getpid()),
+	})
+	defer stopOutbox()
 
 	shutdownDone := make(chan struct{})
 	go func() {

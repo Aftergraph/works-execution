@@ -92,7 +92,7 @@ func seedTerminalWork(t *testing.T, st store.Store, result workgraph.State) *wor
 		Result:     "pass",
 		RecordedAt: time.Now().UTC(),
 	}}
-	if _, err := st.CompleteLease(ctx, lease.ID, 0, artifact, ev); err != nil {
+	if _, err := st.CompleteLease(ctx, lease.Ref(), 0, artifact, ev); err != nil {
 		t.Fatalf("CompleteLease: %v", err)
 	}
 	// CompleteLease transitions to SUCCEEDED automatically when the

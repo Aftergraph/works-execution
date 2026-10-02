@@ -20,6 +20,25 @@ var ErrLeaseConflict = errors.New("node already leased")
 // but the lease is in a terminal state.
 var ErrLeaseNotActive = errors.New("lease not active")
 
+// ErrLeaseFenced is returned when a caller presents a fencing triple whose
+// executor identity or epoch does not match the lease row (ADR-0033).
+//
+// It is deliberately distinct from ErrLeaseNotActive, because the two mean
+// different things and a caller must be able to act differently:
+//
+//   - ErrLeaseNotActive: the lease is finished (released/revoked/expired).
+//     Re-granting the node is the legitimate next step.
+//   - ErrLeaseFenced: the caller's token is STALE. Its lease generation no
+//     longer owns this node — someone else has been granted it since, or the
+//     caller never owned it. Retrying is pointless and, for a worker that
+//     thinks it is still executing, a signal that its view of the world is
+//     wrong. It must not retry; it must re-acquire.
+//
+// Wrapped errors from the fenced verbs carry the presented vs. current
+// values so operators can tell a zombie worker from an identity bug:
+// errors.Is(err, ErrLeaseFenced) holds in both cases.
+var ErrLeaseFenced = errors.New("lease fenced: stale executor or epoch")
+
 // GrantLease atomically:
 //  1. Validates the work exists and the node is in a non-terminal state.
 //  2. Checks no ACTIVE lease exists for the (work_id, node_id) pair.
@@ -55,9 +74,19 @@ func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID s
 	// nodes — leases are the runtime's path to execution, and granting one
 	// would be an indirect agent-self-resume. Resume goes ONLY through
 	// ResumeFromCheckpoint after kernel-authorized budget/human approval.
+	//
+	// ADR-0032 extends that law to UNKNOWN, which is not a pause but is
+	// the same hazard in a sharper form: UNKNOWN means the control plane
+	// lost track of a run and cannot say whether the node's work already
+	// happened. Leasing it would hand the node straight back to the runtime
+	// for a blind retry. UNKNOWN is resolved outward only — by a human or
+	// the recovery supervisor — never by re-leasing.
 	switch state {
 	case workgraph.StateWaitingHuman, workgraph.StateSuspended, workgraph.StateBudgetExhausted:
 		return nil, nil, fmt.Errorf("%w: paused mission %s (%s) cannot lease; resume via kernel authorization only",
+			ErrLeaseConflict, workID, state)
+	case workgraph.StateUnknown:
+		return nil, nil, fmt.Errorf("%w: indeterminate work %s (%s) cannot lease; a lost run must be resolved by a human or the recovery supervisor, not re-run blindly",
 			ErrLeaseConflict, workID, state)
 	}
 
@@ -77,6 +106,27 @@ func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID s
 	// Create attempt with status=running.
 	attemptID := workgraph.NewID("att")
 	now := time.Now().UTC()
+
+	// ADR-0033: mint the fencing epoch for this grant. The epoch is
+	// monotonic PER NODE — a lease on node "a" never fences a lease on
+	// node "b", so unrelated nodes cannot perturb each other's tokens.
+	// MAX(epoch)+1 over this node's existing lease rows is strictly
+	// increasing because a re-grant can only happen once the previous row
+	// has left ACTIVE (the conflict check above), so the previous row — and
+	// its epoch — is already durable in this transaction.
+	//
+	// This read is safe against concurrent grants: it runs inside the same
+	// transaction that performs the INSERT, on the single-connection
+	// writer pool, so no other writer can commit a lease for this node
+	// between the read and the insert.
+	var epoch int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(epoch), 0) + 1 FROM work_leases WHERE work_id = ? AND node_id = ?`,
+		workID, nodeID,
+	).Scan(&epoch); err != nil {
+		return nil, nil, fmt.Errorf("mint lease epoch: %w", err)
+	}
+
 	if _, err := tx.ExecContext(ctx, `
         INSERT INTO work_attempts (id, work_id, node_id, worker_id, started_at, status, exit_code)
         VALUES (?, ?, ?, ?, ?, 'running', 0)
@@ -88,11 +138,11 @@ func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID s
 	leaseID := workgraph.NewID("lse")
 	expiresAt := now.Add(ttl)
 	if _, err := tx.ExecContext(ctx, `
-        INSERT INTO work_leases (id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO work_leases (id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status, epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, leaseID, workID, nodeID, workerID, attemptID,
 		now.Format(time.RFC3339Nano), expiresAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
-		string(workgraph.LeaseActive)); err != nil {
+		string(workgraph.LeaseActive), epoch); err != nil {
 		return nil, nil, fmt.Errorf("insert lease: %w", err)
 	}
 
@@ -150,6 +200,7 @@ func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID s
 		ExpiresAt:  expiresAt,
 		LastBeatAt: now,
 		Status:     workgraph.LeaseActive,
+		Epoch:      epoch,
 	}, &workgraph.Attempt{
 		ID:        attemptID,
 		NodeID:    nodeID,
@@ -159,9 +210,92 @@ func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID s
 	}, nil
 }
 
-// RenewLease extends ExpiresAt by ttl if the lease is ACTIVE. Returns
-// ErrLeaseNotActive if the lease is in a terminal state.
-func (s *SQLiteStore) RenewLease(ctx context.Context, leaseID string, ttl time.Duration) (*workgraph.Lease, error) {
+// loadLeaseForFence reads the fields a fenced mutation needs and
+// classifies the caller's fencing triple against them (ADR-0033).
+//
+// The classification order is deliberate and is a security property, not
+// a convenience:
+//
+//  1. missing row      -> ErrNotFound
+//  2. not ACTIVE       -> ErrLeaseNotActive
+//  3. worker/epoch     -> ErrLeaseFenced
+//
+// Status is checked BEFORE the token so that a finished lease reports
+// "not active" rather than "fenced". A caller must not be able to learn
+// anything about the token from the shape of the error, and a lease that
+// is already RELEASED has no meaningful epoch to compare against.
+func loadLeaseForFence(ctx context.Context, tx *sql.Tx, ref LeaseRef) (workID, attemptID, statusStr string, err error) {
+	var workerID string
+	var epoch int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT work_id, attempt_id, status, worker_id, epoch FROM work_leases WHERE id = ?`,
+		ref.LeaseID).Scan(&workID, &attemptID, &statusStr, &workerID, &epoch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", "", ErrNotFound
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+	if workgraph.LeaseStatus(statusStr) != workgraph.LeaseActive {
+		return "", "", "", ErrLeaseNotActive
+	}
+	if workerID != ref.WorkerID || epoch != ref.Epoch {
+		return "", "", "", fmt.Errorf("%w: lease %s is held by worker %q at epoch %d, caller presented worker %q at epoch %d",
+			ErrLeaseFenced, ref.LeaseID, workerID, epoch, ref.WorkerID, ref.Epoch)
+	}
+	return workID, attemptID, statusStr, nil
+}
+
+// requireCASRows enforces that a compare-and-swap UPDATE actually claimed
+// the row. This is the check that makes fencing safe under concurrency,
+// and it is the reason the CAS predicate — not the pre-read — is the law:
+//
+// Two callers holding the same, current fencing triple and racing to
+// complete the same lease BOTH pass loadLeaseForFence, because at the
+// instant each reads, the lease really is ACTIVE and the token really does
+// match. Neither pre-read can distinguish them. What separates them is the
+// UPDATE: its WHERE clause re-asserts (id, status='ACTIVE', epoch, worker_id)
+// atomically, so the second writer's predicate no longer matches the row the
+// first writer already moved to RELEASED, it affects zero rows, and this
+// function turns that into ErrLeaseNotActive. Exactly one completion wins;
+// the loser never finalizes the attempt twice and never double-publishes.
+//
+// Returns nil when the CAS claimed the row.
+func requireCASRows(res sql.Result, ctx context.Context, tx *sql.Tx, ref LeaseRef) error {
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 1 {
+		return nil
+	}
+	// The CAS lost. Re-read inside the transaction to report WHY, rather
+	// than guessing — a concurrent completion (not active) and a
+	// concurrent re-grant (fenced) are different operator problems.
+	var statusStr, workerID string
+	var epoch int64
+	err = tx.QueryRowContext(ctx,
+		`SELECT status, worker_id, epoch FROM work_leases WHERE id = ?`,
+		ref.LeaseID).Scan(&statusStr, &workerID, &epoch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if workgraph.LeaseStatus(statusStr) != workgraph.LeaseActive {
+		return ErrLeaseNotActive
+	}
+	return fmt.Errorf("%w: lease %s moved to worker %q at epoch %d while the caller held worker %q at epoch %d",
+		ErrLeaseFenced, ref.LeaseID, workerID, epoch, ref.WorkerID, ref.Epoch)
+}
+
+// RenewLease extends ExpiresAt by ttl if the lease is ACTIVE AND the
+// caller presents the current fencing triple (ADR-0033).
+//
+// Returns ErrLeaseNotActive if the lease is in a terminal state, and
+// ErrLeaseFenced if the epoch or executor identity is stale.
+func (s *SQLiteStore) RenewLease(ctx context.Context, ref LeaseRef, ttl time.Duration) (*workgraph.Lease, error) {
 	if ttl <= 0 {
 		ttl = 25 * time.Second
 	}
@@ -171,28 +305,27 @@ func (s *SQLiteStore) RenewLease(ctx context.Context, leaseID string, ttl time.D
 	}
 	defer tx.Rollback()
 
-	var statusStr string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM work_leases WHERE id = ?`, leaseID).Scan(&statusStr); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
-		}
+	if _, _, _, err := loadLeaseForFence(ctx, tx, ref); err != nil {
 		return nil, err
-	}
-	if workgraph.LeaseStatus(statusStr) != workgraph.LeaseActive {
-		return nil, ErrLeaseNotActive
 	}
 
 	now := time.Now().UTC()
 	newExpires := now.Add(ttl)
-	if _, err := tx.ExecContext(ctx, `
-        UPDATE work_leases SET expires_at = ?, last_beat_at = ? WHERE id = ? AND status = ?
-    `, newExpires.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), leaseID, string(workgraph.LeaseActive)); err != nil {
+	res, err := tx.ExecContext(ctx, `
+        UPDATE work_leases SET expires_at = ?, last_beat_at = ?
+        WHERE id = ? AND status = ? AND epoch = ? AND worker_id = ?
+    `, newExpires.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
+		ref.LeaseID, string(workgraph.LeaseActive), ref.Epoch, ref.WorkerID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireCASRows(res, ctx, tx, ref); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return s.GetLease(ctx, leaseID)
+	return s.GetLease(ctx, ref.LeaseID)
 }
 
 // CompleteLease marks the lease RELEASED and finalizes the underlying
@@ -200,25 +333,26 @@ func (s *SQLiteStore) RenewLease(ctx context.Context, leaseID string, ttl time.D
 // 'succeeded', otherwise 'failed'. Also persists any artifact + evidence
 // rows the worker reported.
 //
+// The caller must present the fencing triple (ADR-0033): the completion is
+// a compare-and-swap on (id, status, epoch, worker_id), so two callers
+// racing to complete the same lease produce exactly one finalization. A
+// stale holder — a worker that hung past its TTL and woke after the node
+// was re-granted — is refused with ErrLeaseFenced and cannot overwrite the
+// real holder's result.
+//
 // After committing the attempt, this method also calls
 // MaybeFinalizeWork — if all nodes in the work have a successful attempt
 // and the work is RUNNING, it transitions to VERIFYING then SUCCEEDED.
-func (s *SQLiteStore) CompleteLease(ctx context.Context, leaseID string, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error) {
+func (s *SQLiteStore) CompleteLease(ctx context.Context, ref LeaseRef, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
-	var workID, attemptID, statusStr string
-	if err := tx.QueryRowContext(ctx, `SELECT work_id, attempt_id, status FROM work_leases WHERE id = ?`, leaseID).Scan(&workID, &attemptID, &statusStr); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
-		}
+	workID, attemptID, _, err := loadLeaseForFence(ctx, tx, ref)
+	if err != nil {
 		return nil, err
-	}
-	if workgraph.LeaseStatus(statusStr) != workgraph.LeaseActive {
-		return nil, ErrLeaseNotActive
 	}
 
 	now := time.Now().UTC()
@@ -227,10 +361,17 @@ func (s *SQLiteStore) CompleteLease(ctx context.Context, leaseID string, exitCod
 		status = "failed"
 	}
 
-	// Transition lease -> RELEASED.
-	if _, err := tx.ExecContext(ctx, `
-        UPDATE work_leases SET status = ?, last_beat_at = ? WHERE id = ? AND status = ?
-    `, string(workgraph.LeaseReleased), now.Format(time.RFC3339Nano), leaseID, string(workgraph.LeaseActive)); err != nil {
+	// Transition lease -> RELEASED. The CAS predicate carries the fencing
+	// triple; see requireCASRows for why the pre-read is not the law.
+	res, err := tx.ExecContext(ctx, `
+        UPDATE work_leases SET status = ?, last_beat_at = ?
+        WHERE id = ? AND status = ? AND epoch = ? AND worker_id = ?
+    `, string(workgraph.LeaseReleased), now.Format(time.RFC3339Nano),
+		ref.LeaseID, string(workgraph.LeaseActive), ref.Epoch, ref.WorkerID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireCASRows(res, ctx, tx, ref); err != nil {
 		return nil, err
 	}
 	// Finalize the attempt.
@@ -403,38 +544,51 @@ func (s *SQLiteStore) hasClassificationEvidence(ctx context.Context, workID, att
 // ReleaseLease marks the lease RELEASED and the underlying attempt
 // 'cancelled'. Used when the worker voluntarily gives up the lease (e.g.
 // the node command had a setup error before executing).
-func (s *SQLiteStore) ReleaseLease(ctx context.Context, leaseID, reason string) error {
-	return s.transitionLeaseAttempt(ctx, leaseID, workgraph.LeaseReleased, "cancelled", reason)
+func (s *SQLiteStore) ReleaseLease(ctx context.Context, ref LeaseRef, reason string) error {
+	return s.transitionLeaseAttempt(ctx, ref, workgraph.LeaseReleased, "cancelled", reason)
 }
 
 // RevokeLease marks the lease REVOKED and the underlying attempt
 // 'cancelled'. Used when the work is cancelled or the lease is
 // administratively revoked.
-func (s *SQLiteStore) RevokeLease(ctx context.Context, leaseID, reason string) error {
-	return s.transitionLeaseAttempt(ctx, leaseID, workgraph.LeaseRevoked, "cancelled", reason)
+//
+// Revocation is fenced exactly like release (ADR-0033). This matters most
+// for the lease reaper, which reads a lease via ListExpiredLeases and then
+// revokes it: if the node was re-granted between that read and the revoke,
+// an unfenced revoke would cancel the NEW holder's live lease. Because
+// ListExpiredLeases returns the epoch, the reaper presents the token it
+// actually observed and the revocation is refused if the row moved on.
+func (s *SQLiteStore) RevokeLease(ctx context.Context, ref LeaseRef, reason string) error {
+	return s.transitionLeaseAttempt(ctx, ref, workgraph.LeaseRevoked, "cancelled", reason)
 }
 
-func (s *SQLiteStore) transitionLeaseAttempt(ctx context.Context, leaseID string, to workgraph.LeaseStatus, attemptStatus, reason string) error {
+// transitionLeaseAttempt performs the release/revoke path. It is fenced
+// identically to CompleteLease, with the same CAS predicate and the same
+// reason the CAS — not the pre-read — is what makes it safe.
+func (s *SQLiteStore) transitionLeaseAttempt(ctx context.Context, ref LeaseRef, to workgraph.LeaseStatus, attemptStatus, reason string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	var workID, attemptID, statusStr string
-	if err := tx.QueryRowContext(ctx, `SELECT work_id, attempt_id, status FROM work_leases WHERE id = ?`, leaseID).Scan(&workID, &attemptID, &statusStr); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
+	workID, attemptID, statusStr, err := loadLeaseForFence(ctx, tx, ref)
+	if err != nil {
 		return err
 	}
 	if !workgraph.ValidateLeaseTransition(workgraph.LeaseStatus(statusStr), to) {
 		return fmt.Errorf("%w: %s -> %s", workgraph.ErrInvalidTransition, statusStr, to)
 	}
 	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, `
-        UPDATE work_leases SET status = ?, last_beat_at = ? WHERE id = ?
-    `, string(to), now.Format(time.RFC3339Nano), leaseID); err != nil {
+	res, err := tx.ExecContext(ctx, `
+        UPDATE work_leases SET status = ?, last_beat_at = ?
+        WHERE id = ? AND status = ? AND epoch = ? AND worker_id = ?
+    `, string(to), now.Format(time.RFC3339Nano),
+		ref.LeaseID, string(workgraph.LeaseActive), ref.Epoch, ref.WorkerID)
+	if err != nil {
+		return err
+	}
+	if err := requireCASRows(res, ctx, tx, ref); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -451,10 +605,10 @@ func (s *SQLiteStore) GetLease(ctx context.Context, leaseID string) (*workgraph.
 	var l workgraph.Lease
 	var statusStr, grantedStr, expiresStr, beatStr string
 	err := s.readQueryRow(ctx, `
-        SELECT id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status
+        SELECT id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status, epoch
         FROM work_leases WHERE id = ?
     `, leaseID).Scan(&l.ID, &l.WorkID, &l.NodeID, &l.WorkerID, &l.AttemptID,
-		&grantedStr, &expiresStr, &beatStr, &statusStr)
+		&grantedStr, &expiresStr, &beatStr, &statusStr, &l.Epoch)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -470,13 +624,16 @@ func (s *SQLiteStore) GetLease(ctx context.Context, leaseID string) (*workgraph.
 
 // ListExpiredLeases returns up to `limit` leases that are ACTIVE but whose
 // ExpiresAt is in the past. Used by the reaper.
+//
+// The epoch is returned so the reaper can present the exact token it
+// observed when it revokes (ADR-0033) — see RevokeLease.
 func (s *SQLiteStore) ListExpiredLeases(ctx context.Context, limit int) ([]*workgraph.Lease, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rows, err := s.readQuery(ctx, `
-        SELECT id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status
+        SELECT id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status, epoch
         FROM work_leases WHERE status = ? AND expires_at < ? LIMIT ?
     `, string(workgraph.LeaseActive), now, limit)
 	if err != nil {
@@ -488,7 +645,7 @@ func (s *SQLiteStore) ListExpiredLeases(ctx context.Context, limit int) ([]*work
 		var l workgraph.Lease
 		var statusStr, grantedStr, expiresStr, beatStr string
 		if err := rows.Scan(&l.ID, &l.WorkID, &l.NodeID, &l.WorkerID, &l.AttemptID,
-			&grantedStr, &expiresStr, &beatStr, &statusStr); err != nil {
+			&grantedStr, &expiresStr, &beatStr, &statusStr, &l.Epoch); err != nil {
 			return nil, err
 		}
 		l.GrantedAt, _ = parseTime(grantedStr)
@@ -586,7 +743,7 @@ func (s *SQLiteStore) ActiveLeasesByWorkIDs(ctx context.Context, workIDs []strin
 // producer to assemble the components.leases list.
 func (s *SQLiteStore) LeasesByWorkID(ctx context.Context, workID string) ([]*workgraph.Lease, error) {
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status
+        SELECT id, work_id, node_id, worker_id, attempt_id, granted_at, expires_at, last_beat_at, status, epoch
         FROM work_leases WHERE work_id = ? ORDER BY granted_at ASC
     `, workID)
 	if err != nil {
@@ -598,7 +755,7 @@ func (s *SQLiteStore) LeasesByWorkID(ctx context.Context, workID string) ([]*wor
 		var l workgraph.Lease
 		var statusStr, grantedStr, expiresStr, beatStr string
 		if err := rows.Scan(&l.ID, &l.WorkID, &l.NodeID, &l.WorkerID, &l.AttemptID,
-			&grantedStr, &expiresStr, &beatStr, &statusStr); err != nil {
+			&grantedStr, &expiresStr, &beatStr, &statusStr, &l.Epoch); err != nil {
 			return nil, err
 		}
 		l.GrantedAt, _ = parseTime(grantedStr)
