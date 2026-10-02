@@ -462,7 +462,8 @@ func TestReaperRevoke_PresentsObservedEpoch(t *testing.T) {
 	}
 
 	// The revoke presents exactly what the scan observed, and succeeds.
-	if err := s.RevokeLease(ctx, scanned[0].Ref(), "lease expired"); err != nil {
+	ref := store.LeaseRef{LeaseID: scanned[0].ID, WorkerID: scanned[0].WorkerID, Epoch: scanned[0].Epoch}
+	if err := s.RevokeLease(ctx, ref, "lease expired"); err != nil {
 		t.Fatalf("reaper revoke with the scanned epoch: %v", err)
 	}
 
@@ -470,7 +471,7 @@ func TestReaperRevoke_PresentsObservedEpoch(t *testing.T) {
 	// revoke is not idempotent-through-fencing, it is simply refused once
 	// the lease is no longer ACTIVE. That is the pre-existing reaper
 	// behaviour (reapOnce skips the error) and it is unchanged.
-	if err := s.RevokeLease(ctx, scanned[0].Ref(), "lease expired"); !errors.Is(err, store.ErrLeaseNotActive) {
+	if err := s.RevokeLease(ctx, ref, "lease expired"); !errors.Is(err, store.ErrLeaseNotActive) {
 		t.Errorf("second reaper revoke: got %v, want ErrLeaseNotActive", err)
 	}
 }
