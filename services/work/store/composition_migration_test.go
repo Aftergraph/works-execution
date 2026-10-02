@@ -8,10 +8,10 @@ func TestComposedMigrationExecutionContextThenDispatchAcceptance(t *testing.T) {
 	if err := st.db.QueryRow(`SELECT version FROM schema_version ORDER BY version DESC LIMIT 1`).Scan(&got); err != nil {
 		t.Fatalf("schema_version read: %v", err)
 	}
-	if got != 16 || SchemaVersion != 16 {
+	if got != 17 || SchemaVersion != 17 {
 		t.Fatalf("composed schema must end at v15, got ledger=%d const=%d", got, SchemaVersion)
 	}
-	for _, table := range []string{"work_execution_contexts", "dispatch_acceptances", "economic_source_generations", "economic_source_trust_roots"} {
+	for _, table := range []string{"work_execution_contexts", "dispatch_acceptances", "economic_source_generations", "economic_source_trust_roots", "economic_source_trust_root_events"} {
 		var name string
 		if err := st.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name); err != nil {
 			t.Fatalf("required composed table %s missing: %v", table, err)

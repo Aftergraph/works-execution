@@ -1,0 +1,179 @@
+package store
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const economicSourceTrustRootHistorySchema =
+	"CREATE TABLE IF NOT EXISTS economic_source_trust_root_events (" +
+	"source_class TEXT NOT NULL," +
+	"source_id TEXT NOT NULL," +
+	"sequence INTEGER NOT NULL CHECK(sequence > 0)," +
+	"generation INTEGER NOT NULL CHECK(generation > 0)," +
+	"decision TEXT NOT NULL CHECK(decision IN ('ADVANCED','ADVANCED_POLICY','ROTATED'))," +
+	"state_digest TEXT NOT NULL," +
+	"authorization_digest TEXT NOT NULL," +
+	"previous_event_hash TEXT NOT NULL," +
+	"event_hash TEXT NOT NULL," +
+	"created_at TEXT NOT NULL," +
+	"PRIMARY KEY(source_class, source_id, sequence)," +
+	"UNIQUE(event_hash)," +
+	"CHECK(source_class IN ('registry','custody','representation'))" +
+	");" +
+	"CREATE INDEX IF NOT EXISTS idx_economic_trust_root_events_hash " +
+	"ON economic_source_trust_root_events(source_class, source_id, event_hash);"
+
+const economicTrustRootGenesisHash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+type EconomicSourceTrustRootEvent struct {
+	SourceClass         string
+	SourceID            string
+	Sequence            int64
+	Generation          int64
+	Decision            string
+	StateDigest         string
+	AuthorizationDigest string
+	PreviousEventHash   string
+	EventHash           string
+	CreatedAt           string
+}
+
+func (s *SQLiteStore) migrateEconomicSourceTrustRootHistory() error {
+	_, err := s.db.Exec(economicSourceTrustRootHistorySchema)
+	return err
+}
+
+func economicTrustRootEventHash(v EconomicSourceTrustRootEvent) string {
+	parts := []string{
+		v.SourceClass,
+		v.SourceID,
+		strconv.FormatInt(v.Sequence, 10),
+		strconv.FormatInt(v.Generation, 10),
+		v.Decision,
+		v.StateDigest,
+		v.AuthorizationDigest,
+		v.PreviousEventHash,
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func appendEconomicTrustRootEventTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	state EconomicSourceTrustRootState,
+	decision string,
+	authorizationDigest string,
+) (*EconomicSourceTrustRootEvent, error) {
+	if state.Revision <= 0 || state.Generation <= 0 || !isTrustHash(state.StateDigest) {
+		return nil, errors.New("economic trust root history state invalid")
+	}
+	switch decision {
+	case "ADVANCED", "ADVANCED_POLICY", "ROTATED":
+	default:
+		return nil, errors.New("economic trust root history decision invalid")
+	}
+	if decision == "ROTATED" {
+		if !isTrustHash(authorizationDigest) {
+			return nil, errors.New("economic trust root rotation history authorization digest required")
+		}
+	} else if authorizationDigest != "" {
+		return nil, errors.New("economic trust root non-rotation history authorization digest forbidden")
+	}
+
+	previousHash := economicTrustRootGenesisHash
+	var priorSequence int64
+	var priorHash string
+	err := tx.QueryRowContext(ctx,
+		"SELECT sequence, event_hash FROM economic_source_trust_root_events "+
+			"WHERE source_class=? AND source_id=? ORDER BY sequence DESC LIMIT 1",
+		state.SourceClass, state.SourceID,
+	).Scan(&priorSequence, &priorHash)
+	if err == nil {
+		previousHash = priorHash
+		if priorSequence+1 != state.Revision {
+			return nil, errors.New("economic trust root history revision discontinuity")
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	} else if state.Revision != 1 {
+		return nil, errors.New("economic trust root history missing prior event")
+	}
+
+	event := EconomicSourceTrustRootEvent{
+		SourceClass:         state.SourceClass,
+		SourceID:            state.SourceID,
+		Sequence:            state.Revision,
+		Generation:          state.Generation,
+		Decision:            decision,
+		StateDigest:         state.StateDigest,
+		AuthorizationDigest: authorizationDigest,
+		PreviousEventHash:   previousHash,
+		CreatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	event.EventHash = economicTrustRootEventHash(event)
+
+	_, err = tx.ExecContext(ctx,
+		"INSERT INTO economic_source_trust_root_events "+
+			"(source_class, source_id, sequence, generation, decision, state_digest, authorization_digest, previous_event_hash, event_hash, created_at) "+
+			"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		event.SourceClass, event.SourceID, event.Sequence, event.Generation, event.Decision,
+		event.StateDigest, event.AuthorizationDigest, event.PreviousEventHash, event.EventHash, event.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("economic trust root history append: %w", err)
+	}
+	return &event, nil
+}
+
+func (s *SQLiteStore) ListEconomicSourceTrustRootEvents(
+	ctx context.Context,
+	sourceClass, sourceID string,
+) ([]EconomicSourceTrustRootEvent, error) {
+	rows, err := s.readQuery(ctx,
+		"SELECT source_class, source_id, sequence, generation, decision, state_digest, authorization_digest, previous_event_hash, event_hash, created_at "+
+			"FROM economic_source_trust_root_events WHERE source_class=? AND source_id=? ORDER BY sequence ASC",
+		sourceClass, sourceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []EconomicSourceTrustRootEvent{}
+	expectedPrevious := economicTrustRootGenesisHash
+	var expectedSequence int64 = 1
+	for rows.Next() {
+		var ev EconomicSourceTrustRootEvent
+		if err := rows.Scan(
+			&ev.SourceClass, &ev.SourceID, &ev.Sequence, &ev.Generation, &ev.Decision,
+			&ev.StateDigest, &ev.AuthorizationDigest, &ev.PreviousEventHash, &ev.EventHash, &ev.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if ev.Sequence != expectedSequence {
+			return nil, errors.New("economic trust root history sequence mismatch")
+		}
+		if ev.PreviousEventHash != expectedPrevious {
+			return nil, errors.New("economic trust root history chain mismatch")
+		}
+		if ev.EventHash != economicTrustRootEventHash(ev) {
+			return nil, errors.New("economic trust root history event digest mismatch")
+		}
+		if ev.Decision == "ROTATED" && !isTrustHash(ev.AuthorizationDigest) {
+			return nil, errors.New("economic trust root history rotation authorization missing")
+		}
+		expectedPrevious = ev.EventHash
+		expectedSequence++
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
