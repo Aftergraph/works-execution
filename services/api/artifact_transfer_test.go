@@ -158,7 +158,7 @@ func TestCompleteLeaseRejectsSuccessfulResultWithoutArtifact(t *testing.T) {
 
 func TestCompleteLeaseRejectsArtifactForInactiveLeaseBeforePersisting(t *testing.T) {
 	ts, st, work, lease, artifactRoot := createArtifactLease(t)
-	if err := st.ReleaseLease(context.Background(), lease.Ref(), "test release"); err != nil {
+	if err := st.ReleaseLease(context.Background(), store.LeaseRefFor(lease), "test release"); err != nil {
 		t.Fatal(err)
 	}
 	content := []byte("stale worker output")
