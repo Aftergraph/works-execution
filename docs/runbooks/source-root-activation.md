@@ -13,6 +13,10 @@ This runbook activates the production worker checkout root introduced by the sou
 
 The helper does not install a new worker binary. Before activation, the canonical worker binary must already contain the `-source-root` contract from main.
 
+## Fleet boundary
+
+Production may run more than one worker unit (`works-worker.service`, `works-worker-2.service`, ...) sharing one binary and one env file. The activator discovers every **active** `works-worker*.service` unit, enforces the service contract on each, restarts each, and requires the runtime `WORKS_SOURCE_ROOT` readback on every unit before reporting success. Inactive/standby units are not restarted; they inherit the env file on their next start. A unit that fails any check fails the whole activation (fail closed) and triggers rollback of the env file plus restart of every fleet unit.
+
 ## Status
 
 Read-only status:
@@ -33,7 +37,7 @@ cd /opt/works
 bash scripts/ops/works-source-root.sh enable
 ```
 
-The helper requires root, validates the root-owned canonical env file, validates `/var/lib/works` capacity/inodes/mount policy, atomically replaces only `WORKS_SOURCE_ROOT`, creates the private checkout parent, restarts only `works-worker.service`, requires a new worker PID, reads the non-secret source root back from the running process, and rolls back the env file plus worker restart if any postcondition fails.
+The helper requires root, validates the root-owned canonical env file, validates `/var/lib/works` capacity/inodes/mount policy, atomically replaces only `WORKS_SOURCE_ROOT`, creates the private checkout parent, restarts every active worker unit, requires a new worker PID per unit, reads the non-secret source root back from each running process, and rolls back the env file plus fleet restart if any postcondition fails.
 
 The operation is idempotent: if both the canonical env file and running worker already use `/var/lib/works`, it returns `changed:false`.
 
