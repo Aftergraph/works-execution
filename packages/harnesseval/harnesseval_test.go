@@ -10,7 +10,7 @@ func hash(c string) string {
 
 func TestBuildCreatesParallelBranchesAndIndependentEvaluator(t *testing.T) {
 	decisionHash := hash("d")
-	profileHash := hash("p")
+	profileHash := hash("c")
 	work, err := Build(Spec{
 		RoutingDecisionHash: decisionHash,
 		TaskProfileHash: profileHash,
