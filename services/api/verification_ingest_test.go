@@ -35,7 +35,7 @@ func seedTerminalVerificationWork(t *testing.T, st store.Store) *workgraph.Work 
 		t.Fatal(err)
 	}
 	art := &workgraph.Artifact{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", NodeID: "a", MimeType: "text/plain", Size: 1, Path: "/tmp/verify"}
-	if _, err := st.CompleteLease(ctx, lease.ID, 0, art, nil); err != nil {
+	if _, err := st.CompleteLease(ctx, store.LeaseRefFor(lease), 0, art, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := st.GetWork(ctx, w.ID)

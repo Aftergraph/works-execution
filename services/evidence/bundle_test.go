@@ -60,7 +60,7 @@ func seedSucceeded(t *testing.T, st store.Store) *workgraph.Work {
 		Size:     1,
 		Path:     "/tmp/o",
 	}
-	if _, err := st.CompleteLease(ctx, lease.ID, 0, artifact, nil); err != nil {
+	if _, err := st.CompleteLease(ctx, store.LeaseRefFor(lease), 0, artifact, nil); err != nil {
 		t.Fatalf("CompleteLease: %v", err)
 	}
 	// CompleteLease already transitions RUNNING -> VERIFYING -> SUCCEEDED
