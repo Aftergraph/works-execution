@@ -47,6 +47,12 @@ func main() {
 	)
 	flag.Parse()
 
+	// The image is distroless, so the container HEALTHCHECK asks this binary to
+	// probe its own listener. See healthz.go.
+	if *healthzOnly {
+		os.Exit(healthzOnlyExit(*addr))
+	}
+
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 
 	st, err := store.Open(*dbPath)
