@@ -1,6 +1,7 @@
 # WORKS — deployable container (durable execution control plane)
 # Go 1.25 builder + distroless runtime.
-FROM golang:1.25-alpine AS builder
+# golang:1.25-alpine, pinned by digest (OpenSSF Scorecard PinnedDependencies)
+FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS builder
 
 WORKDIR /build
 COPY go.mod go.sum ./
@@ -10,7 +11,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /out/works-api ./cmd/works-api
 
 # ── runtime ──
-FROM gcr.io/distroless/static-debian12
+# gcr.io/distroless/static-debian12:latest, pinned by digest
+FROM gcr.io/distroless/static-debian12@sha256:d75cdd72874d4790092fcb1b058493ecf6bb5bf2b2b897045b00ff01d91843f2
 
 COPY --from=builder /out/works-api /works-api
 COPY policies/ /policies/
