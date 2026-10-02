@@ -15,6 +15,8 @@ import (
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 )
 
+)
+
 var sha256Hex = regexp.MustCompile(`^[a-f0-9]{64}// Package harnesseval builds deterministic WORKS graphs for shadow harness evaluation.
 //
 // It does not select, promote, or authorize a harness. It only materializes
@@ -34,7 +36,7 @@ import (
 
 )
 
-type Branch struct {
+)\n\ntype Branch struct {
 	ID   string
 	Hash string
 	LineageHash string
