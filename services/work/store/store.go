@@ -109,9 +109,9 @@ type LeaseRef struct {
 	Epoch int64
 }
 
-// Ref builds the fencing triple for a lease the caller legitimately holds
-// (one it was just granted, or just read back from the store).
-func (l *workgraph.Lease) Ref() LeaseRef {
+// LeaseRefFor builds the fencing triple for a lease the caller legitimately
+// holds (one it was just granted, or just read back from the store).
+func LeaseRefFor(l *workgraph.Lease) LeaseRef {
 	if l == nil {
 		return LeaseRef{}
 	}
