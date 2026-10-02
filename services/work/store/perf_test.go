@@ -50,7 +50,7 @@ func TestListWorksHydrationParity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.CompleteLease(ctx, store.LeaseRefFor(lease), 0, &workgraph.Artifact{
+		if _, err := s.CompleteLease(ctx, LeaseRefFor(lease), 0, &workgraph.Artifact{
 			ID: "art1", NodeID: "a", MimeType: "text/plain", Size: 3, Path: "/tmp/a",
 		}, []workgraph.Evidence{{
 			ID: "ev1", NodeID: "a", AttemptID: attempt.ID, Type: "log", Result: "ok",
