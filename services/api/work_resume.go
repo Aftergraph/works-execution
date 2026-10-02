@@ -32,6 +32,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/JonasAbde/works-execution/packages/verifiedstate"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
@@ -133,12 +135,30 @@ func WireResumeRoutes(reg RouteRegistrar, s *Server, bridgeSecret string) {
 }
 
 // resumeRequest is the platform-bridge resume body (plan-specified shape).
+const (
+	resumeObservationSchema     = "resume.observation/1.0"
+	resumeObservationMaxAge     = 2 * time.Minute
+	resumeObservationFutureSkew = 30 * time.Second
+)
+
+// resumeObservation is a platform-bridge-authenticated current-world
+// observation produced by Runtime. It is not canonical truth: WORKS uses it
+// only as input to the checkpoint's typed reconciliation law.
+type resumeObservation struct {
+	Schema         string                 `json:"schema"`
+	ObserverID     string                 `json:"observer_id"`
+	CheckpointHash string                 `json:"checkpoint_hash"`
+	ObservedAt     time.Time              `json:"observed_at"`
+	Snapshot       verifiedstate.Snapshot `json:"snapshot"`
+}
+
 type resumeBody struct {
-	ApprovalReceiptID string `json:"approval_receipt_id"`
-	PrincipalID       string `json:"principal_id"`
-	TenantID          string `json:"tenant_id"`
-	CheckpointHash    string `json:"checkpoint_hash"`
-	IdempotencyKey    string `json:"idempotency_key"`
+	ApprovalReceiptID string             `json:"approval_receipt_id"`
+	PrincipalID       string             `json:"principal_id"`
+	TenantID          string             `json:"tenant_id"`
+	CheckpointHash    string             `json:"checkpoint_hash"`
+	IdempotencyKey    string             `json:"idempotency_key"`
+	Observation       *resumeObservation `json:"observation,omitempty"`
 }
 
 // canonicalPayload serializes the semantically-relevant fields for payload
@@ -146,18 +166,60 @@ type resumeBody struct {
 // approval receipt + principal + tenant + checkpoint hash.
 func (b resumeBody) canonicalPayload() string {
 	type canonical struct {
-		ApprovalReceiptID string `json:"approval_receipt_id"`
-		PrincipalID       string `json:"principal_id"`
-		TenantID          string `json:"tenant_id"`
-		CheckpointHash    string `json:"checkpoint_hash"`
+		ApprovalReceiptID string             `json:"approval_receipt_id"`
+		PrincipalID       string             `json:"principal_id"`
+		TenantID          string             `json:"tenant_id"`
+		CheckpointHash    string             `json:"checkpoint_hash"`
+		Observation       *resumeObservation `json:"observation,omitempty"`
 	}
 	raw, _ := json.Marshal(canonical{
 		ApprovalReceiptID: b.ApprovalReceiptID,
 		PrincipalID:       b.PrincipalID,
 		TenantID:          b.TenantID,
 		CheckpointHash:    b.CheckpointHash,
+		Observation:       b.Observation,
 	})
 	return string(raw)
+}
+
+func validateResumeObservation(
+	observation *resumeObservation,
+	expectedCheckpointHash string,
+	now time.Time,
+) error {
+	if observation == nil {
+		return errors.New("observation is required")
+	}
+	if observation.Schema != resumeObservationSchema {
+		return fmt.Errorf("observation schema %q unsupported", observation.Schema)
+	}
+	if !strings.HasPrefix(observation.ObserverID, "runtime:") ||
+		strings.TrimSpace(strings.TrimPrefix(observation.ObserverID, "runtime:")) == "" {
+		return errors.New("observer_id must identify a runtime control-plane observer")
+	}
+	if observation.CheckpointHash == "" || observation.CheckpointHash != expectedCheckpointHash {
+		return errors.New("observation checkpoint_hash does not match resume checkpoint")
+	}
+	if observation.ObservedAt.IsZero() {
+		return errors.New("observed_at is required")
+	}
+	observedAt := observation.ObservedAt.UTC()
+	now = now.UTC()
+	if observedAt.After(now.Add(resumeObservationFutureSkew)) {
+		return errors.New("observation timestamp is too far in the future")
+	}
+	if now.Sub(observedAt) > resumeObservationMaxAge {
+		return errors.New("observation is stale")
+	}
+	if len(observation.Snapshot) == 0 {
+		return errors.New("observation snapshot is required")
+	}
+	for id, fingerprint := range observation.Snapshot {
+		if strings.TrimSpace(id) == "" || strings.TrimSpace(fingerprint) == "" {
+			return errors.New("observation snapshot ids and fingerprints must be non-empty")
+		}
+	}
+	return nil
 }
 
 // sha256Hex returns the hex sha256 digest of s. Used to bind idempotency
@@ -260,23 +322,44 @@ func (h *resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if verificationAware {
-		if h.observer == nil {
+		var observed verifiedstate.Snapshot
+		switch {
+		case body.Observation != nil:
+			if checkpoint.Schema != verifiedstate.CheckpointSchemaObserved {
+				writeError(w, http.StatusConflict, "resume_observation_unsupported",
+					"checkpoint has no explicit cross-process observation plan")
+				return
+			}
+			if observationErr := validateResumeObservation(body.Observation, body.CheckpointHash, time.Now()); observationErr != nil {
+				writeError(w, http.StatusConflict, "resume_observation_invalid", observationErr.Error())
+				return
+			}
+			observed = body.Observation.Snapshot
+		case h.observer != nil:
+			var observeErr error
+			observed, observeErr = h.observer.ObserveResumeSnapshot(ctx, workID, checkpoint)
+			if observeErr != nil {
+				writeError(w, http.StatusServiceUnavailable, "resume_observation_failed",
+					"trusted world observation failed")
+				return
+			}
+		default:
 			writeError(w, http.StatusServiceUnavailable, "resume_reconciliation_unavailable",
-				"verification-aware checkpoint requires a trusted world observer")
+				"verification-aware checkpoint requires a trusted world observation")
 			return
 		}
-		current, observeErr := h.observer.ObserveResumeSnapshot(ctx, workID, checkpoint)
-		if observeErr != nil {
-			writeError(w, http.StatusServiceUnavailable, "resume_observation_failed",
-				"trusted world observation failed")
-			return
-		}
+
 		var reconcileResult verifiedstate.ReconcileResult
 		resumed, reconcileResult, err = h.resume.ResumeFromCheckpointReconciled(
-			ctx, workID, body.CheckpointHash, current,
+			ctx, workID, body.CheckpointHash, observed,
 		)
 		_ = reconcileResult // retained by the store result for later evidence/journal wiring
 	} else {
+		if body.Observation != nil {
+			writeError(w, http.StatusConflict, "resume_observation_unexpected",
+				"legacy checkpoint cannot accept a verification observation")
+			return
+		}
 		resumed, err = h.resume.ResumeFromCheckpoint(ctx, workID)
 	}
 	if err != nil {
