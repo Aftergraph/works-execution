@@ -317,7 +317,7 @@ func TestFailOutboxAttempt_RetriesThenDies(t *testing.T) {
 	if len(claimed) != 1 {
 		t.Fatalf("claimed %d entries, want 1", len(claimed))
 	}
-	entry := claimed[0
+	entry := claimed[0]
 
 	for attempt := 1; attempt <= budget; attempt++ {
 		if attempt > 1 {
