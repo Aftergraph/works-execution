@@ -362,7 +362,7 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_work_id ON work_artifacts(work_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_work_id ON work_evidence(work_id);
 
 -- slice 2: leases
--- v18 (ADR-0033) adds `epoch`, the monotonic fencing token for this
+-- v18 (ADR-0033) adds the epoch column, the monotonic fencing token for this
 -- node's lease generations. It is NOT NULL DEFAULT 0 so a v17 database
 -- migrates in place without a table rebuild; pre-existing rows land on
 -- epoch 0 and are immediately unusable as a fencing token, which is the
