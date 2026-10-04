@@ -180,7 +180,11 @@ func TestCompleteWithStaleEpochIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body := `{"exit_code":0,"epoch":` + leaseItoa(stale.Epoch) + `}`
+	// A failed completion (non-zero exit) needs no artifact, so the request
+	// reaches the lease fence itself. With exit_code 0 and no artifact the
+	// handler refuses earlier with 422 artifact_required, which would test
+	// the artifact rule rather than the fence.
+	body := `{"exit_code":1,"epoch":` + leaseItoa(stale.Epoch) + `}`
 	code, out := leasePostJSON(t, ts, "/v1/leases/"+stale.ID+"/complete", body)
 	if code != http.StatusConflict {
 		t.Fatalf("stale complete: status = %d, want 409 (body %v)", code, out)
