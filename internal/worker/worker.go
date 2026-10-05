@@ -322,6 +322,32 @@ func (c *Client) Ready(ctx context.Context) ([]ReadyItem, error) {
 	return rr.Items, nil
 }
 
+// SourceBundle downloads one admitted content-addressed source bundle.
+// The worker re-checks the digest during MaterializeBundle before extraction.
+func (c *Client) SourceBundle(ctx context.Context, digest string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/v1/source-bundles/"+digest, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("source bundle: %s: %s", resp.Status, body)
+	}
+	content, err := io.ReadAll(io.LimitReader(resp.Body, workgraph.MaxSourceBundleBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > workgraph.MaxSourceBundleBytes {
+		return nil, errors.New("source bundle exceeds transfer limit")
+	}
+	return content, nil
+}
+
 // GrantLease requests a lease for the given (work_id, node_id, worker_id).
 // Returns the lease ID + attempt ID.
 func (c *Client) GrantLease(ctx context.Context, workID, nodeID, workerID string, ttl time.Duration) (leaseID, attemptID string, err error) {
@@ -617,14 +643,23 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem, artifactRoot *os.R
 		executionStarted := time.Now()
 		var checkedOut *source.Source
 		var sourceDir string
-		if item.Source != nil && item.Source.CloneURL != "" && item.Source.SHA != "" {
-			checkedOut, err = source.Checkout(ctx, source.Options{
-				RepoURL: item.Source.CloneURL,
-				Ref:     item.Source.Ref,
-				SHA:     item.Source.SHA,
-				Token:   w.GitHubToken,
-				Root:    w.SourceRoot,
-			})
+		if item.Source != nil {
+			switch {
+			case item.Source.Type == "bundle" && item.Source.BundleDigest != "":
+				var bundle []byte
+				bundle, err = w.Client.SourceBundle(ctx, item.Source.BundleDigest)
+				if err == nil {
+					checkedOut, err = source.MaterializeBundle(bundle, item.Source.BundleDigest, w.SourceRoot)
+				}
+			case item.Source.CloneURL != "" && item.Source.SHA != "":
+				checkedOut, err = source.Checkout(ctx, source.Options{
+					RepoURL: item.Source.CloneURL,
+					Ref:     item.Source.Ref,
+					SHA:     item.Source.SHA,
+					Token:   w.GitHubToken,
+					Root:    w.SourceRoot,
+				})
+			}
 			if err != nil {
 				res = execResult{
 					Status:      "failed",
@@ -632,7 +667,7 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem, artifactRoot *os.R
 					CombinedLog: []byte("source checkout failed: " + err.Error()),
 					Duration:    time.Since(executionStarted),
 				}
-			} else {
+			} else if checkedOut != nil {
 				sourceDir = checkedOut.WorkDir
 				defer func() { _ = checkedOut.Cleanup() }()
 			}
