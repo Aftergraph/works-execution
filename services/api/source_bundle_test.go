@@ -170,3 +170,23 @@ func TestSourceBundleRejectsLinks(t *testing.T) {
 		t.Fatalf("symlink bundle: got %d want 400", resp.StatusCode)
 	}
 }
+
+
+func TestBundleFieldsAreReservedWithoutClosingLegacySourceTypes(t *testing.T) {
+	legacy := workgraph.Work{
+		ID:        workgraph.NewID("wrk"),
+		Source:    workgraph.Source{Type: "controller-loss-proof"},
+		Objective: workgraph.Objective{Type: "verify_change"},
+		Graph: workgraph.Graph{Nodes: map[string]workgraph.Node{
+			"a": {ID: "a", Run: "true"},
+		}},
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy source type must remain valid: %v", err)
+	}
+
+	legacy.Source.BundleDigest = string(bytes.Repeat([]byte("a"), 64))
+	if err := legacy.Validate(); err == nil {
+		t.Fatal("non-bundle source carrying bundle fields must be rejected")
+	}
+}
