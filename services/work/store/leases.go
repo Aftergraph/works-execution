@@ -204,14 +204,26 @@ func (s *SQLiteStore) RenewLease(ctx context.Context, leaseID string, ttl time.D
 // MaybeFinalizeWork — if all nodes in the work have a successful attempt
 // and the work is RUNNING, it transitions to VERIFYING then SUCCEEDED.
 func (s *SQLiteStore) CompleteLease(ctx context.Context, leaseID string, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error) {
+	var artifacts []workgraph.Artifact
+	if artifact != nil {
+		artifacts = append(artifacts, *artifact)
+	}
+	return s.CompleteLeaseBatch(ctx, leaseID, exitCode, artifacts, evidence)
+}
+
+// CompleteLeaseBatch atomically finalizes the lease/attempt and persists every
+// artifact + evidence row reported for the attempt. This is the canonical
+// production path for typed outputs; CompleteLease remains the N-1 wrapper.
+func (s *SQLiteStore) CompleteLeaseBatch(ctx context.Context, leaseID string, exitCode int, artifacts []workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
-	var workID, attemptID, statusStr string
-	if err := tx.QueryRowContext(ctx, `SELECT work_id, attempt_id, status FROM work_leases WHERE id = ?`, leaseID).Scan(&workID, &attemptID, &statusStr); err != nil {
+	var workID, attemptID, nodeID, statusStr string
+	if err := tx.QueryRowContext(ctx, `SELECT work_id, attempt_id, node_id, status FROM work_leases WHERE id = ?`, leaseID).
+		Scan(&workID, &attemptID, &nodeID, &statusStr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -227,56 +239,92 @@ func (s *SQLiteStore) CompleteLease(ctx context.Context, leaseID string, exitCod
 		status = "failed"
 	}
 
-	// Transition lease -> RELEASED.
-	if _, err := tx.ExecContext(ctx, `
-        UPDATE work_leases SET status = ?, last_beat_at = ? WHERE id = ? AND status = ?
-    `, string(workgraph.LeaseReleased), now.Format(time.RFC3339Nano), leaseID, string(workgraph.LeaseActive)); err != nil {
-		return nil, err
+	for i := range artifacts {
+		art := &artifacts[i]
+		if art.ID == "" {
+			return nil, errors.New("artifact.ID required")
+		}
+		if art.NodeID == "" {
+			art.NodeID = nodeID
+		}
+		if art.NodeID != nodeID {
+			return nil, fmt.Errorf("artifact %s node %s does not match lease node %s", art.ID, art.NodeID, nodeID)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO work_artifacts (id, work_id, node_id, mime_type, size, path)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, art.ID, workID, art.NodeID, art.MimeType, art.Size, art.Path); err != nil {
+			return nil, fmt.Errorf("insert artifact: %w", err)
+		}
 	}
-	// Finalize the attempt.
-	if _, err := tx.ExecContext(ctx, `
-        UPDATE work_attempts SET status = ?, exit_code = ?, finished_at = ? WHERE id = ?
-    `, status, exitCode, now.Format(time.RFC3339Nano), attemptID); err != nil {
-		return nil, err
+	for i := range evidence {
+		ev := &evidence[i]
+		if ev.ID == "" {
+			return nil, errors.New("evidence.ID required")
+		}
+		if ev.NodeID == "" {
+			ev.NodeID = nodeID
+		}
+		if ev.NodeID != nodeID {
+			return nil, fmt.Errorf("evidence %s node %s does not match lease node %s", ev.ID, ev.NodeID, nodeID)
+		}
+		if ev.AttemptID == "" {
+			ev.AttemptID = attemptID
+		}
+		if ev.RecordedAt.IsZero() {
+			ev.RecordedAt = now
+		}
+		details := ""
+		if ev.Details != nil {
+			raw, err := json.Marshal(ev.Details)
+			if err != nil {
+				return nil, err
+			}
+			details = string(raw)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT OR IGNORE INTO work_evidence
+			(id, work_id, node_id, attempt_id, type, result, recorded_at, artifact_id, signer, environment, details_json)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			ev.ID, workID, ev.NodeID, ev.AttemptID, ev.Type, ev.Result,
+			ev.RecordedAt.UTC().Format(time.RFC3339Nano),
+			nullable(ev.ArtifactID), nullable(ev.Signer), nullable(ev.Environment), nullable(details),
+		); err != nil {
+			return nil, fmt.Errorf("insert evidence: %w", err)
+		}
 	}
-	_, _ = tx.ExecContext(ctx, `UPDATE works SET updated_at = ? WHERE id = ?`, now.Format(time.RFC3339Nano), workID)
 
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE work_leases SET status = ?, last_beat_at = ? WHERE id = ? AND status = ?
+	`, string(workgraph.LeaseReleased), now.Format(time.RFC3339Nano), leaseID, string(workgraph.LeaseActive)); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE work_attempts SET status = ?, exit_code = ?, finished_at = ? WHERE id = ?
+	`, status, exitCode, now.Format(time.RFC3339Nano), attemptID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE works SET updated_at = ? WHERE id = ?`, now.Format(time.RFC3339Nano), workID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
-	if artifact != nil {
-		if _, err := s.AppendArtifact(ctx, workID, *artifact); err != nil {
-			return nil, err
-		}
-	}
-	for _, e := range evidence {
-		if _, err := s.AppendEvidence(ctx, workID, e); err != nil {
-			return nil, err
-		}
-	}
-
-	// If a node failed, the work is FAILED. If all nodes succeeded, finalize
-	// to VERIFYING -> SUCCEEDED.
 	w, err := s.GetWork(ctx, workID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Self-Healing (k-impl-007): classify every failed attempt in the just-
-	// completed work. Each classification is persisted as an evidence row
-	// of type "policy" so downstream consumers (Self-Healing scheduler,
-	// standards-validate, evidence bundle) can read it without a schema
-	// change. The attempt's worker-reported Error string is used as the
-	// logTail fallback; richer log parsing is a slice-5 concern.
 	s.classifyFailedAttempts(ctx, w)
 
 	allOK := true
 	anyFailed := false
-	for nodeID := range w.Graph.Nodes {
+	for nid := range w.Graph.Nodes {
 		nodeOK := false
 		for _, a := range w.Attempts {
-			if a.NodeID != nodeID {
+			if a.NodeID != nid {
 				continue
 			}
 			if a.Status == "succeeded" {
@@ -297,8 +345,6 @@ func (s *SQLiteStore) CompleteLease(ctx context.Context, leaseID string, exitCod
 		}
 	case allOK:
 		if w.State == workgraph.StateRunning {
-			// Live timeline (Conversation V1 mirror): terminal transitions
-			// are journaled so the AVC worker can mirror work.state.changed.
 			if _, err := s.UpdateStateEventful(ctx, workID, workgraph.StateVerifying); err != nil {
 				s.logFmt("complete: transition to VERIFYING: %v", err)
 			}
