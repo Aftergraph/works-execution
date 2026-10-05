@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -59,6 +60,12 @@ type RunOptions struct {
 	// Workdir is the working directory inside the container. Empty =
 	// "/work" default. The directory is created on demand.
 	Workdir string
+
+	// HostWorkdir, when set, is an isolated per-Work source directory to
+	// bind at Workdir. It must be absolute. This is the only writable host
+	// path exposed to the container; the container root filesystem remains
+	// read-only and network remains denied by default.
+	HostWorkdir string
 
 	// Env is the set of environment variables to inject into the
 	// container. Empty map = no extra env (the container inherits
@@ -181,6 +188,9 @@ func Run(ctx context.Context, imageName, command string, opts RunOptions) (*Resu
 		return nil, errors.New("docker: empty command")
 	}
 	applyDefaults(&opts)
+	if opts.HostWorkdir != "" && !filepath.IsAbs(opts.HostWorkdir) {
+		return nil, fmt.Errorf("docker: host workdir must be absolute: %q", opts.HostWorkdir)
+	}
 
 	docker, err := resolveDockerPath()
 	if err != nil {
@@ -229,6 +239,9 @@ func Run(ctx context.Context, imageName, command string, opts RunOptions) (*Resu
 		args = append(args, "--network=none") // default: no network
 	} else {
 		args = append(args, "--network="+opts.Network)
+	}
+	if opts.HostWorkdir != "" {
+		args = append(args, "--mount", "type=bind,src="+filepath.Clean(opts.HostWorkdir)+",dst="+opts.Workdir)
 	}
 	for _, e := range envSlice {
 		args = append(args, "-e", e)
