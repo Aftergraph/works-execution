@@ -192,6 +192,12 @@ type EvidenceSpec struct {
 	Types    []string `json:"types,omitempty"` // build, test, typecheck, lint, security_scan, artifact
 }
 
+const (
+	MaxSourceBundleBytes    int64 = 32 << 20
+	MaxSourceExpandedBytes  int64 = 128 << 20
+	MaxSourceBundleFiles          = 4096
+)
+
 // Source identifies what triggered the Work.
 //
 // M1 (k-impl-018/019/021) extends this with explicit SHA / clone /
@@ -218,6 +224,12 @@ type Source struct {
 	PRAction string `json:"pr_action,omitempty"` // opened, synchronize, reopened
 	PRHead   string `json:"pr_head,omitempty"`   // source branch
 	PRBase   string `json:"pr_base,omitempty"`   // target branch
+
+	// Generated source bundles are admitted independently of Git. The digest
+	// is the SHA-256 of the exact TAR bytes stored by the WORKS control plane.
+	BundleDigest string `json:"bundle_digest,omitempty"`
+	BundleSize   int64  `json:"bundle_size,omitempty"`
+	BundleFormat string `json:"bundle_format,omitempty"` // tar-v1
 }
 
 // Objective describes what outcome the Work is requesting.
@@ -551,6 +563,27 @@ func (w *Work) Validate() error {
 	}
 	if w.Objective.Type == "" {
 		return errors.New("work.objective.type is required")
+	}
+	if w.Source.Type == "bundle" {
+		if len(w.Source.BundleDigest) != 64 {
+			return errors.New("bundle source requires a 64-char sha256 digest")
+		}
+		if _, err := hex.DecodeString(w.Source.BundleDigest); err != nil || strings.ToLower(w.Source.BundleDigest) != w.Source.BundleDigest {
+			return errors.New("bundle source digest must be lowercase hex sha256")
+		}
+		if w.Source.BundleSize <= 0 || w.Source.BundleSize > MaxSourceBundleBytes {
+			return fmt.Errorf("bundle source size must be between 1 and %d bytes", MaxSourceBundleBytes)
+		}
+		if w.Source.BundleFormat != "tar-v1" {
+			return errors.New("bundle source format must be tar-v1")
+		}
+		if w.Source.Repository != "" || w.Source.SHA != "" || w.Source.CloneURL != "" {
+			return errors.New("bundle source cannot also declare repository/SHA/clone_url")
+		}
+	} else if w.Source.BundleDigest != "" || w.Source.BundleSize != 0 || w.Source.BundleFormat != "" {
+		// Source.Type is deliberately open-ended for existing controllers and
+		// integrations. Only the new bundle fields are namespaced/reserved.
+		return errors.New("bundle fields require work.source.type=bundle")
 	}
 	if len(w.Graph.Nodes) == 0 {
 		return errors.New("work.graph.nodes must contain at least one node")
