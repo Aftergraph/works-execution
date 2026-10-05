@@ -675,7 +675,7 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem, artifactRoot *os.R
 		if res.Status == "" {
 			w.logf("running %s/%s (lease=%s): %s", item.WorkID, item.NodeID, leaseID, item.Run)
 			if item.Image != "" {
-				res = runDocker(ctx, item.Image, item.Run, item.Env, timeout, killCh)
+				res = runDocker(ctx, item.Image, item.Run, item.Env, timeout, killCh, sourceDir)
 			} else {
 				// Hermetic Execution Standard (#111): production leases
 				// ALWAYS execute under a derived sandbox manifest. The
@@ -1052,7 +1052,7 @@ func runCommand(ctx context.Context, command string, env map[string]string, time
 // slice-4 hermetic defaults (--read-only, --cap-drop=ALL,
 // --network=none, no-new-privileges, memory + CPU + PIDs caps) so a
 // docker run is strictly more isolated than the host path.
-func runDocker(ctx context.Context, image, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}) execResult {
+func runDocker(ctx context.Context, image, command string, env map[string]string, timeout time.Duration, killCh <-chan struct{}, sourceDir string) execResult {
 	requestedEnv := env
 	// ADR-0022 (k-057): resolve secret REFs before handing env to the
 	// container, same law as the host path. Fail closed: an unresolved
@@ -1086,7 +1086,8 @@ func runDocker(ctx context.Context, image, command string, env map[string]string
 	}
 
 	res, err := sandbox.Run(cctx, image, command, sandbox.RunOptions{
-		Env: env,
+		Env:         env,
+		HostWorkdir: sourceDir,
 	})
 	r := execResult{}
 	if res != nil {
