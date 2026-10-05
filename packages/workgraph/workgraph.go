@@ -564,12 +564,7 @@ func (w *Work) Validate() error {
 	if w.Objective.Type == "" {
 		return errors.New("work.objective.type is required")
 	}
-	switch w.Source.Type {
-	case "", "cli", "github_pull_request", "github_push", "schedule", "api":
-		if w.Source.BundleDigest != "" || w.Source.BundleSize != 0 || w.Source.BundleFormat != "" {
-			return errors.New("git/api source types cannot carry bundle fields")
-		}
-	case "bundle":
+	if w.Source.Type == "bundle" {
 		if len(w.Source.BundleDigest) != 64 {
 			return errors.New("bundle source requires a 64-char sha256 digest")
 		}
@@ -585,8 +580,10 @@ func (w *Work) Validate() error {
 		if w.Source.Repository != "" || w.Source.SHA != "" || w.Source.CloneURL != "" {
 			return errors.New("bundle source cannot also declare repository/SHA/clone_url")
 		}
-	default:
-		return fmt.Errorf("unsupported work.source.type %q", w.Source.Type)
+	} else if w.Source.BundleDigest != "" || w.Source.BundleSize != 0 || w.Source.BundleFormat != "" {
+		// Source.Type is deliberately open-ended for existing controllers and
+		// integrations. Only the new bundle fields are namespaced/reserved.
+		return errors.New("bundle fields require work.source.type=bundle")
 	}
 	if len(w.Graph.Nodes) == 0 {
 		return errors.New("work.graph.nodes must contain at least one node")
