@@ -38,6 +38,39 @@ After the effect, Runtime binds the observed immutable subject through
 subject is idempotent; a different subject for the same accepted execution is a
 conflict. For coding work the canonical subject is `git:<owner>/<repo>@<40hex>`.
 
+## Runtime placement binding
+
+V2 may carry an optional `placement_binding` using the versioned schema
+`runtime.placement-dispatch-binding/0.1`.
+
+The binding is a Runtime-owned placement constraint. It does **not** grant
+authority, mint a WorkerLease, or make Runtime the source of worker liveness or
+schedulability truth. WORKS remains authoritative for the actual WorkerLease
+and the accepted execution context.
+
+When present, the binding carries:
+
+- the Mission id;
+- the exact Runtime-selected worker/node id;
+- a digest of the Runtime placement decision;
+- a digest of the WORKS-derived placement snapshot used by Runtime; and
+- the Runtime placement-policy version.
+
+Acceptance laws:
+
+1. the placement Mission must equal the dispatch Mission;
+2. `selected_node` must match the worker named by the active WorkerLease;
+3. malformed decision/snapshot digests fail closed;
+4. idempotent replay must carry the exact same placement binding;
+5. the same idempotency key cannot be rebound to another worker or placement decision;
+6. absence of `placement_binding` remains valid for backward-compatible callers;
+7. any re-placement requires a new Runtime placement decision and a dispatch identity that cannot silently overwrite the committed acceptance.
+
+The accepted response echoes the placement binding inside `request`, allowing
+Runtime to verify that WORKS durably accepted the same placement constraint it
+sent. The materialized `execution-context/1.0.worker_id` is the canonical proof
+of which worker the WorkerLease actually bound.
+
 ## Authority boundary
 
 V2 acceptance is **not** effect authorization.
