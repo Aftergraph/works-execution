@@ -29,6 +29,19 @@ var ErrLeaseNotActive = errors.New("lease not active")
 //
 // Returns the lease and the attempt (with the same attempt_id).
 func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID string, ttl time.Duration) (*workgraph.Lease, *workgraph.Attempt, error) {
+	return s.grantLease(ctx, workID, nodeID, workerID, ttl, false)
+}
+
+// GrantPlacementLease is the Runtime-selected placement path. It may accept a
+// freshly CREATED work and atomically advance CREATED -> QUEUED -> RUNNING in
+// the same transaction that mints the selected worker's Attempt + WorkerLease.
+// The transient QUEUED state is therefore never externally observable without
+// the selected lease already existing.
+func (s *SQLiteStore) GrantPlacementLease(ctx context.Context, workID, nodeID, workerID string, ttl time.Duration) (*workgraph.Lease, *workgraph.Attempt, error) {
+	return s.grantLease(ctx, workID, nodeID, workerID, ttl, true)
+}
+
+func (s *SQLiteStore) grantLease(ctx context.Context, workID, nodeID, workerID string, ttl time.Duration, placement bool) (*workgraph.Lease, *workgraph.Attempt, error) {
 	if ttl <= 0 {
 		ttl = 25 * time.Second
 	}
@@ -59,6 +72,13 @@ func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID s
 	case workgraph.StateWaitingHuman, workgraph.StateSuspended, workgraph.StateBudgetExhausted:
 		return nil, nil, fmt.Errorf("%w: paused mission %s (%s) cannot lease; resume via kernel authorization only",
 			ErrLeaseConflict, workID, state)
+	}
+
+	if state == workgraph.StateCreated && !placement {
+		return nil, nil, fmt.Errorf("%w: work %s is CREATED; queue before worker claim", ErrLeaseConflict, workID)
+	}
+	if state == workgraph.StatePlanning {
+		return nil, nil, fmt.Errorf("%w: work %s is PLANNING and cannot lease", ErrLeaseConflict, workID)
 	}
 
 	// Check for existing active lease on this node.
@@ -101,8 +121,22 @@ func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID s
 		return nil, nil, err
 	}
 
-	// Transition work to RUNNING if QUEUED.
-	if state == workgraph.StateQueued {
+	// Placement reservation may start from CREATED, but CREATED -> QUEUED and
+	// QUEUED -> RUNNING are committed atomically with the selected lease.
+	if state == workgraph.StateCreated && placement {
+		if !workgraph.CanTransition(workgraph.StateCreated, workgraph.StateQueued) ||
+			!workgraph.CanTransition(workgraph.StateQueued, workgraph.StateRunning) {
+			return nil, nil, fmt.Errorf("invalid placement transition CREATED -> QUEUED -> RUNNING")
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE works SET state = ?, updated_at = ? WHERE id = ?`,
+			string(workgraph.StateQueued), now.Format(time.RFC3339Nano), workID); err != nil {
+			return nil, nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE works SET state = ?, updated_at = ? WHERE id = ?`,
+			string(workgraph.StateRunning), now.Format(time.RFC3339Nano), workID); err != nil {
+			return nil, nil, err
+		}
+	} else if state == workgraph.StateQueued {
 		if !workgraph.CanTransition(state, workgraph.StateRunning) {
 			return nil, nil, fmt.Errorf("invalid transition %s -> RUNNING", state)
 		}
@@ -127,7 +161,16 @@ func (s *SQLiteStore) GrantLease(ctx context.Context, workID, nodeID, workerID s
 	// Emission happens AFTER commit and is best-effort: a journal row that
 	// fails to append must never roll the lease back (the work IS running);
 	// the mirror converges on the next poll via the cursor.
-	if state == workgraph.StateQueued {
+	if state == workgraph.StateCreated && placement {
+		_ = s.journalWorkEvent(ctx, journalEvent{
+			ID: workgraph.NewID("evt"), WorkID: workID, Type: EventWorkStateChanged,
+			Data: map[string]any{"work_id": workID, "state": string(workgraph.StateQueued), "from": string(workgraph.StateCreated)},
+		})
+		_ = s.journalWorkEvent(ctx, journalEvent{
+			ID: workgraph.NewID("evt"), WorkID: workID, Type: EventWorkStateChanged,
+			Data: map[string]any{"work_id": workID, "state": string(workgraph.StateRunning), "from": string(workgraph.StateQueued)},
+		})
+	} else if state == workgraph.StateQueued {
 		_ = s.journalWorkEvent(ctx, journalEvent{
 			ID:     workgraph.NewID("evt"),
 			WorkID: workID,
