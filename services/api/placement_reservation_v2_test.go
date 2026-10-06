@@ -46,7 +46,7 @@ func TestPlacementReservationV2MintsWorksOwnedLeaseForBoundWorker(t *testing.T) 
 
 	work := &workgraph.Work{
 		ID: workgraph.NewID("wrk"),
-		State: workgraph.StateQueued,
+		State: workgraph.StateCreated,
 		Source: workgraph.Source{Type:"controller"},
 		Objective: workgraph.Objective{Type:"verify_change"},
 		Requirements: workgraph.Requirements{Pool:"jonas-lenovo", OS:"windows", Arch:"amd64"},
@@ -88,6 +88,11 @@ func TestPlacementReservationV2MintsWorksOwnedLeaseForBoundWorker(t *testing.T) 
 	if err != nil { t.Fatal(err) }
 	if lease.WorkerID != workerID || lease.WorkID != work.ID {
 		t.Fatalf("lease binding mismatch: %+v", lease)
+	}
+	stored, err := st.GetWork(context.Background(), work.ID)
+	if err != nil { t.Fatal(err) }
+	if stored.State != workgraph.StateRunning {
+		t.Fatalf("atomic placement left work in %q, want RUNNING", stored.State)
 	}
 }
 
