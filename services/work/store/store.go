@@ -91,6 +91,7 @@ type Store interface {
 
 	// Lease operations (slice 2).
 	GrantLease(ctx context.Context, workID, nodeID, workerID string, ttl time.Duration) (*workgraph.Lease, *workgraph.Attempt, error)
+	GrantPlacementLease(ctx context.Context, workID, nodeID, workerID string, ttl time.Duration) (*workgraph.Lease, *workgraph.Attempt, error)
 	RenewLease(ctx context.Context, leaseID string, ttl time.Duration) (*workgraph.Lease, error)
 	CompleteLease(ctx context.Context, leaseID string, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error)
 	ReleaseLease(ctx context.Context, leaseID, reason string) error
