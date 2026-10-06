@@ -223,6 +223,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))                                                            // POST = create, GET = list
 	mux.Handle("/v1/works/", s.requireBearer(http.HandlerFunc(s.workPathHandler)))                                                        // work item reads, state changes, logs, evidence
+	mux.Handle("POST /v2/works/{id}/placement-reservations", http.HandlerFunc(s.reservePlacementV2)) // Runtime-selected worker -> WORKS-owned WorkerLease
 	mux.Handle("POST /v2/works/{id}/accept", http.HandlerFunc(s.acceptDispatchV2))                                                        // dispatch.acceptance/2.0 + materialized execution-context/1.0
 	mux.Handle("POST /v2/works/{id}/acceptances/{execution}/verification-subject", http.HandlerFunc(s.bindDispatchVerificationSubjectV2)) // post-effect exact-subject binding
 	mux.Handle("POST /v1/works/{id}/verification", http.HandlerFunc(s.workVerificationIngestHandler))                                     // Sentinel-owned semantic verifier ingest
