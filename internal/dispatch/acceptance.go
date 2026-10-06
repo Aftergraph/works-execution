@@ -42,6 +42,8 @@ var (
 	ErrV2StoreRequired        = errors.New("dispatch: contextual V2 store required")
 	ErrContextBinding         = errors.New("dispatch: V2 execution-context binding mismatch")
 	ErrWorkerLeaseUnavailable = errors.New("dispatch: V2 worker lease unavailable")
+	ErrPlacementBindingInvalid = errors.New("dispatch: placement binding invalid")
+	ErrPlacementMismatch       = errors.New("dispatch: placement binding does not match accepted worker")
 	ErrSubjectNotBound         = errors.New("dispatch: verification subject not bound")
 	ErrSubjectConflict         = errors.New("dispatch: verification subject already bound to different subject")
 	ErrInvalidSubject          = errors.New("dispatch: invalid verification subject")
@@ -63,6 +65,16 @@ type Dispatch struct {
 	EvidenceRoot      string
 	VerificationSubj  string
 	CausalID          string
+	Placement         *PlacementBinding
+}
+
+type PlacementBinding struct {
+	Schema                  string
+	MissionID               string
+	SelectedNode            string
+	PlacementDecisionDigest string
+	SnapshotDigest          string
+	PolicyVersion           string
 }
 
 // VerificationVerdict is the immutable proof reference attached to an execution
@@ -169,6 +181,32 @@ var exactGitSubjectPattern = regexp.MustCompile(
 	`^git:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+@[a-f0-9]{40}$`,
 )
 
+var placementDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+
+func validPlacementBinding(p *PlacementBinding, missionID string) bool {
+	if p == nil {
+		return true
+	}
+	return p.Schema == "runtime.placement-dispatch-binding/0.1" &&
+		p.MissionID == missionID &&
+		strings.TrimSpace(p.SelectedNode) != "" &&
+		placementDigestPattern.MatchString(p.PlacementDecisionDigest) &&
+		placementDigestPattern.MatchString(p.SnapshotDigest) &&
+		strings.TrimSpace(p.PolicyVersion) != ""
+}
+
+func SamePlacementBinding(a, b *PlacementBinding) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Schema == b.Schema &&
+		a.MissionID == b.MissionID &&
+		a.SelectedNode == b.SelectedNode &&
+		a.PlacementDecisionDigest == b.PlacementDecisionDigest &&
+		a.SnapshotDigest == b.SnapshotDigest &&
+		a.PolicyVersion == b.PolicyVersion
+}
+
 // Clock decouples expiry/freshness checks in tests.
 type Clock func() time.Time
 
@@ -272,6 +310,9 @@ func (a *Acceptor) AcceptV2(
 		d.CausalID == "" {
 		return nil, nil, ErrMissingBinding
 	}
+	if !validPlacementBinding(d.Placement, d.MissionID) {
+		return nil, nil, ErrPlacementBindingInvalid
+	}
 	if binding.WorkID == "" || binding.OrganizationID == "" || binding.TenantID == "" ||
 		binding.PrincipalID == "" || binding.AuthorityLeaseID == "" ||
 		binding.WorkerLeaseID == "" || binding.AdmissionDecisionID == "" {
@@ -310,7 +351,8 @@ func (a *Acceptor) AcceptV2(
 		accepted.Dispatch.MissionID != d.MissionID ||
 		accepted.Dispatch.AuthorityRef != d.AuthorityRef ||
 		accepted.Dispatch.RuntimeDispatchID != d.RuntimeDispatchID ||
-		accepted.Dispatch.EffectID != d.EffectID {
+		accepted.Dispatch.EffectID != d.EffectID ||
+		!SamePlacementBinding(accepted.Dispatch.Placement, d.Placement) {
 		return nil, nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
 	}
 	if executionContext.ID != accepted.ExecutionContextID ||

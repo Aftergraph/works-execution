@@ -21,6 +21,16 @@ func dispatchV2Fixture(leaseID string) string {
 	return `{"schema":"dispatch.acceptance/2.0","organization_id":"org_11111111111111111111111111111111","tenant_id":"ten_22222222222222222222222222222222","principal_id":"prn_33333333333333333333333333333333","mission_id":"mis_example","authority_lease_id":"auth_44444444444444444444444444444444","worker_lease_id":"` + leaseID + `","admission_decision_id":"pdr_55555555555555555555555555555555","runtime_dispatch_id":"rdisp/1","attempt_id":"attempt/1","effect_id":"effect/1","idempotency_key":"idem/v2/1","budget_ref":"budget/1","budget_ceiling":100,"checkpoint_id":"checkpoint/1","evidence_root":"evidence/1","causal_id":"causal/1"}`
 }
 
+
+func dispatchV2FixtureWithPlacement(leaseID, selectedNode string) string {
+	base := strings.TrimSuffix(dispatchV2Fixture(leaseID), "}")
+	return base + `,"placement_binding":{"schema":"runtime.placement-dispatch-binding/0.1","mission_id":"mis_example","selected_node":"` +
+		selectedNode +
+		`","placement_decision_digest":"sha256:` + strings.Repeat("a", 64) +
+		`","snapshot_digest":"sha256:` + strings.Repeat("b", 64) +
+		`","policy_version":"placement-policy/1"}}`
+}
+
 func postDispatchV2(t *testing.T, base, workID, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, base+"/v2/works/"+workID+"/accept", strings.NewReader(body))
@@ -194,4 +204,88 @@ func TestDispatchV2CausalMismatchFailsClosed(t *testing.T) {
 	resp := postDispatchV2(t, base, workID, conflict)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict { t.Fatalf("status=%d want=409", resp.StatusCode) }
+}
+
+
+func TestDispatchV2PlacementBindingMatchesLeasedWorker(t *testing.T) {
+	base, workID, leaseID := setupDispatchV2Work(t)
+	body := dispatchV2FixtureWithPlacement(leaseID, "wrkr_77777777777777777777777777777777")
+	resp := postDispatchV2(t, base, workID, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d want=200", resp.StatusCode)
+	}
+	var out struct {
+		Request struct {
+			PlacementBinding *struct {
+				Schema       string `json:"schema"`
+				MissionID    string `json:"mission_id"`
+				SelectedNode string `json:"selected_node"`
+			} `json:"placement_binding"`
+		} `json:"request"`
+		ExecutionContext executioncontext.Context `json:"execution_context"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Request.PlacementBinding == nil ||
+		out.Request.PlacementBinding.Schema != "runtime.placement-dispatch-binding/0.1" ||
+		out.Request.PlacementBinding.MissionID != "mis_example" ||
+		out.Request.PlacementBinding.SelectedNode != out.ExecutionContext.WorkerID {
+		t.Fatalf("placement not bound to execution context: %+v", out)
+	}
+}
+
+func TestDispatchV2PlacementBindingRejectsDifferentWorker(t *testing.T) {
+	base, workID, leaseID := setupDispatchV2Work(t)
+	resp := postDispatchV2(
+		t,
+		base,
+		workID,
+		dispatchV2FixtureWithPlacement(leaseID, "wrkr_jonas_lenovo"),
+	)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status=%d want=409", resp.StatusCode)
+	}
+}
+
+func TestDispatchV2PlacementBindingRejectsMalformedDigest(t *testing.T) {
+	base, workID, leaseID := setupDispatchV2Work(t)
+	body := strings.Replace(
+		dispatchV2FixtureWithPlacement(leaseID, "wrkr_77777777777777777777777777777777"),
+		"sha256:"+strings.Repeat("a", 64),
+		"sha256:bad",
+		1,
+	)
+	resp := postDispatchV2(t, base, workID, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d want=400", resp.StatusCode)
+	}
+}
+
+func TestDispatchV2PlacementBindingReplayCannotRebindWorker(t *testing.T) {
+	base, workID, leaseID := setupDispatchV2Work(t)
+	first := postDispatchV2(
+		t,
+		base,
+		workID,
+		dispatchV2FixtureWithPlacement(leaseID, "wrkr_77777777777777777777777777777777"),
+	)
+	first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first status=%d want=200", first.StatusCode)
+	}
+
+	replay := postDispatchV2(
+		t,
+		base,
+		workID,
+		dispatchV2FixtureWithPlacement(leaseID, "wrkr_jonas_lenovo"),
+	)
+	defer replay.Body.Close()
+	if replay.StatusCode != http.StatusConflict {
+		t.Fatalf("replay status=%d want=409", replay.StatusCode)
+	}
 }

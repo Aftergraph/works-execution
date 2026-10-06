@@ -124,6 +124,10 @@ func cloneDispatchAcceptance(a *dispatch.Acceptance) *dispatch.Acceptance {
 		return nil
 	}
 	cp := *a
+	if a.Dispatch.Placement != nil {
+		placement := *a.Dispatch.Placement
+		cp.Dispatch.Placement = &placement
+	}
 	if a.Verdict != nil {
 		verdict := *a.Verdict
 		cp.Verdict = &verdict
