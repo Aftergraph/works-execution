@@ -321,6 +321,9 @@ func TestLeaseGrant_PolicyEnforced_NonProduction(t *testing.T) {
 	ts, st := newTestServer(t)
 	w := sampleWork(workgraph.Policy{ProductionAccess: false})
 	w.ID = createWork(t, ts, w)
+	// Ordinary worker claims intentionally require an explicit queue transition.
+	// Runtime-selected placement uses GrantPlacementLease instead, which performs
+	// CREATED -> QUEUED -> RUNNING atomically with the selected WorkerLease.
 	if _, err := st.UpdateState(context.Background(), w.ID, workgraph.StateQueued); err != nil {
 		t.Fatalf("queue work: %v", err)
 	}
