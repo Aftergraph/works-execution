@@ -140,7 +140,7 @@ func (s *Server) reservePlacementV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	lease, attempt, err := s.Store.GrantLease(
+	lease, attempt, err := s.Store.GrantPlacementLease(
 		r.Context(),
 		workID,
 		req.NodeID,
