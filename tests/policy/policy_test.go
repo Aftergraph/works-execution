@@ -318,9 +318,12 @@ func TestEngine_ProductionDeniedTrustBelowFloor(t *testing.T) {
 // non-production work succeeds (201 Created).
 func TestLeaseGrant_PolicyEnforced_NonProduction(t *testing.T) {
 	t.Parallel()
-	ts, _ := newTestServer(t)
+	ts, st := newTestServer(t)
 	w := sampleWork(workgraph.Policy{ProductionAccess: false})
 	w.ID = createWork(t, ts, w)
+	if _, err := st.UpdateState(context.Background(), w.ID, workgraph.StateQueued); err != nil {
+		t.Fatalf("queue work: %v", err)
+	}
 
 	body, _ := json.Marshal(map[string]any{
 		"work_id":  w.ID,
@@ -394,6 +397,9 @@ func TestLeaseGrant_PolicyAllowed_WithEvidence(t *testing.T) {
 	})
 	w.ID = createWork(t, ts, w)
 	registerRunner(t, ts, "wrkr_standard", runner.TrustStandard)
+	if _, err := st.UpdateState(context.Background(), w.ID, workgraph.StateQueued); err != nil {
+		t.Fatalf("queue work: %v", err)
+	}
 
 	appendEvidence(t, st, w.ID, workgraph.Evidence{
 		ID:      "ev_pass",
