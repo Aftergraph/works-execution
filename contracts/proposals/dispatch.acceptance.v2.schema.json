@@ -115,6 +115,9 @@
         "causal_id": {
           "type": "string",
           "minLength": 1
+        },
+        "placement_binding": {
+          "$ref": "#/$defs/placement_binding"
         }
       }
     },
@@ -169,6 +172,43 @@
         "subject": {
           "type": "string",
           "pattern": "^git:[A-Za-z0-9._-]+/[A-Za-z0-9._-]+@[a-f0-9]{40}$"
+        }
+      }
+    },
+    "placement_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "mission_id",
+        "selected_node",
+        "placement_decision_digest",
+        "snapshot_digest",
+        "policy_version"
+      ],
+      "properties": {
+        "schema": {
+          "const": "runtime.placement-dispatch-binding/0.1"
+        },
+        "mission_id": {
+          "type": "string",
+          "pattern": "^mis_.+"
+        },
+        "selected_node": {
+          "type": "string",
+          "pattern": "^wrkr_[a-z0-9_-]{1,64}$"
+        },
+        "placement_decision_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "snapshot_digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }
