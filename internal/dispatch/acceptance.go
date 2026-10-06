@@ -553,7 +553,7 @@ func validPlacementBinding(p *PlacementBinding, missionID string) bool {
 		strings.TrimSpace(p.PolicyVersion) != ""
 }
 
-func samePlacementBinding(a, b *PlacementBinding) bool {
+func SamePlacementBinding(a, b *PlacementBinding) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
@@ -710,7 +710,7 @@ func (a *Acceptor) AcceptV2(
 		accepted.Dispatch.AuthorityRef != d.AuthorityRef ||
 		accepted.Dispatch.RuntimeDispatchID != d.RuntimeDispatchID ||
 		accepted.Dispatch.EffectID != d.EffectID ||
-		!samePlacementBinding(accepted.Dispatch.Placement, d.Placement) {
+		!SamePlacementBinding(accepted.Dispatch.Placement, d.Placement) {
 		return nil, nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)
 	}
 	if executionContext.ID != accepted.ExecutionContextID ||
