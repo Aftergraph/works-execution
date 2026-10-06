@@ -15,6 +15,15 @@ type dispatchV2StoreProvider interface {
 	DispatchAcceptanceV2Store(workID string) dispatch.V2Store
 }
 
+type dispatchPlacementBinding struct {
+	Schema                  string `json:"schema"`
+	MissionID               string `json:"mission_id"`
+	SelectedNode            string `json:"selected_node"`
+	PlacementDecisionDigest string `json:"placement_decision_digest"`
+	SnapshotDigest          string `json:"snapshot_digest"`
+	PolicyVersion           string `json:"policy_version"`
+}
+
 type dispatchV2Request struct {
 	Schema              string `json:"schema"`
 	OrganizationID      string `json:"organization_id"`
@@ -32,7 +41,8 @@ type dispatchV2Request struct {
 	BudgetCeiling       int64  `json:"budget_ceiling"`
 	CheckpointID        string `json:"checkpoint_id"`
 	EvidenceRoot        string `json:"evidence_root"`
-	CausalID            string `json:"causal_id"`
+	CausalID            string                    `json:"causal_id"`
+	PlacementBinding     *dispatchPlacementBinding `json:"placement_binding,omitempty"`
 }
 
 type dispatchV2Response struct {
@@ -136,6 +146,19 @@ func (s *Server) acceptDispatchV2(w http.ResponseWriter, r *http.Request) {
 		CheckpointID:      req.CheckpointID,
 		EvidenceRoot:      req.EvidenceRoot,
 		CausalID:          req.CausalID,
+		Placement: func() *dispatch.PlacementBinding {
+			if req.PlacementBinding == nil {
+				return nil
+			}
+			return &dispatch.PlacementBinding{
+				Schema:                  req.PlacementBinding.Schema,
+				MissionID:               req.PlacementBinding.MissionID,
+				SelectedNode:            req.PlacementBinding.SelectedNode,
+				PlacementDecisionDigest: req.PlacementBinding.PlacementDecisionDigest,
+				SnapshotDigest:          req.PlacementBinding.SnapshotDigest,
+				PolicyVersion:           req.PlacementBinding.PolicyVersion,
+			}
+		}(),
 	}, dispatch.V2Binding{
 		WorkID:              workID,
 		OrganizationID:      req.OrganizationID,
@@ -147,8 +170,10 @@ func (s *Server) acceptDispatchV2(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, dispatch.ErrMissingBinding), errors.Is(err, dispatch.ErrContextBinding):
+		case errors.Is(err, dispatch.ErrMissingBinding), errors.Is(err, dispatch.ErrContextBinding), errors.Is(err, dispatch.ErrPlacementBindingInvalid):
 			writeError(w, http.StatusBadRequest, "dispatch_v2_binding_invalid", err.Error())
+		case errors.Is(err, dispatch.ErrPlacementMismatch):
+			writeError(w, http.StatusConflict, "placement_mismatch", err.Error())
 		case errors.Is(err, dispatch.ErrWorkerLeaseUnavailable):
 			writeError(w, http.StatusConflict, "worker_lease_unavailable", err.Error())
 		case errors.Is(err, dispatch.ErrCausalMismatch):
