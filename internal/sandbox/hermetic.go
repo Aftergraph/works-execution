@@ -382,9 +382,12 @@ func tryMountTmpfs(dir string) (ok bool, err error) {
 // cannot smuggle vars past the manifest.
 func scrubEnv(supplied, allow map[string]string, tmpdir string) []string {
 	merged := map[string]string{
-		"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"PATH": "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME": "/var/lib/works/home",
-		"LANG": "C.UTF-8",
+		"LANG":       "C.UTF-8",
+		"GOMODCACHE": "/var/lib/works/gomodcache",
+		"GOPATH":     "/var/lib/works/gopath",
+		"GOCACHE":    "/var/lib/works/gocache",
 	}
 	for k, v := range allow {
 		merged[k] = v
