@@ -39,8 +39,15 @@ func TestGrantPlacementLease_AtomicallyAdvancesCreatedToRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("placement grant: %v", err)
 	}
-	if lease.WorkerID != "wrkr_placed" || attempt.WorkerID != "wrkr_placed" {
+	if lease == nil || attempt == nil {
+		t.Fatalf("placement reservation must return lease and attempt: lease=%+v attempt=%+v", lease, attempt)
+	}
+	if lease.WorkID != w.ID || lease.NodeID != "a" || lease.WorkerID != "wrkr_placed" ||
+		attempt.WorkID != w.ID || attempt.NodeID != "a" || attempt.WorkerID != "wrkr_placed" {
 		t.Fatalf("placement binding mismatch lease=%+v attempt=%+v", lease, attempt)
+	}
+	if lease.Status != workgraph.LeaseActive || attempt.Status != "running" {
+		t.Fatalf("placement reservation not active/running: lease=%s attempt=%s", lease.Status, attempt.Status)
 	}
 	got, err := s.GetWork(ctx, w.ID)
 	if err != nil {
