@@ -221,7 +221,8 @@ type ProvenanceConfig struct {
 func (s *Server) Routes() http.Handler {
 	s.ensureIssuer()
 	mux := http.NewServeMux()
-	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))                                                            // POST = create, GET = list
+	mux.Handle("/v1/works", s.requireBearer(http.HandlerFunc(s.worksHandler)))
+	mux.Handle("POST /v2/works", http.HandlerFunc(s.createPlatformWorkV2)) // platform-owned Work creation; WORKS mints work_id                                                            // POST = create, GET = list
 	mux.Handle("/v1/works/", s.requireBearer(http.HandlerFunc(s.workPathHandler)))                                                        // work item reads, state changes, logs, evidence
 	mux.Handle("POST /v2/works/{id}/placement-reservations", http.HandlerFunc(s.reservePlacementV2)) // Runtime-selected worker -> WORKS-owned WorkerLease
 	mux.Handle("POST /v2/works/{id}/accept", http.HandlerFunc(s.acceptDispatchV2))                                                        // dispatch.acceptance/2.0 + materialized execution-context/1.0

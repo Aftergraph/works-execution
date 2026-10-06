@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -24,6 +25,10 @@ type placementReservationV2 struct {
 	SelectedWorker   string                    `json:"selected_worker"`
 	TTLSeconds       int                       `json:"ttl_seconds,omitempty"`
 	PlacementBinding *dispatchPlacementBinding `json:"placement_binding"`
+}
+
+type placementLeaseGranter interface {
+	GrantPlacementLease(context.Context, string, string, string, time.Duration) (*workgraph.Lease, *workgraph.Attempt, error)
 }
 
 type placementReservationV2Response struct {
@@ -140,7 +145,12 @@ func (s *Server) reservePlacementV2(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	lease, attempt, err := s.Store.GrantLease(
+	granter, ok := s.Store.(placementLeaseGranter)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "placement_reservation_unavailable", "store does not support atomic placement reservation")
+		return
+	}
+	lease, attempt, err := granter.GrantPlacementLease(
 		r.Context(),
 		workID,
 		req.NodeID,
