@@ -9,6 +9,51 @@ import (
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
 
+func TestGrantLease_RequiresQueuedState(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	w := sampleWork()
+	if err := s.CreateWork(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.GrantLease(ctx, w.ID, "a", "wrkr_1", 5*time.Second); err == nil {
+		t.Fatal("GrantLease accepted CREATED work; worker claim must require queueing")
+	}
+	got, err := s.GetWork(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != workgraph.StateCreated || len(got.Attempts) != 0 {
+		t.Fatalf("denied claim mutated work: state=%s attempts=%d", got.State, len(got.Attempts))
+	}
+}
+
+func TestGrantPlacementLease_AtomicallyAdvancesCreatedToRunning(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	w := sampleWork()
+	if err := s.CreateWork(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	lease, attempt, err := s.GrantPlacementLease(ctx, w.ID, "a", "wrkr_placed", 5*time.Second)
+	if err != nil {
+		t.Fatalf("placement grant: %v", err)
+	}
+	if lease.WorkerID != "wrkr_placed" || attempt.WorkerID != "wrkr_placed" {
+		t.Fatalf("placement binding mismatch lease=%+v attempt=%+v", lease, attempt)
+	}
+	got, err := s.GetWork(ctx, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != workgraph.StateRunning {
+		t.Fatalf("state=%s want RUNNING", got.State)
+	}
+	if len(got.Attempts) != 1 || got.Attempts[0].ID != attempt.ID {
+		t.Fatalf("attempt not durably bound: %+v", got.Attempts)
+	}
+}
+
 func TestGrantLease_HappyPath(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
