@@ -64,7 +64,8 @@ func (s *dispatchV2Store) AcceptContextualIfAbsent(
 			existing.WorkID != s.workID ||
 			existing.Dispatch.CausalID != accepted.Dispatch.CausalID ||
 			existing.Dispatch.MissionID != accepted.Dispatch.MissionID ||
-			existing.Dispatch.AuthorityRef != accepted.Dispatch.AuthorityRef {
+			existing.Dispatch.AuthorityRef != accepted.Dispatch.AuthorityRef ||
+			!dispatch.SamePlacementBinding(existing.Dispatch.Placement, accepted.Dispatch.Placement) {
 			return nil, nil, fmt.Errorf("%w: key %q", dispatch.ErrCausalMismatch, accepted.Dispatch.IdempotencyKey)
 		}
 		ec, err := loadExecutionContextTx(ctx, tx, existing.ExecutionContextID)
@@ -95,6 +96,10 @@ func (s *dispatchV2Store) AcceptContextualIfAbsent(
 	if err != nil || leaseWorkID != s.workID ||
 		leaseStatus != string(workgraph.LeaseActive) || !expiry.After(time.Now().UTC()) {
 		return nil, nil, dispatch.ErrWorkerLeaseUnavailable
+	}
+	if accepted.Dispatch.Placement != nil &&
+		accepted.Dispatch.Placement.SelectedNode != workerID {
+		return nil, nil, dispatch.ErrPlacementMismatch
 	}
 
 	ec := &executioncontext.Context{
@@ -149,6 +154,9 @@ func (s *dispatchV2Store) AcceptContextualIfAbsent(
 		}
 		if winner == nil {
 			return nil, nil, errors.New("dispatch v2 conflict without committed winner")
+		}
+		if !dispatch.SamePlacementBinding(winner.Dispatch.Placement, accepted.Dispatch.Placement) {
+			return nil, nil, fmt.Errorf("%w: key %q", dispatch.ErrCausalMismatch, accepted.Dispatch.IdempotencyKey)
 		}
 		winnerCtx, err := loadExecutionContextTx(ctx, tx, winner.ExecutionContextID)
 		if err != nil {
