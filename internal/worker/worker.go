@@ -323,8 +323,14 @@ func (c *Client) Ready(ctx context.Context) ([]ReadyItem, error) {
 }
 
 // GrantLease requests a lease for the given (work_id, node_id, worker_id).
-// Returns the lease ID + attempt ID.
-func (c *Client) GrantLease(ctx context.Context, workID, nodeID, workerID string, ttl time.Duration) (leaseID, attemptID string, err error) {
+// Returns the lease ID, attempt ID, and the fencing epoch (ADR-0033).
+//
+// The epoch MUST be carried into every subsequent lease verb this client
+// calls. WORKS refuses a heartbeat/complete/release that presents a stale
+// epoch, which is exactly what should happen if this worker hung past its
+// TTL and the node was re-granted to somebody else: the right outcome is
+// that the zombie cannot overwrite the real holder's result.
+func (c *Client) GrantLease(ctx context.Context, workID, nodeID, workerID string, ttl time.Duration) (leaseID, attemptID string, epoch int64, err error) {
 	body, _ := json.Marshal(map[string]any{
 		"work_id":     workID,
 		"node_id":     nodeID,
@@ -333,31 +339,37 @@ func (c *Client) GrantLease(ctx context.Context, workID, nodeID, workerID string
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/leases", bytes.NewReader(body))
 	if err != nil {
-		return "", "", err
+		return "", "", 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.do(req)
 	if err != nil {
-		return "", "", err
+		return "", "", 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", fmt.Errorf("grant: %s: %s", resp.Status, body)
+		return "", "", 0, fmt.Errorf("grant: %s: %s", resp.Status, body)
 	}
 	var out struct {
 		Lease   workgraph.Lease   `json:"lease"`
 		Attempt workgraph.Attempt `json:"attempt"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", "", err
+		return "", "", 0, err
 	}
-	return out.Lease.ID, out.Attempt.ID, nil
+	if out.Lease.Epoch <= 0 {
+		// A server that grants a lease without an epoch predates ADR-0033
+		// and cannot be fenced. Refuse locally rather than running a node
+		// whose completion the store would reject anyway.
+		return "", "", 0, errors.New("grant: server returned lease without a fencing epoch")
+	}
+	return out.Lease.ID, out.Attempt.ID, out.Lease.Epoch, nil
 }
 
 // Heartbeat extends the lease TTL.
-func (c *Client) Heartbeat(ctx context.Context, leaseID string, ttl time.Duration) error {
-	body, _ := json.Marshal(map[string]any{"ttl_seconds": int(ttl.Seconds())})
+func (c *Client) Heartbeat(ctx context.Context, leaseID string, epoch int64, ttl time.Duration) error {
+	body, _ := json.Marshal(map[string]any{"ttl_seconds": int(ttl.Seconds()), "epoch": epoch})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/leases/"+leaseID+"/heartbeat", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -376,11 +388,12 @@ func (c *Client) Heartbeat(ctx context.Context, leaseID string, ttl time.Duratio
 }
 
 // CompleteLease reports a terminal result.
-func (c *Client) CompleteLease(ctx context.Context, leaseID string, exitCode int, artifact *workgraph.Artifact, artifactContent []byte, evidence []workgraph.Evidence) error {
+func (c *Client) CompleteLease(ctx context.Context, leaseID string, epoch int64, exitCode int, artifact *workgraph.Artifact, artifactContent []byte, evidence []workgraph.Evidence) error {
 	payload := map[string]any{
 		"exit_code": exitCode,
 		"artifact":  artifact,
 		"evidence":  evidence,
+		"epoch":     epoch,
 	}
 	if artifact != nil {
 		// encoding/json represents []byte as base64. Sending the bytes as part
@@ -408,8 +421,8 @@ func (c *Client) CompleteLease(ctx context.Context, leaseID string, exitCode int
 }
 
 // ReleaseLease voluntarily gives the lease back (e.g. setup error before run).
-func (c *Client) ReleaseLease(ctx context.Context, leaseID, reason string) error {
-	body, _ := json.Marshal(map[string]any{"reason": reason})
+func (c *Client) ReleaseLease(ctx context.Context, leaseID string, epoch int64, reason string) error {
+	body, _ := json.Marshal(map[string]any{"reason": reason, "epoch": epoch})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/v1/leases/"+leaseID+"/release", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -569,7 +582,7 @@ func (w *Worker) tick(ctx context.Context, artifactRoot *os.Root) error {
 
 // execute grants a lease, runs the node, reports the result.
 func (w *Worker) execute(ctx context.Context, item ReadyItem, artifactRoot *os.Root) error {
-	leaseID, _, err := w.Client.GrantLease(ctx, item.WorkID, item.NodeID, w.ID, w.LeaseTTL)
+	leaseID, _, epoch, err := w.Client.GrantLease(ctx, item.WorkID, item.NodeID, w.ID, w.LeaseTTL)
 	if err != nil {
 		// Conflict or other failure — skip silently. This is normal under
 		// contention.
@@ -584,7 +597,7 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem, artifactRoot *os.R
 	defer cancelHB()
 	var hbErr error
 	var hbMu sync.Mutex
-	go w.heartbeatLoop(hbCtx, leaseID, killCh, &hbErr, &hbMu)
+	go w.heartbeatLoop(hbCtx, leaseID, epoch, killCh, &hbErr, &hbMu)
 
 	timeout := time.Duration(item.TimeoutS) * time.Second
 	if timeout == 0 {
@@ -728,10 +741,13 @@ func (w *Worker) execute(ctx context.Context, item ReadyItem, artifactRoot *os.R
 	if artifact != nil {
 		artifactContent = res.CombinedLog
 	}
-	if err := w.Client.CompleteLease(ctx, leaseID, res.ExitCode, artifact, artifactContent, evidence); err != nil {
+	if err := w.Client.CompleteLease(ctx, leaseID, epoch, res.ExitCode, artifact, artifactContent, evidence); err != nil {
 		w.logf("complete lease: %v", err)
-		// Fall back to release so the attempt isn't stuck running.
-		_ = w.Client.ReleaseLease(ctx, leaseID, "complete failed: "+err.Error())
+		// Fall back to release so the attempt isn't stuck running. If the
+		// completion failed because the lease was fenced (we lost it), the
+		// release is refused too — correctly, since the node now belongs to
+		// the current holder and must not be disturbed.
+		_ = w.Client.ReleaseLease(ctx, leaseID, epoch, "complete failed: "+err.Error())
 		return nil
 	}
 
@@ -762,7 +778,7 @@ func artifactFailureLog(reason string, prior []byte) []byte {
 // heartbeatLoop POSTs /heartbeat every HeartbeatEvery. If a heartbeat
 // fails (likely 409 = lease lost), it signals killCh so the subprocess
 // is killed.
-func (w *Worker) heartbeatLoop(ctx context.Context, leaseID string, killCh chan<- struct{}, hbErr *error, mu *sync.Mutex) {
+func (w *Worker) heartbeatLoop(ctx context.Context, leaseID string, epoch int64, killCh chan<- struct{}, hbErr *error, mu *sync.Mutex) {
 	t := time.NewTicker(w.HeartbeatEvery)
 	defer t.Stop()
 	for {
@@ -770,7 +786,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context, leaseID string, killCh chan<
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := w.Client.Heartbeat(ctx, leaseID, w.LeaseTTL); err != nil {
+			if err := w.Client.Heartbeat(ctx, leaseID, epoch, w.LeaseTTL); err != nil {
 				mu.Lock()
 				*hbErr = err
 				mu.Unlock()

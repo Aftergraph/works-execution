@@ -315,17 +315,27 @@ func firstReason(rs []string) string {
 // heartbeatLeaseBody is POST /v1/leases/{id}/heartbeat.
 type heartbeatLeaseBody struct {
 	TTLSeconds int `json:"ttl_seconds,omitempty"`
+	// Epoch is the fencing token issued with the lease (ADR-0033).
+	// Required: omitting it yields 0, which matches no real lease
+	// generation, and the store refuses the heartbeat.
+	Epoch int64 `json:"epoch"`
 }
 
 func (s *Server) heartbeatLease(w http.ResponseWriter, r *http.Request, leaseID string) {
 	var body heartbeatLeaseBody
 	_ = json.NewDecoder(r.Body).Decode(&body) // body optional
 	ttl := time.Duration(body.TTLSeconds) * time.Second
-	lease, err := s.Store.RenewLease(r.Context(), leaseID, ttl)
+	ref, ok := s.leaseRef(w, r, leaseID, body.Epoch)
+	if !ok {
+		return
+	}
+	lease, err := s.Store.RenewLease(r.Context(), ref, ttl)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, "lease_not_found", leaseID)
+		case errors.Is(err, store.ErrLeaseFenced):
+			writeError(w, http.StatusConflict, ReasonLeaseFenced, err.Error())
 		case errors.Is(err, store.ErrLeaseNotActive):
 			writeError(w, http.StatusConflict, "lease_not_active", leaseID)
 		default:
@@ -342,6 +352,27 @@ type completeLeaseBody struct {
 	Artifact        *workgraph.Artifact  `json:"artifact,omitempty"`
 	ArtifactContent []byte               `json:"artifact_content"`
 	Evidence        []workgraph.Evidence `json:"evidence,omitempty"`
+	// Epoch is the fencing token issued with the lease (ADR-0033).
+	// Required; a completion without it is refused as fenced.
+	Epoch int64 `json:"epoch"`
+}
+
+// leaseRef assembles the fencing triple (executorId, leaseId, leaseEpoch)
+// for a lease verb, writing the HTTP error itself and returning ok=false
+// when the executor identity cannot be resolved. Centralised so all four
+// verbs build the triple identically — a verb that forgot the epoch, or
+// built it from a different source, would silently unfence itself.
+func (s *Server) leaseRef(w http.ResponseWriter, r *http.Request, leaseID string, epoch int64) (store.LeaseRef, bool) {
+	workerID, err := s.leaseExecutorIdentity(r.Context(), r, leaseID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "lease_not_found", leaseID)
+			return store.LeaseRef{}, false
+		}
+		writeError(w, http.StatusInternalServerError, "lease_lookup_failed", "failed to resolve lease executor identity")
+		return store.LeaseRef{}, false
+	}
+	return store.LeaseRef{LeaseID: leaseID, WorkerID: workerID, Epoch: epoch}, true
 }
 
 const maxCompleteLeaseRequestBytes int64 = workgraph.MaxArtifactBytes*4/3 + (1 << 20)
@@ -401,11 +432,17 @@ func (s *Server) completeLease(w http.ResponseWriter, r *http.Request, leaseID s
 			return
 		}
 	}
-	wk, err := s.Store.CompleteLease(r.Context(), leaseID, body.ExitCode, body.Artifact, body.Evidence)
+	ref, ok := s.leaseRef(w, r, leaseID, body.Epoch)
+	if !ok {
+		return
+	}
+	wk, err := s.Store.CompleteLease(r.Context(), ref, body.ExitCode, body.Artifact, body.Evidence)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, "lease_not_found", leaseID)
+		case errors.Is(err, store.ErrLeaseFenced):
+			writeError(w, http.StatusConflict, ReasonLeaseFenced, err.Error())
 		case errors.Is(err, store.ErrLeaseNotActive):
 			writeError(w, http.StatusConflict, "lease_not_active", leaseID)
 		default:
@@ -413,25 +450,33 @@ func (s *Server) completeLease(w http.ResponseWriter, r *http.Request, leaseID s
 		}
 		return
 	}
-	// Fire-and-forget publish to GitHub when the work has just
-	// reached a terminal state (SUCCEEDED/FAILED) and has source
-	// provenance. No-op when s.Publisher is nil.
-	s.maybePublishOnTerminal(wk)
+	// ADR-0033: the terminal-state publish is no longer fired from here.
+	// Store.UpdateState recorded a work.terminal obligation in the outbox
+	// inside the transition's own transaction, and the outbox dispatcher
+	// delivers it. See publisher_hook.go for the migration.
 	writeJSON(w, http.StatusOK, wk)
 }
 
 // releaseLeaseBody is POST /v1/leases/{id}/release.
 type releaseLeaseBody struct {
 	Reason string `json:"reason,omitempty"`
+	// Epoch is the fencing token issued with the lease (ADR-0033).
+	Epoch int64 `json:"epoch"`
 }
 
 func (s *Server) releaseLease(w http.ResponseWriter, r *http.Request, leaseID string) {
 	var body releaseLeaseBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	if err := s.Store.ReleaseLease(r.Context(), leaseID, body.Reason); err != nil {
+	ref, ok := s.leaseRef(w, r, leaseID, body.Epoch)
+	if !ok {
+		return
+	}
+	if err := s.Store.ReleaseLease(r.Context(), ref, body.Reason); err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, "lease_not_found", leaseID)
+		case errors.Is(err, store.ErrLeaseFenced):
+			writeError(w, http.StatusConflict, ReasonLeaseFenced, err.Error())
 		default:
 			writeError(w, http.StatusConflict, "release_failed", err.Error())
 		}
@@ -443,15 +488,23 @@ func (s *Server) releaseLease(w http.ResponseWriter, r *http.Request, leaseID st
 // revokeLeaseBody is POST /v1/leases/{id}/revoke.
 type revokeLeaseBody struct {
 	Reason string `json:"reason,omitempty"`
+	// Epoch is the fencing token issued with the lease (ADR-0033).
+	Epoch int64 `json:"epoch"`
 }
 
 func (s *Server) revokeLease(w http.ResponseWriter, r *http.Request, leaseID string) {
 	var body revokeLeaseBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	if err := s.Store.RevokeLease(r.Context(), leaseID, body.Reason); err != nil {
+	ref, ok := s.leaseRef(w, r, leaseID, body.Epoch)
+	if !ok {
+		return
+	}
+	if err := s.Store.RevokeLease(r.Context(), ref, body.Reason); err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, "lease_not_found", leaseID)
+		case errors.Is(err, store.ErrLeaseFenced):
+			writeError(w, http.StatusConflict, ReasonLeaseFenced, err.Error())
 		default:
 			writeError(w, http.StatusConflict, "revoke_failed", err.Error())
 		}
@@ -502,6 +555,13 @@ func RunLeaseReaper(ctx context.Context, s store.Store, cfg ReaperConfig) error 
 }
 
 // reapOnce performs a single reaper pass. Returns the number of leases expired.
+//
+// ADR-0033: the revoke presents the fencing triple ListExpiredLeases
+// returned, i.e. the token this pass actually observed. Between the list
+// and the revoke the node may have been re-granted to a new worker at a
+// higher epoch; the fenced revoke is then refused rather than cancelling a
+// live lease that belongs to someone else. Refusals are skipped, exactly
+// like the pre-existing idempotency skip.
 func reapOnce(ctx context.Context, s store.Store, limit int) (int, error) {
 	expired, err := s.ListExpiredLeases(ctx, limit)
 	if err != nil {
@@ -510,8 +570,9 @@ func reapOnce(ctx context.Context, s store.Store, limit int) (int, error) {
 	n := 0
 	for _, l := range expired {
 		// Mark lease EXPIRED, cancel attempt. Both must be idempotent.
-		if err := s.RevokeLease(ctx, l.ID, "lease expired"); err != nil {
-			// Skip — probably already revoked by a concurrent reaper or worker.
+		if err := s.RevokeLease(ctx, store.LeaseRefFor(l), "lease expired"); err != nil {
+			// Skip — probably already revoked by a concurrent reaper or
+			// worker, or the lease was re-granted since we listed it.
 			continue
 		}
 		_ = s.MarkAttemptCancelled(ctx, l.AttemptID, "lease expired")

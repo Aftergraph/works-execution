@@ -19,7 +19,11 @@ import (
 // State is the lifecycle state of a Work.
 //
 // CREATED -> PLANNING -> QUEUED -> RUNNING -> VERIFYING -> SUCCEEDED
-// BLOCKED, FAILED, CANCELLED are terminal/side states.
+// BLOCKED, FAILED, CANCELLED, TIMED_OUT are terminal/side states.
+//
+// ADR-0032: TIMED_OUT is a terminal side state (infrastructure wall-clock
+// kill); UNKNOWN is a non-terminal indeterminate state reachable from RUNNING
+// and resolvable only outward by a human or the recovery supervisor.
 //
 // k-mission-01 (ADR-0008/0009, work.schema/1.0): mission-contract Works add
 // forward states a CI Work never reaches. They are only reachable when the
@@ -44,13 +48,70 @@ const (
 	StateWaitingHuman    State = "WAITING_HUMAN"
 	StateSuspended       State = "SUSPENDED"
 	StateBudgetExhausted State = "BUDGET_EXHAUSTED"
+
+	// StateTimedOut is the terminal wall-clock/lease-TTL kill. It exists
+	// because the attempt layer has carried `timed_out` since slice 2
+	// (Attempt.Status documents it; the worker writes it on
+	// exec.CommandContext timeout) and the classifier already routes
+	// status_timed_out to ClassInfrastructureFail — but the Work-level
+	// vocabulary had no way to say so, forcing a lossy projection onto
+	// FAILED that made an infrastructure kill indistinguishable from a
+	// genuine test failure at exactly the layer the recovery supervisor
+	// reads. Owner-authorized addition; see ADR-0032.
+	StateTimedOut State = "TIMED_OUT"
+
+	// StateUnknown is INDETERMINATE, not finished. A Work lands here when
+	// the control plane loses track of a run (worker vanished, lease
+	// outcome unrecorded) and cannot say whether the node's work already
+	// happened. It is deliberately NOT terminal: a terminal UNKNOWN would
+	// make the ambiguity permanent, which inverts the entire intent —
+	// recovery must still be able to resolve it. Only a human or the
+	// recovery supervisor may resolve UNKNOWN; the runtime must never
+	// self-resume from it. See ADR-0032.
+	StateUnknown State = "UNKNOWN"
 )
+
+// AllStates returns the authoritative, ordered State vocabulary.
+//
+// This slice exists because Go cannot enumerate typed string constants at
+// runtime: a test that validates only the literals it names itself cannot
+// detect an addition to this package, which is precisely the silent drift
+// the vocabulary freeze is meant to forbid. AllStates is therefore the
+// single registered set — every State constant must appear here, and
+// TestStateConstantsAreRegistered (a go/parser walk over this very file)
+// fails if one is declared without being registered.
+//
+// It returns a fresh slice on every call so a caller cannot mutate the
+// canonical set. Order is the declaration order of the constants above.
+func AllStates() []State {
+	return []State{
+		StateCreated,
+		StatePlanning,
+		StateQueued,
+		StateRunning,
+		StateVerifying,
+		StateSucceeded,
+		StateBlocked,
+		StateFailed,
+		StateCancelled,
+		StateWaitingHuman,
+		StateSuspended,
+		StateBudgetExhausted,
+		StateTimedOut,
+		StateUnknown,
+	}
+}
 
 // IsTerminal returns true if the state is a terminal state (no further
 // transitions allowed).
+//
+// TIMED_OUT is terminal for the same reason FAILED is: the run is over and
+// will not progress on its own. UNKNOWN is NOT terminal — it records that
+// the outcome is unknown, and terminalizing it would permanently destroy
+// the possibility of recovery resolving it. See ADR-0032.
 func (s State) IsTerminal() bool {
 	switch s {
-	case StateSucceeded, StateFailed, StateCancelled:
+	case StateSucceeded, StateFailed, StateCancelled, StateTimedOut:
 		return true
 	}
 	return false
@@ -63,24 +124,37 @@ func (s State) IsTerminal() bool {
 // FAILED is intentionally not in any forward path: a failed Work stays failed
 // until a human or policy explicitly resets it (a future slice).
 //
+// TIMED_OUT (ADR-0032) mirrors FAILED's reachability exactly wherever FAILED
+// appears: a wall-clock kill can end a work at any stage that was still
+// running, and it carries the same "no further forward path" property.
+//
 // k-mission-01: forward mission states (ADR-0009). Budget-gov transitions are
 // only valid on mission Works (IsMission); the kernel enforces that at the
 // transition site, not in this table, because the table has no Work context.
 var validTransitions = map[State]map[State]bool{
-	StateCreated:   {StatePlanning: true, StateQueued: true, StateCancelled: true, StateFailed: true, StateBlocked: true},
-	StatePlanning:  {StateQueued: true, StateFailed: true, StateBlocked: true, StateCancelled: true},
-	StateQueued:    {StateRunning: true, StateCancelled: true, StateFailed: true, StateBlocked: true},
-	StateRunning:   {StateVerifying: true, StateFailed: true, StateCancelled: true, StateWaitingHuman: true, StateSuspended: true, StateBudgetExhausted: true},
-	StateVerifying: {StateSucceeded: true, StateFailed: true, StateCancelled: true, StateWaitingHuman: true, StateSuspended: true},
+	StateCreated:   {StatePlanning: true, StateQueued: true, StateCancelled: true, StateFailed: true, StateBlocked: true, StateTimedOut: true},
+	StatePlanning:  {StateQueued: true, StateFailed: true, StateBlocked: true, StateCancelled: true, StateTimedOut: true},
+	StateQueued:    {StateRunning: true, StateCancelled: true, StateFailed: true, StateBlocked: true, StateTimedOut: true},
+	StateRunning:   {StateVerifying: true, StateFailed: true, StateCancelled: true, StateWaitingHuman: true, StateSuspended: true, StateBudgetExhausted: true, StateTimedOut: true, StateUnknown: true},
+	StateVerifying: {StateSucceeded: true, StateFailed: true, StateCancelled: true, StateWaitingHuman: true, StateSuspended: true, StateTimedOut: true},
 
 	// From budget-governed pause states:
 	//   WAITING_HUMAN -> RUNNING  (human approved the blocking syscall)
 	//   WAITING_HUMAN -> CANCELLED/FAILED/BLOCKED (side paths, generic rule)
 	//   SUSPENDED     -> RUNNING  (resumed from checkpoint after budget grant)
 	//   BUDGET_EXHAUSTED -> SUSPENDED (human granted budget; checkpoint resume path)
-	StateWaitingHuman:    {StateRunning: true, StateFailed: true, StateBlocked: true, StateCancelled: true},
-	StateSuspended:       {StateRunning: true, StateWaitingHuman: true, StateFailed: true, StateBlocked: true, StateCancelled: true},
-	StateBudgetExhausted: {StateSuspended: true, StateFailed: true, StateCancelled: true},
+	StateWaitingHuman:    {StateRunning: true, StateFailed: true, StateBlocked: true, StateCancelled: true, StateTimedOut: true},
+	StateSuspended:       {StateRunning: true, StateWaitingHuman: true, StateFailed: true, StateBlocked: true, StateCancelled: true, StateTimedOut: true},
+	StateBudgetExhausted: {StateSuspended: true, StateFailed: true, StateCancelled: true, StateTimedOut: true},
+
+	// ADR-0032: UNKNOWN is an outcome of losing track of a RUNNING work,
+	// and it is resolvable ONLY outward into a decision. There is no
+	// UNKNOWN -> RUNNING edge, by design: the runtime must never resume a
+	// run whose outcome it could not determine, because the work may
+	// already have happened. Resolution to SUSPENDED additionally requires
+	// a checkpoint handoff (ADR-0010) to pass SuspendWork, so the
+	// indeterminate run is preserved rather than discarded.
+	StateUnknown: {StateFailed: true, StateCancelled: true, StateSuspended: true},
 }
 
 // missionOnlyStates may only be entered by Works carrying a full mission
@@ -318,6 +392,14 @@ func (s LeaseStatus) IsTerminal() bool {
 //
 // See RFC-0001 (docs/rfcs/RFC-0001-slice-2-leases-and-recovery.md) for the
 // full state machine and TTL math.
+//
+// Epoch is the fencing token (ADR-0033). It is incremented every time this
+// NODE is granted a lease, so a holder that goes stale — partitioned worker,
+// zombie process waking up after its lease expired and the node was re-leased
+// — presents an epoch that no longer matches the row and is refused. The
+// executor identity (WorkerID) is the other half of the triple: the epoch
+// alone proves recency, not who is presenting it, and Store.CompleteLease
+// historically took no worker identity at all.
 type Lease struct {
 	ID         string      `json:"id"`
 	WorkID     string      `json:"work_id"`
@@ -328,6 +410,12 @@ type Lease struct {
 	ExpiresAt  time.Time   `json:"expires_at"`
 	LastBeatAt time.Time   `json:"last_beat_at"`
 	Status     LeaseStatus `json:"status"`
+
+	// Epoch is the monotonic fencing token for this node's lease
+	// generations. Strictly positive: the first grant of a node is epoch 1,
+	// so a caller that omits the epoch entirely (the zero value) is
+	// distinguishable from a holder of a real, current lease and is refused.
+	Epoch int64 `json:"epoch"`
 }
 
 // ValidateLeaseTransition reports whether moving from `from` to `to` is

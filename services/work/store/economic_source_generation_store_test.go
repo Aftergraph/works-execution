@@ -39,8 +39,8 @@ func TestEconomicSourceGenerationSchemaV17(t *testing.T) {
 	if err := st.db.QueryRow("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").Scan(&got); err != nil {
 		t.Fatalf("schema version: %v", err)
 	}
-	if got != 17 || SchemaVersion != 17 {
-		t.Fatalf("expected schema v17, got ledger=%d const=%d", got, SchemaVersion)
+	if got != 18 || SchemaVersion != 18 {
+		t.Fatalf("expected schema v18 (v17 economic source generations, then v18 lease fencing + outbox), got ledger=%d const=%d", got, SchemaVersion)
 	}
 	var table string
 	if err := st.db.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='economic_source_generations'").Scan(&table); err != nil {

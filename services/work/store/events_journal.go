@@ -153,8 +153,8 @@ func (s *SQLiteStore) GrantLeaseEventful(ctx context.Context, workID, nodeID, wo
 }
 
 // RenewLeaseEventful wraps RenewLease and emits worker.lease.renewed.
-func (s *SQLiteStore) RenewLeaseEventful(ctx context.Context, leaseID string, ttl time.Duration) (*workgraph.Lease, error) {
-	lease, err := s.RenewLease(ctx, leaseID, ttl)
+func (s *SQLiteStore) RenewLeaseEventful(ctx context.Context, ref LeaseRef, ttl time.Duration) (*workgraph.Lease, error) {
+	lease, err := s.RenewLease(ctx, ref, ttl)
 	if err != nil {
 		return nil, err
 	}
@@ -174,24 +174,24 @@ func (s *SQLiteStore) RenewLeaseEventful(ctx context.Context, leaseID string, tt
 }
 
 // ReleaseLeaseEventful wraps ReleaseLease and emits worker.lease.released.
-func (s *SQLiteStore) ReleaseLeaseEventful(ctx context.Context, leaseID, reason string) error {
-	return s.transitionLeaseWithEvent(ctx, leaseID, EventWorkerLeaseRelease, s.ReleaseLease, reason)
+func (s *SQLiteStore) ReleaseLeaseEventful(ctx context.Context, ref LeaseRef, reason string) error {
+	return s.transitionLeaseWithEvent(ctx, ref, EventWorkerLeaseRelease, s.ReleaseLease, reason)
 }
 
 // RevokeLeaseEventful wraps RevokeLease and emits worker.lease.revoked.
-func (s *SQLiteStore) RevokeLeaseEventful(ctx context.Context, leaseID, reason string) error {
-	return s.transitionLeaseWithEvent(ctx, leaseID, EventWorkerLeaseRevoke, s.RevokeLease, reason)
+func (s *SQLiteStore) RevokeLeaseEventful(ctx context.Context, ref LeaseRef, reason string) error {
+	return s.transitionLeaseWithEvent(ctx, ref, EventWorkerLeaseRevoke, s.RevokeLease, reason)
 }
 
 // transitionLeaseWithEvent runs the canonical lease transition and, only
 // after it succeeds, emits the journal event. The lease row is kept after
 // release/revoke (only its status changes), so GetLease resolves the Work
 // ID for the journal record.
-func (s *SQLiteStore) transitionLeaseWithEvent(ctx context.Context, leaseID, eventType string, transitionFn func(context.Context, string, string) error, reason string) error {
-	if err := transitionFn(ctx, leaseID, reason); err != nil {
+func (s *SQLiteStore) transitionLeaseWithEvent(ctx context.Context, ref LeaseRef, eventType string, transitionFn func(context.Context, LeaseRef, string) error, reason string) error {
+	if err := transitionFn(ctx, ref, reason); err != nil {
 		return err
 	}
-	lease, err := s.GetLease(ctx, leaseID)
+	lease, err := s.GetLease(ctx, ref.LeaseID)
 	if err != nil {
 		return fmt.Errorf("%w: %s: resolve lease: %v", ErrEventEmission, eventType, err)
 	}
@@ -208,8 +208,8 @@ func (s *SQLiteStore) transitionLeaseWithEvent(ctx context.Context, leaseID, eve
 }
 
 // CompleteLeaseEventful wraps CompleteLease and emits worker.lease.completed.
-func (s *SQLiteStore) CompleteLeaseEventful(ctx context.Context, leaseID string, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error) {
-	w, err := s.CompleteLease(ctx, leaseID, exitCode, artifact, evidence)
+func (s *SQLiteStore) CompleteLeaseEventful(ctx context.Context, ref LeaseRef, exitCode int, artifact *workgraph.Artifact, evidence []workgraph.Evidence) (*workgraph.Work, error) {
+	w, err := s.CompleteLease(ctx, ref, exitCode, artifact, evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +219,7 @@ func (s *SQLiteStore) CompleteLeaseEventful(ctx context.Context, leaseID string,
 		Type:   EventWorkerLeaseDone,
 		Data: map[string]any{
 			"work_id":   w.ID,
-			"lease_id":  leaseID,
+			"lease_id":  ref.LeaseID,
 			"exit_code": exitCode,
 			"state":     string(w.State),
 		},

@@ -19,6 +19,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -56,6 +57,46 @@ func (s *Server) gateLeaseOwner(r *http.Request, leaseID string) (int, string, b
 		return 0, "", true
 	}
 	return http.StatusForbidden, ReasonLeaseNotOwner, false
+}
+
+// ReasonLeaseFenced is the wire reason returned when the fencing triple
+// presented on a lease verb is stale — the epoch does not match the lease's
+// current generation, or the executor identity does not match the lease's
+// holder. ADR-0033.
+//
+// 409 Conflict, deliberately the same class as "lease_not_active": from the
+// caller's point of view both mean "this lease is no longer yours to act
+// on", and neither is an authentication failure. The distinction the
+// caller DOES need is against 403 lease_not_owner: a 403 means "you are not
+// the holder", a 409 lease_fenced means "you WERE the holder and your
+// grant has since been superseded". Only the second tells a worker its
+// view of the world is stale and it must re-acquire rather than retry.
+const ReasonLeaseFenced = "lease_fenced"
+
+// leaseExecutorIdentity resolves the executor identity for the fencing
+// triple (ADR-0033).
+//
+// Production path: the token's worker_id. gateLeaseOwner has already
+// established that this equals the lease's holder before any handler runs,
+// so passing it into the store adds no new authorization decision — it
+// makes the store's own check non-vacuous for callers that reach it
+// directly, which the old signature (CompleteLease took no worker identity
+// at all) did not.
+//
+// Dev path (no claims in context): fall back to the lease's own worker_id,
+// matching the existing k-065 "nil claims => pass" precedent. The epoch is
+// still enforced in dev, so the fencing law is testable without a token;
+// only the identity half of the triple degrades, and only in the posture
+// that already had no authentication at all.
+func (s *Server) leaseExecutorIdentity(ctx context.Context, r *http.Request, leaseID string) (string, error) {
+	if claims := ClaimsFrom(r.Context()); claims != nil {
+		return claims.WorkerID, nil
+	}
+	lease, err := s.Store.GetLease(ctx, leaseID)
+	if err != nil {
+		return "", err
+	}
+	return lease.WorkerID, nil
 }
 
 // workgraph.Lease is the concrete type GetLease returns; keep the import

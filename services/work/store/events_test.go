@@ -233,10 +233,11 @@ func TestCanonicalMutationsEmitJournalEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grant lease: %v", err)
 	}
-	if _, err := s.RenewLeaseEventful(ctx, lease.ID, 30*time.Second); err != nil {
+	ref := store.LeaseRef{LeaseID: lease.ID, WorkerID: lease.WorkerID, Epoch: lease.Epoch}
+	if _, err := s.RenewLeaseEventful(ctx, ref, 30*time.Second); err != nil {
 		t.Fatalf("renew lease: %v", err)
 	}
-	if _, err := s.CompleteLeaseEventful(ctx, lease.ID, 0, nil, nil); err != nil {
+	if _, err := s.CompleteLeaseEventful(ctx, ref, 0, nil, nil); err != nil {
 		t.Fatalf("complete lease: %v", err)
 	}
 
