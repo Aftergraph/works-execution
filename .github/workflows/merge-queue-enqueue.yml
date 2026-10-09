@@ -1,0 +1,31 @@
+name: Merge queue enqueue
+
+on:
+  pull_request:
+    types: [ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  enqueue:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == 'JonasAbde' &&
+      contains(github.event.pull_request.body, '<!-- merge-queue:enqueue -->')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Enqueue pull request through repository merge policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          gh api --method PUT \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge-async" \
+            -f sha="$PR_HEAD_SHA" \
+            -f merge_action='merge_queue'
