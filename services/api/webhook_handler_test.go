@@ -526,3 +526,111 @@ func TestWebhookHandler_NoWorksYML_FallsBack(t *testing.T) {
 		t.Errorf("Requirements.Pool = %q, want empty (fallback)", w.Requirements.Pool)
 	}
 }
+
+func TestWebhookHandler_RepairsMissingDeliveryMappingWithoutDuplicateWork(t *testing.T) {
+	const secret = "shhh"
+	ts, stIface := newWebhookTestServer(t, secret, nil)
+	st, ok := stIface.(*store.SQLiteStore)
+	if !ok {
+		t.Fatalf("unexpected store type %T", stIface)
+	}
+	body := pushBody("JonasAbde/works-execution", "main", "0123456789abcdef0123456789abcdef01234567")
+
+	r1 := postGitHub(t, ts, secret, "push", "del-crash-seam", body)
+	if r1.StatusCode != http.StatusCreated {
+		bb, _ := io.ReadAll(r1.Body)
+		r1.Body.Close()
+		t.Fatalf("first delivery: status=%d body=%s", r1.StatusCode, string(bb))
+	}
+	var first map[string]any
+	if err := json.NewDecoder(r1.Body).Decode(&first); err != nil {
+		r1.Body.Close()
+		t.Fatal(err)
+	}
+	r1.Body.Close()
+	firstID, _ := first["work_id"].(string)
+
+	// Simulate process loss after durable Work creation but before the
+	// delivery->work mapping survived. The retry must converge on the same
+	// deterministic Work identity rather than create a second execution.
+	if _, err := st.DB().ExecContext(t.Context(),
+		`DELETE FROM webhooks WHERE delivery_id = ?`, "del-crash-seam"); err != nil {
+		t.Fatal(err)
+	}
+
+	r2 := postGitHub(t, ts, secret, "push", "del-crash-seam", body)
+	defer r2.Body.Close()
+	if r2.StatusCode != http.StatusOK {
+		bb, _ := io.ReadAll(r2.Body)
+		t.Fatalf("recovery delivery: status=%d body=%s", r2.StatusCode, string(bb))
+	}
+	var second map[string]any
+	if err := json.NewDecoder(r2.Body).Decode(&second); err != nil {
+		t.Fatal(err)
+	}
+	if second["status"] != "recovered" {
+		t.Fatalf("status=%v want recovered", second["status"])
+	}
+	if got, _ := second["work_id"].(string); got != firstID {
+		t.Fatalf("recovery changed work id: first=%s second=%s", firstID, got)
+	}
+
+	works, err := st.ListWorks(t.Context(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matches int
+	for _, w := range works {
+		if w.ID == firstID {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("canonical work copies=%d want 1", matches)
+	}
+	stored, err := st.LookupWebhookDelivery(t.Context(), "del-crash-seam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored != firstID {
+		t.Fatalf("repaired mapping=%q want %q", stored, firstID)
+	}
+}
+
+func TestWebhookHandler_SameDeliveryIDDifferentSignedBodyFailsClosed(t *testing.T) {
+	const secret = "shhh"
+	ts, st := newWebhookTestServer(t, secret, nil)
+	bodyA := pushBody("JonasAbde/works-execution", "main", "0123456789abcdef0123456789abcdef01234567")
+	bodyB := pushBody("JonasAbde/works-execution", "main", "89abcdef0123456789abcdef0123456789abcdef")
+
+	r1 := postGitHub(t, ts, secret, "push", "del-body-conflict", bodyA)
+	if r1.StatusCode != http.StatusCreated {
+		r1.Body.Close()
+		t.Fatalf("first delivery status=%d", r1.StatusCode)
+	}
+	var first map[string]any
+	_ = json.NewDecoder(r1.Body).Decode(&first)
+	r1.Body.Close()
+	firstID, _ := first["work_id"].(string)
+
+	// Remove only the mapping to exercise the Work-level signed-content guard.
+	sqlite := st.(*store.SQLiteStore)
+	if _, err := sqlite.DB().ExecContext(t.Context(),
+		`DELETE FROM webhooks WHERE delivery_id = ?`, "del-body-conflict"); err != nil {
+		t.Fatal(err)
+	}
+
+	r2 := postGitHub(t, ts, secret, "push", "del-body-conflict", bodyB)
+	defer r2.Body.Close()
+	if r2.StatusCode != http.StatusConflict {
+		bb, _ := io.ReadAll(r2.Body)
+		t.Fatalf("conflicting signed body status=%d body=%s want 409", r2.StatusCode, string(bb))
+	}
+	canonical, err := st.GetWork(t.Context(), firstID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical.Source.SHA != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("canonical Work was mutated: sha=%s", canonical.Source.SHA)
+	}
+}
