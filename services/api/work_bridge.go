@@ -32,6 +32,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/JonasAbde/works-execution/packages/verifiedstate"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 	"github.com/JonasAbde/works-execution/services/work/store"
 )
@@ -196,10 +197,18 @@ type bridgeHandoffHandler struct {
 // handoffView is the read-only checkpoint binding returned by
 // GET /v1/works/{id}/handoff. checkpoint_hash is the exact persisted
 // handoff payload hash — the value POST /resume validates.
+type handoffReconciliationView struct {
+	Schema           string                             `json:"schema"`
+	CheckpointSchema string                             `json:"checkpoint_schema"`
+	Subjects         []verifiedstate.ObservationBinding `json:"subjects"`
+}
+
 type handoffView struct {
-	WorkID         string `json:"work_id"`
-	State          string `json:"state"`
-	CheckpointHash string `json:"checkpoint_hash"`
+	WorkID            string                     `json:"work_id"`
+	State             string                     `json:"state"`
+	CheckpointHash    string                     `json:"checkpoint_hash"`
+	VerificationAware bool                       `json:"verification_aware,omitempty"`
+	Reconciliation    *handoffReconciliationView `json:"reconciliation,omitempty"`
 }
 
 func (h *bridgeHandoffHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -233,9 +242,25 @@ func (h *bridgeHandoffHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "internal_error", "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, handoffView{
+	view := handoffView{
 		WorkID:         workID,
 		State:          string(current.State),
 		CheckpointHash: rec.PayloadHash,
-	})
+	}
+	checkpoint, present, checkpointErr := verifiedstate.CheckpointFromStateSnapshot(rec.Handoff.StateSnapshot)
+	if checkpointErr != nil {
+		writeError(w, http.StatusConflict, "invalid_reconciliation_checkpoint", checkpointErr.Error())
+		return
+	}
+	if present {
+		view.VerificationAware = true
+		if checkpoint.Schema == verifiedstate.CheckpointSchemaObserved {
+			view.Reconciliation = &handoffReconciliationView{
+				Schema:           "resume.observation-plan/1.0",
+				CheckpointSchema: checkpoint.Schema,
+				Subjects:         append([]verifiedstate.ObservationBinding(nil), checkpoint.Observations...),
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, view)
 }
