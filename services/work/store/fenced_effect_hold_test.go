@@ -5,6 +5,7 @@ import (
  "errors"
  "path/filepath"
  "sync"
+ "strings"
  "testing"
  "time"
 
@@ -31,19 +32,19 @@ func fencedFixture(t *testing.T)(*workstore.SQLiteStore,workstore.FencedEffectIn
  }
  if err=s.CreateWork(ctx,work);err!=nil{t.Fatal(err)}
  if _,err=s.UpdateState(ctx,work.ID,workgraph.StateQueued);err!=nil{t.Fatal(err)}
- lease,attempt,err:=s.GrantLease(ctx,work.ID,"only","worker-1",time.Minute)
+ lease,attempt,err:=s.GrantLease(ctx,work.ID,"only","wrkr_"+strings.Repeat("f",32),time.Minute)
  if err!=nil{t.Fatal(err)}
  d:=dispatch.Dispatch{
-  MissionID:"mission-1",AuthorityRef:"auth-1",AuthorityEpoch:3,
+  MissionID:"mis_12345",AuthorityRef:"auth_"+strings.Repeat("d",32),AuthorityEpoch:3,
   RuntimeDispatchID:"runtime-dispatch-1",AttemptID:attempt.ID,
   EffectID:"effect-1",IdempotencyKey:"dispatch-1",BudgetRef:"budget-1",
   BudgetCeiling:5,CheckpointID:"checkpoint-1",EvidenceRoot:"evidence-1",
   VerificationSubj:"subject-1",CausalID:"causal-1",
  }
  binding:=dispatch.V2Binding{
-  WorkID:work.ID,OrganizationID:"org-1",TenantID:"tenant-1",
-  PrincipalID:"principal-1",AuthorityLeaseID:d.AuthorityRef,
-  WorkerLeaseID:lease.ID,AdmissionDecisionID:"admission-1",
+  WorkID:work.ID,OrganizationID:"org_"+strings.Repeat("a",32),TenantID:"ten_"+strings.Repeat("b",32),
+  PrincipalID:"prn_"+strings.Repeat("c",32),AuthorityLeaseID:d.AuthorityRef,
+  WorkerLeaseID:lease.ID,AdmissionDecisionID:"pdr_"+strings.Repeat("e",32),
  }
  accepted,execution,err:=dispatch.NewAcceptor(s.DispatchAcceptanceV2Store(work.ID),nil).
   AcceptV2(ctx,d,binding)
