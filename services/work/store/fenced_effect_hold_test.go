@@ -70,8 +70,8 @@ func TestFencedHoldPersistsAndIsNotExecutionPermission(t *testing.T){
  if got.State!="held"||got.Amount!=3{t.Fatalf("unexpected hold %+v",got)}
  read,err:=s.HoldFencedEffect(context.Background(),in)
  if err!=nil||read.IdempotencyKey!=got.IdempotencyKey{t.Fatalf("idempotent recovery: %+v %v",read,err)}
- if err:=s.SealFencedEffect(context.Background(),in.IdempotencyKey);err!=nil{t.Fatal(err)}
- if err:=s.SealFencedEffect(context.Background(),in.IdempotencyKey);!errors.Is(err,workstore.ErrFencedEffectDenied){
+ if err:=s.SealFencedEffect(context.Background(),in);err!=nil{t.Fatal(err)}
+ if err:=s.SealFencedEffect(context.Background(),in);!errors.Is(err,workstore.ErrFencedEffectDenied){
   t.Fatalf("second seal must fail: %v",err)
  }
  r,err:=s.HoldFencedEffect(context.Background(),in)
@@ -146,5 +146,19 @@ func TestFencedHoldDeniedWhenAcceptanceRevoked(t *testing.T){
  if err:=a.Revoke(in.WorksExecutionID);err!=nil{t.Fatal(err)}
  if _,err:=s.HoldFencedEffect(context.Background(),in);!errors.Is(err,workstore.ErrFencedEffectDenied){
   t.Fatalf("revoked: %v",err)
+ }
+}
+
+func TestSealDeniedAfterLeaseReleaseOrChangedIdentity(t *testing.T){
+ s,in,done:=fencedFixture(t);defer done()
+ ctx:=context.Background()
+ if _,err:=s.HoldFencedEffect(ctx,in);err!=nil{t.Fatal(err)}
+ changed:=in;changed.PrincipalID="other"
+ if err:=s.SealFencedEffect(ctx,changed);!errors.Is(err,workstore.ErrFencedEffectDenied){
+  t.Fatalf("different principal sealed: %v",err)
+ }
+ if err:=s.ReleaseLease(ctx,in.WorkerLeaseID,"test");err!=nil{t.Fatal(err)}
+ if err:=s.SealFencedEffect(ctx,in);!errors.Is(err,workstore.ErrFencedEffectDenied){
+  t.Fatalf("released lease sealed: %v",err)
  }
 }

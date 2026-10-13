@@ -143,15 +143,52 @@ func (s *SQLiteStore) HoldFencedEffect(ctx context.Context,in FencedEffectInput)
 // process dies, a replay sees 'reconcile', never a second dispatch pass.
 // Only a separate trusted host with LIVE Trust/AIE authorization may actually
 // invoke the provider using its own idempotency key.
-func(s *SQLiteStore) SealFencedEffect(ctx context.Context,key string)error{
- if key==""{return ErrFencedEffectDenied}
+func(s *SQLiteStore) SealFencedEffect(ctx context.Context,in FencedEffectInput)error{
+ if in.IdempotencyKey==""||in.WorksExecutionID==""||in.ExecutionContextID==""||
+ in.WorkID==""||in.WorkerLeaseID==""||in.TenantID==""||
+ in.PrincipalID==""||in.EffectID==""||in.Amount<=0||
+ !effectDigestPattern.MatchString(in.ActionDigest){return ErrFencedEffectDenied}
  txn,err:=s.db.BeginTx(ctx,nil)
  if err!=nil{return err}
  defer txn.Rollback()
- result,err:=txn.ExecContext(ctx,"UPDATE dispatch_effect_holds "+
- "SET state='reconcile' WHERE idempotency_key=? AND state='held'",key)
+ var stored FencedEffectHold
+ var ec,work,tenant,principal,lease string
+ err=txn.QueryRowContext(ctx,"SELECT works_execution_id,execution_context_id,work_id,"+
+ "tenant_id,principal_id,worker_lease_id,effect_id,action_digest,amount,state "+
+ "FROM dispatch_effect_holds WHERE idempotency_key=?",in.IdempotencyKey).
+ Scan(&stored.WorksExecutionID,&ec,&work,&tenant,&principal,&lease,
+ &stored.EffectID,&stored.ActionDigest,&stored.Amount,&stored.State)
+ if err!=nil{
+  if errors.Is(err,sql.ErrNoRows){return ErrFencedEffectDenied}
+  return err
+ }
+ if stored.State!="held"||stored.WorksExecutionID!=in.WorksExecutionID||
+ ec!=in.ExecutionContextID||work!=in.WorkID||tenant!=in.TenantID||
+ principal!=in.PrincipalID||lease!=in.WorkerLeaseID||
+ stored.EffectID!=in.EffectID||stored.ActionDigest!=in.ActionDigest||
+ stored.Amount!=in.Amount{return ErrFencedEffectDenied}
+ acc,err:=loadAcceptance(txn,"SELECT works_execution_id,idempotency_key,causal_id,"+
+ "acceptance_json FROM dispatch_acceptances WHERE works_execution_id=?",in.WorksExecutionID)
  if err!=nil{return err}
- n,err:=result.RowsAffected()
+ if acc==nil||acc.ContractVersion!="dispatch.acceptance/2.0"||
+ acc.Revoked||acc.EffectApplied||acc.Outcome!="ACCEPTED"||
+ acc.WorkID!=in.WorkID||acc.ExecutionContextID!=in.ExecutionContextID||
+ acc.Dispatch.EffectID!=in.EffectID{return ErrFencedEffectDenied}
+ var lw,la,ls,lExpires string
+ err=txn.QueryRowContext(ctx,"SELECT work_id,attempt_id,status,expires_at "+
+ "FROM work_leases WHERE id=?",in.WorkerLeaseID).
+ Scan(&lw,&la,&ls,&lExpires)
+ if err!=nil{
+  if errors.Is(err,sql.ErrNoRows){return ErrFencedEffectDenied}
+  return err
+ }
+ expiry,err:=time.Parse(time.RFC3339Nano,lExpires)
+ if err!=nil||lw!=in.WorkID||la!=acc.Dispatch.AttemptID||
+ ls!="ACTIVE"||!expiry.After(time.Now().UTC()){return ErrFencedEffectDenied}
+ r,err:=txn.ExecContext(ctx,"UPDATE dispatch_effect_holds SET state='reconcile' "+
+ "WHERE idempotency_key=? AND state='held'",in.IdempotencyKey)
+ if err!=nil{return err}
+ n,err:=r.RowsAffected()
  if err!=nil{return err}
  if n!=1{return ErrFencedEffectDenied}
  return txn.Commit()
