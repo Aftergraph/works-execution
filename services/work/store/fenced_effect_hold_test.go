@@ -127,3 +127,23 @@ func TestFencedHoldIsAtomicUnderParallelReplay(t *testing.T){
  if err:=s.DB().QueryRow("SELECT COUNT(*) FROM dispatch_effect_holds").Scan(&n);err!=nil{t.Fatal(err)}
  if n!=1{t.Fatalf("expected one durable hold got %d",n)}
 }
+
+func TestLegacySpendCannotOversubscribeFencedHold(t *testing.T){
+ s,in,done:=fencedFixture(t);defer done()
+ if _,err:=s.HoldFencedEffect(context.Background(),in);err!=nil{t.Fatal(err)}
+ a:=dispatch.NewAcceptor(s.DispatchAcceptanceV2Store(in.WorkID),nil)
+ if err:=a.Spend(in.WorksExecutionID,3);err==nil{
+  t.Fatal("Spend bypassed already held budget")
+ }
+ if err:=a.Spend(in.WorksExecutionID,2);err!=nil{
+  t.Fatalf("remaining available spend should be allowed: %v",err)
+ }
+}
+func TestFencedHoldDeniedWhenAcceptanceRevoked(t *testing.T){
+ s,in,done:=fencedFixture(t);defer done()
+ a:=dispatch.NewAcceptor(s.DispatchAcceptanceV2Store(in.WorkID),nil)
+ if err:=a.Revoke(in.WorksExecutionID);err!=nil{t.Fatal(err)}
+ if _,err:=s.HoldFencedEffect(context.Background(),in);!errors.Is(err,workstore.ErrFencedEffectDenied){
+  t.Fatalf("revoked: %v",err)
+ }
+}

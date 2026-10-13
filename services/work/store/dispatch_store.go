@@ -214,6 +214,19 @@ func (s *dispatchAcceptanceStore) SpendIfWithinCeiling(worksExecutionID string, 
 	if amount > acc.Dispatch.BudgetCeiling-acc.BudgetSpent {
 		return nil, nil
 	}
+	// All spending pathways share the same canonical WORKS transaction.
+	// Existing fenced holds must reduce the available budget, otherwise a
+	// legacy Spend() could oversubscribe the same accepted ceiling.
+	var held int64
+	if err := tx.QueryRow(`SELECT COALESCE(SUM(amount),0) FROM dispatch_effect_holds
+		WHERE works_execution_id=? AND state IN ('held','reconcile')`,
+		worksExecutionID).Scan(&held); err != nil {
+		return nil, fmt.Errorf("dispatch acceptance read held budget: %w", err)
+	}
+	if held < 0 || held > acc.Dispatch.BudgetCeiling-acc.BudgetSpent ||
+		amount > acc.Dispatch.BudgetCeiling-acc.BudgetSpent-held {
+		return nil, nil
+	}
 	acc.BudgetSpent += amount
 	payload, err := json.Marshal(acc)
 	if err != nil {
