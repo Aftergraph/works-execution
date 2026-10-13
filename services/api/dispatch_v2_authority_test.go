@@ -83,3 +83,37 @@ func TestTrustGatewayDispatchV2ClientRejectsSpoofedResultsAndBadURLs(t *testing.
   t.Fatal("invalid action ID accepted")
  }
 }
+
+func TestTrustGatewayDispatchRejectsMissingAuthorityFlagsAndRedirects(t *testing.T){
+ token:=strings.Repeat("z",32)
+ in:=trustRequest()
+ for _,body:=range []string{
+  "{\"schema\":\"aftergraph.works-dispatch-revalidation/1\",\"allowed\":true,\"actionId\":\""+in.ActionID+"\",\"authorityLeaseId\":\""+in.AuthorityLeaseID+"\",\"effectDigest\":\""+in.EffectDigest+"\"}",
+  "{\"schema\":\"aftergraph.works-dispatch-revalidation/1\",\"allowed\":true,\"actionId\":\""+in.ActionID+"\",\"authorityLeaseId\":\""+in.AuthorityLeaseID+"\",\"effectDigest\":\""+in.EffectDigest+"\",\"canDispatchEffect\":false,\"authorityGranted\":true}",
+ }{
+  s:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+   w.Header().Set("Content-Type","application/json")
+   _,_ = w.Write([]byte(body))
+  }))
+  a,err:=api.NewTrustGatewayDispatchV2Authority(s.URL,token)
+  if err!=nil{t.Fatal(err)}
+  if err=a.RevalidateDispatchV2(context.Background(),in);err==nil{
+   t.Fatal("malformed Trust response was accepted")
+  }
+  s.Close()
+ }
+ target:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  w.Header().Set("Content-Type","application/json")
+  _,_ = w.Write([]byte("{\"schema\":\"aftergraph.works-dispatch-revalidation/1\",\"allowed\":true}"))
+ }))
+ defer target.Close()
+ redirect:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  http.Redirect(w,r,target.URL,http.StatusTemporaryRedirect)
+ }))
+ defer redirect.Close()
+ a,err:=api.NewTrustGatewayDispatchV2Authority(redirect.URL,token)
+ if err!=nil{t.Fatal(err)}
+ if err=a.RevalidateDispatchV2(context.Background(),in);err==nil{
+  t.Fatal("redirected authority response was accepted")
+ }
+}

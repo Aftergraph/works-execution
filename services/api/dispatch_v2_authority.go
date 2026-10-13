@@ -61,7 +61,10 @@ func NewTrustGatewayDispatchV2Authority(rawURL,token string)(*TrustGatewayDispat
  }
  if len(token)<32{return nil,ErrDispatchV2AuthorityUnavailable}
  return &TrustGatewayDispatchV2Authority{endpoint:strings.TrimRight(u.String(),"/")+
- "/v2/works/dispatch/revalidate",bearer:token,client:&http.Client{Timeout:5*time.Second}},nil
+ "/v2/works/dispatch/revalidate",bearer:token,client:&http.Client{
+ Timeout:5*time.Second,
+ CheckRedirect:func(*http.Request,[]*http.Request)error{return http.ErrUseLastResponse},
+ }},nil
 }
 func (a *TrustGatewayDispatchV2Authority) RevalidateDispatchV2(ctx context.Context,in DispatchV2AuthorityRequest)error{
  if a==nil||a.client==nil||a.bearer==""||
@@ -88,11 +91,14 @@ func (a *TrustGatewayDispatchV2Authority) RevalidateDispatchV2(ctx context.Conte
   ActionID string `json:"actionId"`
   AuthorityLeaseID string `json:"authorityLeaseId"`
   EffectDigest string `json:"effectDigest"`
-  CanDispatchEffect bool `json:"canDispatchEffect"`
+  CanDispatchEffect *bool `json:"canDispatchEffect"`
  }
- if err:=json.Unmarshal(data,&out);err!=nil||
+ decoder:=json.NewDecoder(bytes.NewReader(data))
+ decoder.DisallowUnknownFields()
+ if err:=decoder.Decode(&out);err!=nil||
   out.Schema!="aftergraph.works-dispatch-revalidation/1"||
-  !out.Allowed||out.CanDispatchEffect||out.ActionID!=in.ActionID||
+  !out.Allowed||out.CanDispatchEffect==nil||*out.CanDispatchEffect||
+  out.ActionID!=in.ActionID||
   out.AuthorityLeaseID!=in.AuthorityLeaseID||out.EffectDigest!=in.EffectDigest{
   return ErrDispatchV2AuthorityUnavailable
  }
