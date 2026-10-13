@@ -203,3 +203,31 @@ func TestSignedReceiptCannotRebindDifferentEffectAction(t *testing.T){
   t.Fatalf("cross-action evidence persisted: %v",err)
  }
 }
+
+func TestEffectReceiptAndActionJournalAreAppendOnlyInSQLite(t *testing.T){
+ s,in,done:=fencedFixture(t);defer done()
+ ctx:=context.Background()
+ provider:=newSandboxProvider(t)
+ if _,err:=s.PrepareFencedEffect(ctx,
+  workstore.FencedEffectPreparationInput{Hold:in,ActionID:effectAction},
+  effectAuthorityFunc(func(context.Context,workstore.EffectTimeScope)error{return nil}));err!=nil{t.Fatal(err)}
+ if err:=provider.Apply(ctx,in,effectAction);err!=nil{t.Fatal(err)}
+ r,err:=workstore.NewFencedEffectReceiptReader(s,sandboxProviderID,
+  provider.signer.Public().(ed25519.PublicKey),provider)
+ if err!=nil{t.Fatal(err)}
+ if _,err=r.Reconcile(ctx,in);err!=nil{t.Fatal(err)}
+ for _,query:=range []string{
+  "UPDATE dispatch_effect_receipts SET evidence_id='forged' WHERE idempotency_key=?",
+  "DELETE FROM dispatch_effect_receipts WHERE idempotency_key=?",
+  "UPDATE dispatch_effect_action_bindings SET action_id='forged' WHERE idempotency_key=?",
+  "DELETE FROM dispatch_effect_action_bindings WHERE idempotency_key=?",
+ }{
+  if _,err:=s.DB().ExecContext(ctx,query,in.IdempotencyKey);err==nil{
+   t.Fatalf("SQLite allowed mutation of immutable journal: %s",query)
+  }
+ }
+ verified,err:=r.Read(ctx,in)
+ if err!=nil||!verified.Verified{
+  t.Fatalf("immutable receipt corrupted after blocked SQL mutations: %+v %v",verified,err)
+ }
+}

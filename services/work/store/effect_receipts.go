@@ -37,6 +37,18 @@ CREATE TABLE IF NOT EXISTS dispatch_effect_receipts (
  observed_at TEXT NOT NULL,
  UNIQUE(works_execution_id,effect_id)
 );
+CREATE TRIGGER IF NOT EXISTS dispatch_effect_receipts_immutable_update
+BEFORE UPDATE ON dispatch_effect_receipts
+BEGIN SELECT RAISE(ABORT,'immutable provider receipt'); END;
+CREATE TRIGGER IF NOT EXISTS dispatch_effect_receipts_immutable_delete
+BEFORE DELETE ON dispatch_effect_receipts
+BEGIN SELECT RAISE(ABORT,'immutable provider receipt'); END;
+CREATE TRIGGER IF NOT EXISTS dispatch_effect_action_bindings_immutable_update
+BEFORE UPDATE ON dispatch_effect_action_bindings
+BEGIN SELECT RAISE(ABORT,'immutable effect action'); END;
+CREATE TRIGGER IF NOT EXISTS dispatch_effect_action_bindings_immutable_delete
+BEFORE DELETE ON dispatch_effect_action_bindings
+BEGIN SELECT RAISE(ABORT,'immutable effect action'); END;
 `
 
 // ProviderReceipt is canonically serialized with json.Marshal before signing.
