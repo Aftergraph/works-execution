@@ -161,6 +161,8 @@ type Server struct {
 	// such as TG execution-PDR correlation. It is intentionally distinct from
 	// worker enrollment JWTs and must be at least 32 bytes when configured.
 	PlatformAPIToken []byte
+	// Unconfigured means fail closed on all new V2 acceptances.
+	DispatchV2Authority DispatchV2Authority
 	// publisherWG tracks in-flight publish goroutines fired by
 	// maybePublishOnTerminal (k-068). Zero value = unbounded
 	// fire-and-forget, identical to pre-k-068 behavior for any Server

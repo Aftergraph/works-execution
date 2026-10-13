@@ -36,6 +36,7 @@ func fencedFixture(t *testing.T)(*workstore.SQLiteStore,workstore.FencedEffectIn
  if err!=nil{t.Fatal(err)}
  d:=dispatch.Dispatch{
   MissionID:"mis_12345",AuthorityRef:"auth_"+strings.Repeat("d",32),AuthorityEpoch:3,
+  ActionID:"act_"+strings.Repeat("b",32),EffectDigest:"sha256:"+repeatDigest(),
   RuntimeDispatchID:"runtime-dispatch-1",AttemptID:attempt.ID,
   EffectID:"effect-1",IdempotencyKey:"dispatch-1",BudgetRef:"budget-1",
   BudgetCeiling:5,CheckpointID:"checkpoint-1",EvidenceRoot:"evidence-1",

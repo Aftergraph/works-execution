@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/JonasAbde/works-execution/packages/executioncontext"
+	"github.com/JonasAbde/works-execution/services/api"
 	"github.com/JonasAbde/works-execution/packages/workgraph"
 )
 
@@ -18,7 +19,7 @@ const dispatchV2BridgeSecret = "works-platform-bridge-dispatch-v2-test-012345678
 const dispatchV2Subject = "git:Aftergraph/STEWARD-by-Aftergraph@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 func dispatchV2Fixture(leaseID string) string {
-	return `{"schema":"dispatch.acceptance/2.0","organization_id":"org_11111111111111111111111111111111","tenant_id":"ten_22222222222222222222222222222222","principal_id":"prn_33333333333333333333333333333333","mission_id":"mis_example","authority_lease_id":"auth_44444444444444444444444444444444","worker_lease_id":"` + leaseID + `","admission_decision_id":"pdr_55555555555555555555555555555555","runtime_dispatch_id":"rdisp/1","attempt_id":"attempt/1","effect_id":"effect/1","idempotency_key":"idem/v2/1","budget_ref":"budget/1","budget_ceiling":100,"checkpoint_id":"checkpoint/1","evidence_root":"evidence/1","causal_id":"causal/1"}`
+	return `{"schema":"dispatch.acceptance/2.0","action_id":"act_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","effect_digest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","organization_id":"org_11111111111111111111111111111111","tenant_id":"ten_22222222222222222222222222222222","principal_id":"prn_33333333333333333333333333333333","mission_id":"mis_example","authority_lease_id":"auth_44444444444444444444444444444444","worker_lease_id":"` + leaseID + `","admission_decision_id":"pdr_55555555555555555555555555555555","runtime_dispatch_id":"rdisp/1","attempt_id":"attempt/1","effect_id":"effect/1","idempotency_key":"idem/v2/1","budget_ref":"budget/1","budget_ceiling":100,"checkpoint_id":"checkpoint/1","evidence_root":"evidence/1","causal_id":"causal/1"}`
 }
 
 
@@ -64,10 +65,14 @@ func subjectBody(subject string) string {
 }
 
 func setupDispatchV2Work(t *testing.T) (base, workID, leaseID string) {
+ return setupDispatchV2WorkWithAuthority(t,dispatchV2TestAuthorizer{})
+}
+func setupDispatchV2WorkWithAuthority(t *testing.T, authority api.DispatchV2Authority) (base, workID, leaseID string) {
 	t.Helper()
 	t.Setenv("WORKS_PLATFORM_BRIDGE_SECRET", dispatchV2BridgeSecret)
 	srv, ts, st := newTestServer(t)
 	srv.PlatformAPIToken = []byte(dispatchV2PlatformToken)
+	srv.DispatchV2Authority = authority
 	ctx := context.Background()
 	w := &workgraph.Work{
 		ID: workgraph.NewID("wrk"),
@@ -288,4 +293,84 @@ func TestDispatchV2PlacementBindingReplayCannotRebindWorker(t *testing.T) {
 	if replay.StatusCode != http.StatusConflict {
 		t.Fatalf("replay status=%d want=409", replay.StatusCode)
 	}
+}
+
+
+type dispatchV2TestAuthorizer struct{}
+func (dispatchV2TestAuthorizer) RevalidateDispatchV2(_ context.Context,v api.DispatchV2AuthorityRequest)error{
+ if v.Schema!="aftergraph.works-dispatch-revalidation-request/1"||
+ v.ActionID!="act_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"||
+ v.EffectDigest!="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"||
+ v.TenantID!="ten_22222222222222222222222222222222"||
+ v.AuthorityLeaseID!="auth_44444444444444444444444444444444"{
+  return api.ErrDispatchV2AuthorityUnavailable
+ }
+ return nil
+}
+
+func TestDispatchV2RequiresExactLiveAIEBinding(t *testing.T){
+ base,workID,leaseID:=setupDispatchV2Work(t)
+ for _,fragment:=range []string{
+  "\"action_id\":\"act_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"",
+  "\"effect_digest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"",
+  "\"tenant_id\":\"ten_ffffffffffffffffffffffffffffffff\"",
+  "\"authority_lease_id\":\"auth_ffffffffffffffffffffffffffffffff\"",
+ }{
+  body:=dispatchV2Fixture(leaseID)
+  switch{
+   case strings.Contains(fragment,"action_id"):body=strings.Replace(body,"\"action_id\":\"act_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"",fragment,1)
+   case strings.Contains(fragment,"effect_digest"):body=strings.Replace(body,"\"effect_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"",fragment,1)
+   case strings.Contains(fragment,"tenant_id"):body=strings.Replace(body,"\"tenant_id\":\"ten_22222222222222222222222222222222\"",fragment,1)
+   default:body=strings.Replace(body,"\"authority_lease_id\":\"auth_44444444444444444444444444444444\"",fragment,1)
+  }
+  response:=postDispatchV2(t,base,workID,body)
+  response.Body.Close()
+  if response.StatusCode!=http.StatusServiceUnavailable{
+   t.Fatalf("invalid AIE binding should fail closed: %v %d",fragment,response.StatusCode)
+  }
+ }
+ // Failure cases must not have inserted any dispatch acceptance.
+ valid:=postDispatchV2(t,base,workID,dispatchV2Fixture(leaseID))
+ valid.Body.Close()
+ if valid.StatusCode!=http.StatusOK{t.Fatalf("valid authority did not accept: %d",valid.StatusCode)}
+}
+
+func TestDispatchV2FailsClosedWhenAIEUnconfigured(t *testing.T){
+ t.Setenv("WORKS_PLATFORM_BRIDGE_SECRET",dispatchV2BridgeSecret)
+ srv,ts,_:=newTestServer(t)
+ srv.PlatformAPIToken=[]byte(dispatchV2PlatformToken)
+ resp:=postDispatchV2(t,ts.URL,"wrk_99999999999999999999999999999999",
+  dispatchV2Fixture("lse_88888888888888888888888888888888"))
+ defer resp.Body.Close()
+ if resp.StatusCode!=http.StatusServiceUnavailable{
+  t.Fatalf("unconfigured AIE must return 503 before acceptance, got %d",resp.StatusCode)
+ }
+}
+
+type switchableV2Authority struct{ deny bool }
+func(a *switchableV2Authority)RevalidateDispatchV2(_ context.Context,_ api.DispatchV2AuthorityRequest)error{
+ if a.deny{return api.ErrDispatchV2AuthorityUnavailable}
+ return nil
+}
+func TestDispatchV2ReplayReadbackAfterAuthorityRevoked(t *testing.T){
+ verifier:=&switchableV2Authority{}
+ base,workID,leaseID:=setupDispatchV2WorkWithAuthority(t,verifier)
+ payload:=dispatchV2Fixture(leaseID)
+ first:=postDispatchV2(t,base,workID,payload)
+ if first.StatusCode!=http.StatusOK{first.Body.Close();t.Fatalf("first accept=%d",first.StatusCode)}
+ first.Body.Close()
+ verifier.deny=true
+ replay:=postDispatchV2(t,base,workID,payload)
+ defer replay.Body.Close()
+ if replay.StatusCode!=http.StatusOK{
+  t.Fatalf("exact same durable acceptance must be recoverable, got %d",replay.StatusCode)
+ }
+ changed:=strings.Replace(payload,
+  "act_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "act_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",1)
+ mismatch:=postDispatchV2(t,base,workID,changed)
+ defer mismatch.Body.Close()
+ if mismatch.StatusCode!=http.StatusConflict{
+  t.Fatalf("changed action ID used old acceptance: %d",mismatch.StatusCode)
+ }
 }

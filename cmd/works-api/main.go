@@ -171,6 +171,18 @@ func main() {
 		logger.Printf("platform service authentication unavailable (no WORKS_API_TOKEN)")
 	}
 
+	// WORKS #106: only the server-configured Trust Gateway can revalidate
+	// AIE admission freshness; missing configuration means V2 accept=503.
+	tgURL:=envOr("WORKS_TRUST_GATEWAY_URL","")
+	tgToken:=envOr("WORKS_TRUST_GATEWAY_OPERATOR_TOKEN","")
+	if tgURL!="" || tgToken!="" {
+		verifier,err:=api.NewTrustGatewayDispatchV2Authority(tgURL,tgToken)
+		if err!=nil { logger.Printf("dispatch v2 Trust Gateway unavailable (invalid config)") } else {
+			srv.DispatchV2Authority=verifier
+			logger.Printf("dispatch v2 Trust Gateway live AIE revalidation configured")
+		}
+	} else { logger.Printf("dispatch v2 authority unavailable (fail closed)") }
+
 	// Publisher: prefer GitHub App if both App ID + installation-token
 	// command are present; fall back to Status API with PAT; disabled
 	// when neither is configured.
