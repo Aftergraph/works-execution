@@ -182,3 +182,24 @@ func TestTrustGatewayEffectTimeRejectsConcatenatedPolicyResponses(t *testing.T){
   t.Fatal("concatenated positive Trust observations must fail closed")
  }
 }
+
+func TestEffectTimeActionMustDifferFromCommittedAcceptAction(t *testing.T){
+ s,in,done:=fencedFixture(t);defer done()
+ called:=0
+ authority:=effectAuthorityFunc(func(context.Context,workstore.EffectTimeScope)error{
+  called++;return nil
+ })
+ _,err:=s.PrepareFencedEffect(context.Background(),
+  workstore.FencedEffectPreparationInput{Hold:in,ActionID:"act_"+strings.Repeat("b",32)},authority)
+ if !errors.Is(err,workstore.ErrEffectTimeAuthorityDenied)||called!=0{
+  t.Fatalf("accept-time action reused at effect-time: err=%v calls=%d",err,called)
+ }
+}
+func TestHoldRejectsEffectDigestDifferentFromAcceptedDispatch(t *testing.T){
+ s,in,done:=fencedFixture(t);defer done()
+ in.ActionDigest="sha256:"+strings.Repeat("f",64)
+ _,err:=s.HoldFencedEffect(context.Background(),in)
+ if !errors.Is(err,workstore.ErrFencedEffectDenied){
+  t.Fatalf("unbound action digest admitted: %v",err)
+ }
+}

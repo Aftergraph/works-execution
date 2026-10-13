@@ -91,7 +91,8 @@ func (s *SQLiteStore) HoldFencedEffect(ctx context.Context,in FencedEffectInput)
  if acc==nil||acc.ContractVersion!="dispatch.acceptance/2.0"||
  acc.Revoked||acc.EffectApplied||acc.Outcome!="ACCEPTED"||
  acc.WorkID!=in.WorkID||acc.ExecutionContextID!=in.ExecutionContextID||
- acc.Dispatch.EffectID!=in.EffectID||acc.Dispatch.BudgetCeiling<0||
+ acc.Dispatch.EffectID!=in.EffectID||acc.Dispatch.EffectDigest!=in.ActionDigest||
+ !effectActionPattern.MatchString(acc.Dispatch.ActionID)||acc.Dispatch.BudgetCeiling<0||
  acc.BudgetSpent<0||acc.BudgetSpent>acc.Dispatch.BudgetCeiling{
   return nil,ErrFencedEffectDenied
  }
@@ -178,8 +179,9 @@ func(s *SQLiteStore) sealFencedEffect(ctx context.Context,in FencedEffectInput,s
  if acc==nil||acc.ContractVersion!="dispatch.acceptance/2.0"||
  acc.Revoked||acc.EffectApplied||acc.Outcome!="ACCEPTED"||
  acc.WorkID!=in.WorkID||acc.ExecutionContextID!=in.ExecutionContextID||
- acc.Dispatch.EffectID!=in.EffectID{return ErrFencedEffectDenied}
- if scope!=nil && (scope.WorkID!=in.WorkID||
+ acc.Dispatch.EffectID!=in.EffectID||acc.Dispatch.EffectDigest!=in.ActionDigest||
+ !effectActionPattern.MatchString(acc.Dispatch.ActionID){return ErrFencedEffectDenied}
+ if scope!=nil && (scope.ActionID==acc.Dispatch.ActionID||scope.WorkID!=in.WorkID||
  scope.WorksExecutionID!=in.WorksExecutionID||
  scope.ExecutionContextID!=in.ExecutionContextID||
  scope.WorkerLeaseID!=in.WorkerLeaseID||

@@ -67,6 +67,9 @@ func (s *SQLiteStore) PrepareFencedEffect(ctx context.Context,in FencedEffectPre
   acc.Revoked||acc.EffectApplied||acc.Outcome!="ACCEPTED"||
   acc.WorkID!=in.Hold.WorkID||acc.ExecutionContextID!=in.Hold.ExecutionContextID||
   acc.Dispatch.EffectID!=in.Hold.EffectID||
+  acc.Dispatch.EffectDigest!=in.Hold.ActionDigest||
+  !effectActionPattern.MatchString(acc.Dispatch.ActionID)||
+  acc.Dispatch.ActionID==in.ActionID||
   acc.Dispatch.AuthorityRef==""||acc.Dispatch.MissionID==""||
   acc.Dispatch.AttemptID==""{
   return nil,ErrEffectTimeAuthorityDenied
