@@ -26,6 +26,8 @@ type dispatchPlacementBinding struct {
 
 type dispatchV2Request struct {
 	Schema              string `json:"schema"`
+	ActionID string `json:"action_id"`
+	EffectDigest string `json:"effect_digest"`
 	OrganizationID      string `json:"organization_id"`
 	TenantID            string `json:"tenant_id"`
 	PrincipalID         string `json:"principal_id"`
@@ -127,6 +129,28 @@ func (s *Server) acceptDispatchV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+
+	if !actionIDPattern.MatchString(req.ActionID) || !effectDigestPatternV2.MatchString(req.EffectDigest) {
+		writeError(w,http.StatusBadRequest,"dispatch_action_binding_invalid","action_id and effect_digest required")
+		return
+	}
+	if s.DispatchV2Authority==nil {
+		writeError(w,http.StatusServiceUnavailable,"dispatch_authority_unconfigured","authoritative AIE revalidation not configured")
+		return
+	}
+	binding := DispatchV2AuthorityRequest{
+	 Schema:"aftergraph.works-dispatch-revalidation-request/1",
+	 ActionID:req.ActionID,EffectDigest:req.EffectDigest,
+	 OrganizationID:req.OrganizationID,TenantID:req.TenantID,PrincipalID:req.PrincipalID,
+	 MissionID:req.MissionID,WorkID:workID,AuthorityLeaseID:req.AuthorityLeaseID,
+	 WorkerLeaseID:req.WorkerLeaseID,RuntimeDispatchID:req.RuntimeDispatchID,
+	 AttemptID:req.AttemptID,EffectID:req.EffectID,IdempotencyKey:req.IdempotencyKey,
+	 BudgetCeiling:req.BudgetCeiling,
+	}
+	if err:=s.DispatchV2Authority.RevalidateDispatchV2(r.Context(),binding);err!=nil{
+		writeError(w,http.StatusServiceUnavailable,"dispatch_authority_denied","live AIE authority unavailable or denied")
+		return
+	}
 	provider, ok := s.Store.(dispatchV2StoreProvider)
 	if !ok {
 		writeError(w, http.StatusServiceUnavailable, "dispatch_v2_unavailable", "store does not implement contextual dispatch acceptance")
@@ -136,6 +160,8 @@ func (s *Server) acceptDispatchV2(w http.ResponseWriter, r *http.Request) {
 	accepted, ec, err := acceptor.AcceptV2(r.Context(), dispatch.Dispatch{
 		MissionID:         req.MissionID,
 		AuthorityRef:      req.AuthorityLeaseID,
+		ActionID: req.ActionID,
+		EffectDigest: req.EffectDigest,
 		AuthorityEpoch:    0,
 		RuntimeDispatchID: req.RuntimeDispatchID,
 		AttemptID:         req.AttemptID,

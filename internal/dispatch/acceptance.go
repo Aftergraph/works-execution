@@ -54,6 +54,8 @@ var (
 type Dispatch struct {
 	MissionID         string
 	AuthorityRef      string
+	ActionID          string `json:"action_id,omitempty"`
+	EffectDigest      string `json:"effect_digest,omitempty"`
 	AuthorityEpoch    int64
 	RuntimeDispatchID string
 	AttemptID         string
@@ -351,6 +353,8 @@ func (a *Acceptor) AcceptV2(
 		accepted.Dispatch.MissionID != d.MissionID ||
 		accepted.Dispatch.AuthorityRef != d.AuthorityRef ||
 		accepted.Dispatch.RuntimeDispatchID != d.RuntimeDispatchID ||
+				accepted.Dispatch.ActionID != d.ActionID ||
+		accepted.Dispatch.EffectDigest != d.EffectDigest ||
 		accepted.Dispatch.EffectID != d.EffectID ||
 		!SamePlacementBinding(accepted.Dispatch.Placement, d.Placement) {
 		return nil, nil, fmt.Errorf("%w: key %q", ErrCausalMismatch, d.IdempotencyKey)

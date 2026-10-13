@@ -65,6 +65,8 @@ func (s *dispatchV2Store) AcceptContextualIfAbsent(
 			existing.Dispatch.CausalID != accepted.Dispatch.CausalID ||
 			existing.Dispatch.MissionID != accepted.Dispatch.MissionID ||
 			existing.Dispatch.AuthorityRef != accepted.Dispatch.AuthorityRef ||
+			existing.Dispatch.ActionID != accepted.Dispatch.ActionID ||
+			existing.Dispatch.EffectDigest != accepted.Dispatch.EffectDigest ||
 			!dispatch.SamePlacementBinding(existing.Dispatch.Placement, accepted.Dispatch.Placement) {
 			return nil, nil, fmt.Errorf("%w: key %q", dispatch.ErrCausalMismatch, accepted.Dispatch.IdempotencyKey)
 		}
