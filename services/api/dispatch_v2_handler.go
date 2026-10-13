@@ -134,29 +134,46 @@ func (s *Server) acceptDispatchV2(w http.ResponseWriter, r *http.Request) {
 		writeError(w,http.StatusBadRequest,"dispatch_action_binding_invalid","action_id and effect_digest required")
 		return
 	}
-	if s.DispatchV2Authority==nil {
-		writeError(w,http.StatusServiceUnavailable,"dispatch_authority_unconfigured","authoritative AIE revalidation not configured")
-		return
-	}
-	binding := DispatchV2AuthorityRequest{
-	 Schema:"aftergraph.works-dispatch-revalidation-request/1",
-	 ActionID:req.ActionID,EffectDigest:req.EffectDigest,
-	 OrganizationID:req.OrganizationID,TenantID:req.TenantID,PrincipalID:req.PrincipalID,
-	 MissionID:req.MissionID,WorkID:workID,AuthorityLeaseID:req.AuthorityLeaseID,
-	 WorkerLeaseID:req.WorkerLeaseID,RuntimeDispatchID:req.RuntimeDispatchID,
-	 AttemptID:req.AttemptID,EffectID:req.EffectID,IdempotencyKey:req.IdempotencyKey,
-	 BudgetCeiling:req.BudgetCeiling,
-	}
-	if err:=s.DispatchV2Authority.RevalidateDispatchV2(r.Context(),binding);err!=nil{
-		writeError(w,http.StatusServiceUnavailable,"dispatch_authority_denied","live AIE authority unavailable or denied")
-		return
-	}
 	provider, ok := s.Store.(dispatchV2StoreProvider)
 	if !ok {
-		writeError(w, http.StatusServiceUnavailable, "dispatch_v2_unavailable", "store does not implement contextual dispatch acceptance")
+		writeError(w,http.StatusServiceUnavailable,"dispatch_v2_unavailable","store does not implement contextual acceptance")
 		return
 	}
-	acceptor := dispatch.NewAcceptor(provider.DispatchAcceptanceV2Store(workID), nil)
+	vs := provider.DispatchAcceptanceV2Store(workID)
+	prior,err:=vs.LoadByIdempotency(req.IdempotencyKey)
+	if err!=nil{
+		writeError(w,http.StatusServiceUnavailable,"dispatch_replay_unavailable","unable to inspect accepted Work")
+		return
+	}
+	if prior!=nil {
+		// Recovery is strictly read-only. An already committed winner can be
+		// re-read after AIE revocation or lease expiry, but a different action
+		// must NEVER reuse its idempotency identity.
+		ec,err:=s.Store.GetExecutionContext(r.Context(),prior.ExecutionContextID)
+		if err!=nil||!exactDispatchV2Replay(prior,ec,req,workID){
+			writeError(w,http.StatusConflict,"dispatch_replay_identity_conflict","immutable accepted dispatch differs")
+			return
+		}
+	} else {
+		if s.DispatchV2Authority==nil {
+			writeError(w,http.StatusServiceUnavailable,"dispatch_authority_unconfigured","authoritative AIE revalidation not configured")
+			return
+		}
+		binding:=DispatchV2AuthorityRequest{
+		 Schema:"aftergraph.works-dispatch-revalidation-request/1",
+		 ActionID:req.ActionID,EffectDigest:req.EffectDigest,
+		 OrganizationID:req.OrganizationID,TenantID:req.TenantID,PrincipalID:req.PrincipalID,
+		 MissionID:req.MissionID,WorkID:workID,AuthorityLeaseID:req.AuthorityLeaseID,
+		 WorkerLeaseID:req.WorkerLeaseID,RuntimeDispatchID:req.RuntimeDispatchID,
+		 AttemptID:req.AttemptID,EffectID:req.EffectID,IdempotencyKey:req.IdempotencyKey,
+		 BudgetCeiling:req.BudgetCeiling,
+		}
+		if err:=s.DispatchV2Authority.RevalidateDispatchV2(r.Context(),binding);err!=nil{
+			writeError(w,http.StatusServiceUnavailable,"dispatch_authority_denied","live AIE authority unavailable or denied")
+			return
+		}
+	}
+	acceptor:=dispatch.NewAcceptor(vs,nil)
 	accepted, ec, err := acceptor.AcceptV2(r.Context(), dispatch.Dispatch{
 		MissionID:         req.MissionID,
 		AuthorityRef:      req.AuthorityLeaseID,
@@ -299,4 +316,40 @@ func (s *Server) bindDispatchVerificationSubjectV2(w http.ResponseWriter, r *htt
 		Subject:          binding.Subject,
 		BoundAt:          binding.BoundAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
 	})
+}
+
+
+// exactDispatchV2Replay permits only readback of the SAME durable winner,
+// not re-execution or re-authorization. Used after operator+bridge checks.
+func exactDispatchV2Replay(a *dispatch.Acceptance,c *executioncontext.Context,
+ r dispatchV2Request,workID string)bool{
+ if a==nil||c==nil||a.ContractVersion!="dispatch.acceptance/2.0"||
+  a.WorkID!=workID||a.Dispatch.IdempotencyKey!=r.IdempotencyKey||
+  a.Dispatch.ActionID!=r.ActionID||a.Dispatch.EffectDigest!=r.EffectDigest||
+  a.Dispatch.AuthorityRef!=r.AuthorityLeaseID||
+  a.Dispatch.MissionID!=r.MissionID||
+  a.Dispatch.RuntimeDispatchID!=r.RuntimeDispatchID||
+  a.Dispatch.AttemptID!=r.AttemptID||a.Dispatch.EffectID!=r.EffectID||
+  a.Dispatch.CausalID!=r.CausalID||
+  a.Dispatch.BudgetRef!=r.BudgetRef||
+  a.Dispatch.BudgetCeiling!=r.BudgetCeiling||
+  a.Dispatch.CheckpointID!=r.CheckpointID||
+  a.Dispatch.EvidenceRoot!=r.EvidenceRoot||
+  c.ID!=a.ExecutionContextID||c.WorkID!=workID||
+  c.OrganizationID!=r.OrganizationID||c.TenantID!=r.TenantID||
+  c.PrincipalID!=r.PrincipalID||c.AuthorityLeaseID!=r.AuthorityLeaseID||
+  c.WorkerLeaseID!=r.WorkerLeaseID||
+  c.AdmissionDecisionID!=r.AdmissionDecisionID{
+  return false
+ }
+ p:=a.Dispatch.Placement
+ q:=r.PlacementBinding
+ if (p==nil)!=(q==nil){return false}
+ if p!=nil && (p.Schema!=q.Schema||p.MissionID!=q.MissionID||
+ p.SelectedNode!=q.SelectedNode||
+ p.PlacementDecisionDigest!=q.PlacementDecisionDigest||
+ p.SnapshotDigest!=q.SnapshotDigest||p.PolicyVersion!=q.PolicyVersion){
+  return false
+ }
+ return true
 }

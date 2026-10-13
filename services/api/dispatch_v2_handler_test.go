@@ -65,11 +65,14 @@ func subjectBody(subject string) string {
 }
 
 func setupDispatchV2Work(t *testing.T) (base, workID, leaseID string) {
+ return setupDispatchV2WorkWithAuthority(t,dispatchV2TestAuthorizer{})
+}
+func setupDispatchV2WorkWithAuthority(t *testing.T, authority api.DispatchV2Authority) (base, workID, leaseID string) {
 	t.Helper()
 	t.Setenv("WORKS_PLATFORM_BRIDGE_SECRET", dispatchV2BridgeSecret)
 	srv, ts, st := newTestServer(t)
 	srv.PlatformAPIToken = []byte(dispatchV2PlatformToken)
-	srv.DispatchV2Authority = dispatchV2TestAuthorizer{}
+	srv.DispatchV2Authority = authority
 	ctx := context.Background()
 	w := &workgraph.Work{
 		ID: workgraph.NewID("wrk"),
@@ -341,5 +344,33 @@ func TestDispatchV2FailsClosedWhenAIEUnconfigured(t *testing.T){
  defer resp.Body.Close()
  if resp.StatusCode!=http.StatusServiceUnavailable{
   t.Fatalf("unconfigured AIE must return 503 before acceptance, got %d",resp.StatusCode)
+ }
+}
+
+type switchableV2Authority struct{ deny bool }
+func(a *switchableV2Authority)RevalidateDispatchV2(_ context.Context,_ api.DispatchV2AuthorityRequest)error{
+ if a.deny{return api.ErrDispatchV2AuthorityUnavailable}
+ return nil
+}
+func TestDispatchV2ReplayReadbackAfterAuthorityRevoked(t *testing.T){
+ verifier:=&switchableV2Authority{}
+ base,workID,leaseID:=setupDispatchV2WorkWithAuthority(t,verifier)
+ payload:=dispatchV2Fixture(leaseID)
+ first:=postDispatchV2(t,base,workID,payload)
+ if first.StatusCode!=http.StatusOK{first.Body.Close();t.Fatalf("first accept=%d",first.StatusCode)}
+ first.Body.Close()
+ verifier.deny=true
+ replay:=postDispatchV2(t,base,workID,payload)
+ defer replay.Body.Close()
+ if replay.StatusCode!=http.StatusOK{
+  t.Fatalf("exact same durable acceptance must be recoverable, got %d",replay.StatusCode)
+ }
+ changed:=strings.Replace(payload,
+  "act_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "act_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",1)
+ mismatch:=postDispatchV2(t,base,workID,changed)
+ defer mismatch.Body.Close()
+ if mismatch.StatusCode!=http.StatusConflict{
+  t.Fatalf("changed action ID used old acceptance: %d",mismatch.StatusCode)
  }
 }
