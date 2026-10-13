@@ -159,3 +159,26 @@ func TestTrustGatewayEffectTimeDeniesRedirectForgedAndUnavailableResponses(t *te
   }
  }
 }
+
+func TestTrustGatewayEffectTimeRejectsConcatenatedPolicyResponses(t *testing.T){
+ scope:=effectScopeFixture()
+ token:=strings.Repeat("x",32)
+ server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  valid:=map[string]any{
+   "schema":"aftergraph.works-effect-revalidation/1",
+   "allowed":true,"actionId":scope.ActionID,"authorityLeaseId":scope.AuthorityLeaseID,
+   "effectDigest":scope.EffectDigest,"worksExecutionId":scope.WorksExecutionID,
+   "executionContextId":scope.ExecutionContextID,
+   "effectId":scope.EffectID,"idempotencyKey":scope.IdempotencyKey,
+   "amount":scope.Amount,"canDispatchEffect":false,
+  }
+  b,_:=json.Marshal(valid)
+  _,_=w.Write(append(b,[]byte("\n{\"allowed\":true}")...))
+ }))
+ defer server.Close()
+ client,err:=workstore.NewTrustGatewayEffectTimeAuthority(server.URL,token)
+ if err!=nil{t.Fatal(err)}
+ if err=client.RevalidateFencedEffect(context.Background(),scope);err==nil{
+  t.Fatal("concatenated positive Trust observations must fail closed")
+ }
+}

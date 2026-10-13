@@ -85,5 +85,11 @@ func (t *TrustGatewayEffectTimeAuthority)RevalidateFencedEffect(ctx context.Cont
   result.IdempotencyKey!=s.IdempotencyKey||result.Amount!=s.Amount{
   return ErrEffectTimeAuthorityDenied
  }
+ // A concatenated second object or trailing garbage makes the remote
+ // decision ambiguous and must never count as authority evidence.
+ var extra any
+ if err:=decoder.Decode(&extra);err!=io.EOF{
+  return ErrEffectTimeAuthorityDenied
+ }
  return nil
 }
