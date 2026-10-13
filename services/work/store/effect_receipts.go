@@ -20,6 +20,12 @@ var ErrEffectReceiptInvalid=errors.New("works: invalid provider evidence")
 var ErrEffectReceiptConflict=errors.New("works: provider evidence identity conflict")
 
 const effectReceiptSchema=`
+CREATE TABLE IF NOT EXISTS dispatch_effect_action_bindings (
+ idempotency_key TEXT PRIMARY KEY,
+ action_id TEXT NOT NULL UNIQUE,
+ authority_lease_id TEXT NOT NULL,
+ effect_digest TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS dispatch_effect_receipts (
  idempotency_key TEXT PRIMARY KEY,
  works_execution_id TEXT NOT NULL,
@@ -75,7 +81,7 @@ func NewFencedEffectReceiptReader(s *SQLiteStore, providerID string, signer ed25
  signer:append(ed25519.PublicKey(nil),signer...),lookup:lookup},nil
 }
 func (r *FencedEffectReceiptReader)sealed(txn *sql.Tx,ctx context.Context,
- in FencedEffectInput)(string,error){
+ in FencedEffectInput)(string,string,error){
  var ec,work,tenant,principal,lease,effect,digest,state string
  var amount int64
  err:=txn.QueryRowContext(ctx,`SELECT execution_context_id,work_id,tenant_id,
@@ -84,30 +90,38 @@ func (r *FencedEffectReceiptReader)sealed(txn *sql.Tx,ctx context.Context,
  in.IdempotencyKey,in.WorksExecutionID).Scan(&ec,&work,&tenant,&principal,
  &lease,&effect,&digest,&amount,&state)
  if err!=nil{
-  if errors.Is(err,sql.ErrNoRows){return "",ErrEffectReceiptConflict}
-  return "",err
+  if errors.Is(err,sql.ErrNoRows){return "","",ErrEffectReceiptConflict}
+  return "","",err
  }
  if state!="reconcile"||ec!=in.ExecutionContextID||work!=in.WorkID||
   tenant!=in.TenantID||principal!=in.PrincipalID||lease!=in.WorkerLeaseID||
   effect!=in.EffectID||digest!=in.ActionDigest||amount!=in.Amount{
-  return "",ErrEffectReceiptConflict
+  return "","",ErrEffectReceiptConflict
  }
  accepted,err:=loadAcceptance(txn,`SELECT works_execution_id,idempotency_key,causal_id,
  acceptance_json FROM dispatch_acceptances WHERE works_execution_id=?`,in.WorksExecutionID)
- if err!=nil{return "",err}
+ if err!=nil{return "","",err}
  if accepted==nil||accepted.ContractVersion!="dispatch.acceptance/2.0"||
  accepted.WorkID!=in.WorkID||accepted.ExecutionContextID!=in.ExecutionContextID||
  accepted.Dispatch.EffectID!=in.EffectID||
  accepted.Dispatch.EffectDigest!=in.ActionDigest||
  !effectActionPattern.MatchString(accepted.Dispatch.ActionID){
-  return "",ErrEffectReceiptConflict
+  return "","",ErrEffectReceiptConflict
  }
  // Revocation or lease expiration after a provider commit must NOT hide
  // historical receipts. This method is readback only, never authority.
- return accepted.Dispatch.ActionID,nil
+ var effectAction,authorityRef,effectDigest string
+ err=txn.QueryRowContext(ctx,`SELECT action_id,authority_lease_id,effect_digest
+ FROM dispatch_effect_action_bindings WHERE idempotency_key=?`,
+ in.IdempotencyKey).Scan(&effectAction,&authorityRef,&effectDigest)
+ if err!=nil||!effectActionPattern.MatchString(effectAction)||
+ effectAction==accepted.Dispatch.ActionID||
+ authorityRef!=accepted.Dispatch.AuthorityRef||
+ effectDigest!=in.ActionDigest{return "","",ErrEffectReceiptConflict}
+ return accepted.Dispatch.ActionID,effectAction,nil
 }
 func(r *FencedEffectReceiptReader)verify(proof *SignedProviderReceipt,
- in FencedEffectInput,acceptAction string)(*VerifiedProviderReceipt,error){
+ in FencedEffectInput,acceptAction,effectAction string)(*VerifiedProviderReceipt,error){
  if proof==nil||len(proof.Signature)!=ed25519.SignatureSize{
   return nil,ErrEffectReceiptInvalid
  }
@@ -117,7 +131,7 @@ func(r *FencedEffectReceiptReader)verify(proof *SignedProviderReceipt,
  v.WorksExecutionID!=in.WorksExecutionID||v.EffectID!=in.EffectID||
  v.IdempotencyKey!=in.IdempotencyKey||v.EffectDigest!=in.ActionDigest||
  v.Amount!=in.Amount||!effectActionPattern.MatchString(v.ActionID)||
- v.ActionID==acceptAction||!effectDigestPattern.MatchString(v.ResultDigest)||
+ v.ActionID!=effectAction||v.ActionID==acceptAction||!effectDigestPattern.MatchString(v.ResultDigest)||
  (v.Outcome!="succeeded"&&v.Outcome!="failed")||
  v.IssuedAtUnixMs<=0||v.IssuedAtUnixMs>time.Now().Add(5*time.Minute).UnixMilli(){
   return nil,ErrEffectReceiptInvalid
@@ -135,7 +149,7 @@ func (r *FencedEffectReceiptReader)Read(ctx context.Context,in FencedEffectInput
  txn,err:=r.store.db.BeginTx(ctx,&sql.TxOptions{ReadOnly:true})
  if err!=nil{return nil,err}
  defer txn.Rollback()
- accept,err:=r.sealed(txn,ctx,in)
+ accept,effectAction,err:=r.sealed(txn,ctx,in)
  if err!=nil{return nil,err}
  var payload string
  var signature []byte
@@ -152,7 +166,7 @@ func (r *FencedEffectReceiptReader)Read(ctx context.Context,in FencedEffectInput
  if err:=decoder.Decode(&receipt);err!=nil{return nil,ErrEffectReceiptInvalid}
  var extra any
  if decoder.Decode(&extra)!=io.EOF{return nil,ErrEffectReceiptInvalid}
- verified,err:=r.verify(&SignedProviderReceipt{Payload:receipt,Signature:signature},in,accept)
+ verified,err:=r.verify(&SignedProviderReceipt{Payload:receipt,Signature:signature},in,accept,effectAction)
  if err!=nil||verified.EvidenceID!=evidenceID{return nil,ErrEffectReceiptInvalid}
  if err:=txn.Commit();err!=nil{return nil,err}
  return verified,nil
@@ -169,9 +183,9 @@ func (r *FencedEffectReceiptReader)Reconcile(ctx context.Context,in FencedEffect
  txn,err:=r.store.db.BeginTx(ctx,nil)
  if err!=nil{return nil,err}
  defer txn.Rollback()
- accept,err:=r.sealed(txn,ctx,in)
+ accept,effectAction,err:=r.sealed(txn,ctx,in)
  if err!=nil{return nil,err}
- verified,err:=r.verify(proof,in,accept)
+ verified,err:=r.verify(proof,in,accept,effectAction)
  if err!=nil{return nil,err}
  canonical,err:=json.Marshal(proof.Payload)
  if err!=nil{return nil,ErrEffectReceiptInvalid}

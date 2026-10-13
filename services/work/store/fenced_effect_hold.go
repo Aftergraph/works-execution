@@ -213,6 +213,14 @@ func(s *SQLiteStore) sealFencedEffect(ctx context.Context,in FencedEffectInput,s
  expiry,err:=time.Parse(time.RFC3339Nano,lExpires)
  if err!=nil||lw!=in.WorkID||la!=acc.Dispatch.AttemptID||
  ls!="ACTIVE"||!expiry.After(time.Now().UTC()){return ErrFencedEffectDenied}
+ // Pin the effect-specific AIE action atomically with the seal.
+ if scope!=nil{
+  _,err=txn.ExecContext(ctx,`INSERT INTO dispatch_effect_action_bindings
+  (idempotency_key,action_id,authority_lease_id,effect_digest)
+  VALUES (?,?,?,?)`,in.IdempotencyKey,scope.ActionID,
+   scope.AuthorityLeaseID,scope.EffectDigest)
+  if err!=nil{return ErrFencedEffectDenied}
+ }
  r,err:=txn.ExecContext(ctx,"UPDATE dispatch_effect_holds SET state='reconcile' "+
  "WHERE idempotency_key=? AND state='held'",in.IdempotencyKey)
  if err!=nil{return err}

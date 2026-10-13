@@ -185,3 +185,21 @@ func TestProviderReceiptMismatchAndUnsealedIntentsCannotReconcile(t *testing.T){
  if _,err=r.Reconcile(ctx,in);err!=nil{t.Fatal(err)}
  if provider.count(t)!=1{t.Fatal("duplicate sandbox mutation")}
 }
+
+func TestSignedReceiptCannotRebindDifferentEffectAction(t *testing.T){
+ s,in,done:=fencedFixture(t);defer done()
+ ctx:=context.Background()
+ provider:=newSandboxProvider(t)
+ reader,err:=workstore.NewFencedEffectReceiptReader(s,sandboxProviderID,
+  provider.signer.Public().(ed25519.PublicKey),provider)
+ if err!=nil{t.Fatal(err)}
+ if _,err=s.PrepareFencedEffect(ctx,workstore.FencedEffectPreparationInput{Hold:in,ActionID:effectAction},
+  effectAuthorityFunc(func(context.Context,workstore.EffectTimeScope)error{return nil}));err!=nil{t.Fatal(err)}
+ if err=provider.Apply(ctx,in,"act_"+strings.Repeat("c",32));err!=nil{t.Fatal(err)}
+ if _,err=reader.Reconcile(ctx,in);!errors.Is(err,workstore.ErrEffectReceiptInvalid){
+  t.Fatalf("cross-action signed receipt accepted: %v",err)
+ }
+ if _,err=reader.Read(ctx,in);!errors.Is(err,workstore.ErrEffectReceiptUnknown){
+  t.Fatalf("cross-action evidence persisted: %v",err)
+ }
+}
