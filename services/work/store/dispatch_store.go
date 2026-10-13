@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS dispatch_verification_subjects (
 `
 
 func (s *SQLiteStore) migrateDispatchAcceptance() error {
-	_, err := s.db.Exec(dispatchAcceptanceSchema)
+	if _, err := s.db.Exec(dispatchAcceptanceSchema); err != nil { return err }
+	_, err := s.db.Exec(fencedEffectTable)
 	return err
 }
 
