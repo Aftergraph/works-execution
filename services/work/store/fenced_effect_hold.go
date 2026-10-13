@@ -144,6 +144,11 @@ func (s *SQLiteStore) HoldFencedEffect(ctx context.Context,in FencedEffectInput)
 // Only a separate trusted host with LIVE Trust/AIE authorization may actually
 // invoke the provider using its own idempotency key.
 func(s *SQLiteStore) SealFencedEffect(ctx context.Context,in FencedEffectInput)error{
+ return s.sealFencedEffect(ctx,in,nil)
+}
+// Scoped sealing pins the same immutable authority and mission observed
+// by Trust/AIE. The comparison is repeated inside this final SQLite txn.
+func(s *SQLiteStore) sealFencedEffect(ctx context.Context,in FencedEffectInput,scope *EffectTimeScope)error{
  if in.IdempotencyKey==""||in.WorksExecutionID==""||in.ExecutionContextID==""||
  in.WorkID==""||in.WorkerLeaseID==""||in.TenantID==""||
  in.PrincipalID==""||in.EffectID==""||in.Amount<=0||
@@ -174,6 +179,27 @@ func(s *SQLiteStore) SealFencedEffect(ctx context.Context,in FencedEffectInput)e
  acc.Revoked||acc.EffectApplied||acc.Outcome!="ACCEPTED"||
  acc.WorkID!=in.WorkID||acc.ExecutionContextID!=in.ExecutionContextID||
  acc.Dispatch.EffectID!=in.EffectID{return ErrFencedEffectDenied}
+ if scope!=nil && (scope.WorkID!=in.WorkID||
+ scope.WorksExecutionID!=in.WorksExecutionID||
+ scope.ExecutionContextID!=in.ExecutionContextID||
+ scope.WorkerLeaseID!=in.WorkerLeaseID||
+ scope.TenantID!=in.TenantID||scope.PrincipalID!=in.PrincipalID||
+ scope.EffectID!=in.EffectID||scope.IdempotencyKey!=in.IdempotencyKey||
+ scope.EffectDigest!=in.ActionDigest||scope.Amount!=in.Amount||
+ acc.Dispatch.AuthorityRef!=scope.AuthorityLeaseID||
+ acc.Dispatch.MissionID!=scope.MissionID||
+ acc.Dispatch.AttemptID!=scope.AttemptID) {
+  return ErrFencedEffectDenied
+ }
+ // Independently repeat the minted context-to-acceptance and lease binding.
+ var cw,ct,cp,cl,ca,cm string
+ err=txn.QueryRowContext(ctx,"SELECT work_id,tenant_id,principal_id,"+
+ "worker_lease_id,authority_lease_id,mission_id FROM work_execution_contexts "+
+ "WHERE id=?",in.ExecutionContextID).Scan(&cw,&ct,&cp,&cl,&ca,&cm)
+ if err!=nil{return ErrFencedEffectDenied}
+ if cw!=in.WorkID||ct!=in.TenantID||cp!=in.PrincipalID||
+ cl!=in.WorkerLeaseID||ca!=acc.Dispatch.AuthorityRef||
+ cm!=acc.Dispatch.MissionID{return ErrFencedEffectDenied}
  var lw,la,ls,lExpires string
  err=txn.QueryRowContext(ctx,"SELECT work_id,attempt_id,status,expires_at "+
  "FROM work_leases WHERE id=?",in.WorkerLeaseID).
