@@ -1,7 +1,7 @@
 # WORKS — deployable container (durable execution control plane)
 # Go 1.25 builder + distroless runtime.
 # golang:1.25-alpine, pinned by digest (OpenSSF Scorecard PinnedDependencies)
-FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS builder
+FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS builder
 
 WORKDIR /build
 COPY go.mod go.sum ./
