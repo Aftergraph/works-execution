@@ -227,6 +227,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /v2/works/{id}/placement-reservations", http.HandlerFunc(s.reservePlacementV2)) // Runtime-selected worker -> WORKS-owned WorkerLease
 	mux.Handle("POST /v2/works/{id}/accept", http.HandlerFunc(s.acceptDispatchV2))                                                        // dispatch.acceptance/2.0 + materialized execution-context/1.0
 	mux.Handle("POST /v2/works/{id}/acceptances/{execution}/verification-subject", http.HandlerFunc(s.bindDispatchVerificationSubjectV2)) // post-effect exact-subject binding
+	mux.Handle("GET /v2/platform/runners", http.HandlerFunc(s.listPlatformRunnersV2))                               // read-only Runtime placement snapshot
+	mux.Handle("GET /v2/platform/runners/{id}/abi", http.HandlerFunc(s.getPlatformRunnerABIV2))                    // read-only Runtime capability advertisement
 	mux.Handle("POST /v1/works/{id}/verification", http.HandlerFunc(s.workVerificationIngestHandler))                                     // Sentinel-owned semantic verifier ingest
 	mux.HandleFunc("/v1/execution-contexts/", s.executionContextItemHandler)                                                              // GET immutable execution context
 	mux.Handle("/v1/workers/enroll", s.requireWorkerMTLS(http.HandlerFunc(s.enrollHandler)))                                              // mTLS identity when worker mTLS is enabled
